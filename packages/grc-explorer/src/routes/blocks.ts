@@ -55,8 +55,8 @@ blocksRouter.get('/', async (req: Request, res: Response) => {
   const useAt = Number.isFinite(at) && at > 0;
 
   const baseQuery = useAt
-    ? `FROM blocks FINAL WHERE time <= toDateTime({at: UInt32})`
-    : `FROM blocks FINAL`;
+    ? 'FROM blocks FINAL WHERE time <= toDateTime({at: UInt32})'
+    : 'FROM blocks FINAL';
   const params = useAt ? { at } : {};
 
   const [rowsResult, countResult] = await Promise.all([

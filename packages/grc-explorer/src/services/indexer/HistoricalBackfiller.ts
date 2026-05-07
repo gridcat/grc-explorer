@@ -259,6 +259,10 @@ export class HistoricalBackfiller {
           inFlight -= 1;
         }
         await drain();
+        // pump and fetchSpanCall form a mutually-recursive closure pair;
+        // declare-then-define here is intentional and safe (TDZ has
+        // resolved by the time the await above completes).
+        // eslint-disable-next-line @typescript-eslint/no-use-before-define
         pump();
       };
 

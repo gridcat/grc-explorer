@@ -26,8 +26,8 @@ interface BucketRow {
 
 const GRANULARITY_TO_TABLE: Record<string, { table: string; bucketSec: number }> = {
   '5min': { table: 'network_5m', bucketSec: 300 },
-  '1h':   { table: 'network_1h', bucketSec: 3600 },
-  '1d':   { table: 'network_1d', bucketSec: 86400 },
+  '1h': { table: 'network_1h', bucketSec: 3600 },
+  '1d': { table: 'network_1d', bucketSec: 86400 },
 };
 
 metricsRouter.get('/', async (req: Request, res: Response) => {
@@ -262,7 +262,9 @@ metricsRouter.get('/research-split', async (req: Request, res: Response) => {
   const row = (await result.json<{
     research_subsidy: string; block_subsidy: string;
     researcher_blocks: number; investor_blocks: number;
-  }>())[0] ?? { research_subsidy: '0', block_subsidy: '0', researcher_blocks: 0, investor_blocks: 0 };
+  }>())[0] ?? {
+    research_subsidy: '0', block_subsidy: '0', researcher_blocks: 0, investor_blocks: 0,
+  };
   const research = BigInt(row.research_subsidy);
   const block = BigInt(row.block_subsidy);
   const total = research + block;
@@ -596,7 +598,9 @@ metricsRouter.get('/cpid-cohort-retention', async (req: Request, res: Response) 
       data: {
         type: 'cpid_cohort_retention',
         id: cohortStr,
-        attributes: { cohort: cohortStr, horizon, cohortSize: 0, points: [] },
+        attributes: {
+          cohort: cohortStr, horizon, cohortSize: 0, points: [],
+        },
       },
     }));
     return;
@@ -633,7 +637,9 @@ metricsRouter.get('/cpid-cohort-retention', async (req: Request, res: Response) 
     data: {
       type: 'cpid_cohort_retention',
       id: cohortStr,
-      attributes: { cohort: cohortStr, horizon, cohortSize: cohortRows.length, points },
+      attributes: {
+        cohort: cohortStr, horizon, cohortSize: cohortRows.length, points,
+      },
     },
   }));
 });
@@ -687,7 +693,9 @@ metricsRouter.get('/active-stakers', async (req: Request, res: Response) => {
     data: {
       type: 'active_stakers',
       id: `last_${hours}h`,
-      attributes: { hours, anchor: at, current, points },
+      attributes: {
+        hours, anchor: at, current, points,
+      },
     },
   }));
 });
@@ -710,7 +718,9 @@ metricsRouter.get('/staker-mix', async (req: Request, res: Response) => {
       data: {
         type: 'staker_mix',
         id: `last_${blocks}_blocks`,
-        attributes: { blocks: 0, researcher: 0, investor: 0, researcherSharePct: 0 },
+        attributes: {
+          blocks: 0, researcher: 0, investor: 0, researcherSharePct: 0,
+        },
       },
     }));
     return;

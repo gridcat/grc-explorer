@@ -432,8 +432,8 @@ async function insertVotes(parsedList: ParsedBlock[], seq: bigint): Promise<void
   const rows: Record<string, unknown>[] = [];
   for (const p of parsedList) {
     for (const v of p.votes) {
-      let pollId: string | null = v.pollId;
-      let choiceIdx = v.choiceIdx;
+      let { pollId } = v;
+      let { choiceIdx } = v;
 
       if (pollId === null) {
         const resolved = v.legacyTitleKey ? titleToPollId.get(v.legacyTitleKey) : undefined;
@@ -693,7 +693,9 @@ async function emitMetricsTicks(parsedList: ParsedBlock[]): Promise<void> {
     const networkMv = step === 300 ? 'network_5m' : 'network_1h';
     const claimsMv = step === 300 ? 'claims_5m' : 'claims_1h';
     const txMv = step === 300 ? 'tx_5m' : 'tx_1h';
-    return { granularity, aligned, networkMv, claimsMv, txMv };
+    return {
+      granularity, aligned, networkMv, claimsMv, txMv,
+    };
   });
 
   const results = await Promise.all(granularities.map(async (g) => {

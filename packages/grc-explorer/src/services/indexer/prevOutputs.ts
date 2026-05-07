@@ -157,7 +157,7 @@ function grcToHalford(grc: number | string): bigint {
   if (dot < 0) return BigInt(s) * 100_000_000n;
   const whole = s.slice(0, dot) || '0';
   const fracRaw = s.slice(dot + 1);
-  const frac = (fracRaw + '00000000').slice(0, 8);
+  const frac = (`${fracRaw}00000000`).slice(0, 8);
   const sign = whole.startsWith('-') ? -1n : 1n;
   const wholeAbs = whole.replace(/^-/, '');
   return sign * (BigInt(wholeAbs) * 100_000_000n + BigInt(frac));

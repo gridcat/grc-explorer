@@ -16,7 +16,7 @@ export function grc2halford(grc: number | string): bigint {
   const negative = s.startsWith('-');
   const cleaned = negative ? s.slice(1) : s;
   const [intPart, fracPart = ''] = cleaned.split('.');
-  const fracPadded = (fracPart + '00000000').slice(0, 8);
+  const fracPadded = (`${fracPart}00000000`).slice(0, 8);
   const halford = BigInt(intPart || '0') * HALFORD + BigInt(fracPadded || '0');
   return negative ? -halford : halford;
 }

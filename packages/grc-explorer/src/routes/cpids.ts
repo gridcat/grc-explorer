@@ -239,7 +239,7 @@ cpidsRouter.get('/:cpid/blocks', async (req: Request, res: Response) => {
   }>();
   const total = Number((await countResult.json<{ c: string | number }>())[0]?.c ?? 0);
 
-  let claimsByHeight = new Map<number, { research_subsidy: string; block_subsidy: string; magnitude: number }>();
+  const claimsByHeight = new Map<number, { research_subsidy: string; block_subsidy: string; magnitude: number }>();
   if (rows.length > 0) {
     const heights = rows.map((b) => b.height);
     const cR = await ch.query({

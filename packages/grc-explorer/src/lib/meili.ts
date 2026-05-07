@@ -41,9 +41,12 @@ export async function enqueueMeili(envelope: MeiliEnvelope): Promise<void> {
   await redis.xadd(
     STREAM_KEY,
     '*',
-    'index', envelope.index,
-    'action', envelope.action,
-    'doc', JSON.stringify(envelope.doc),
+    'index',
+    envelope.index,
+    'action',
+    envelope.action,
+    'doc',
+    JSON.stringify(envelope.doc),
   );
 }
 
@@ -61,9 +64,12 @@ export async function enqueueMeiliBatch(envelopes: MeiliEnvelope[]): Promise<voi
   await Promise.all(envelopes.map((env) => redis.xadd(
     STREAM_KEY,
     '*',
-    'index', env.index,
-    'action', env.action,
-    'doc', JSON.stringify(env.doc),
+    'index',
+    env.index,
+    'action',
+    env.action,
+    'doc',
+    JSON.stringify(env.doc),
   )));
 }
 

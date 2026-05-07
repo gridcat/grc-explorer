@@ -338,11 +338,10 @@ async function buildPendingResponse(txId: string, args: PendingArgs): Promise<un
     };
   });
 
-  const fee = args.fee ?? (
-    !isCoinbase && !isCoinstake && prevAttrs.size === vinList.filter((v) => typeof v.coinbase !== 'string').length
-      ? (totalIn > totalOut ? totalIn - totalOut : 0n)
-      : 0n
-  );
+  const allInputsResolved = !isCoinbase && !isCoinstake
+    && prevAttrs.size === vinList.filter((v) => typeof v.coinbase !== 'string').length;
+  const computedFee = allInputsResolved && totalIn > totalOut ? totalIn - totalOut : 0n;
+  const fee = args.fee ?? computedFee;
 
   // Pending shape: blockHeight 0 / blockHash empty / confirmations 0
   // tells the frontend's existing `inMempool` branch to render the

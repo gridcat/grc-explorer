@@ -51,9 +51,13 @@ export class MeiliIndexer {
         }
         // eslint-disable-next-line no-await-in-loop
         const result = await redisStreams.xread(
-          'COUNT', MeiliIndexer.BATCH_SIZE,
-          'BLOCK', MeiliIndexer.BLOCK_MS,
-          'STREAMS', MEILI_STREAM_KEY, this.lastId,
+          'COUNT',
+          MeiliIndexer.BATCH_SIZE,
+          'BLOCK',
+          MeiliIndexer.BLOCK_MS,
+          'STREAMS',
+          MEILI_STREAM_KEY,
+          this.lastId,
         );
         if (!result) continue;
 
@@ -124,22 +128,45 @@ export class MeiliIndexer {
   }
 
   private async ensureIndices(): Promise<void> {
-    const settings: Array<{ name: MeiliIndexName; primaryKey: string; searchable?: string[]; filterable?: string[]; sortable?: string[] }> = [
-      { name: 'blocks', primaryKey: 'id', searchable: ['hash', 'prev_hash', 'miner_address', 'staker_cpid'], filterable: ['is_pos', 'is_superblock', 'height'], sortable: ['height', 'time'] },
-      { name: 'transactions', primaryKey: 'id', searchable: ['tx_id', 'block_hash', 'hashboinc'], filterable: ['is_coinbase', 'is_coinstake', 'has_contract', 'block_height'], sortable: ['time'] },
-      { name: 'addresses', primaryKey: 'id', searchable: ['address'], filterable: [], sortable: ['balance', 'tx_count'] },
-      { name: 'claims', primaryKey: 'id', searchable: ['cpid', 'organization', 'client_version', 'mining_id'], filterable: ['is_mrc'], sortable: ['block_height'] },
+    type IndexSetting = {
+      name: MeiliIndexName;
+      primaryKey: string;
+      searchable?: string[];
+      filterable?: string[];
+      sortable?: string[];
+    };
+    const settings: IndexSetting[] = [
+      {
+        name: 'blocks', primaryKey: 'id', searchable: ['hash', 'prev_hash', 'miner_address', 'staker_cpid'], filterable: ['is_pos', 'is_superblock', 'height'], sortable: ['height', 'time'],
+      },
+      {
+        name: 'transactions', primaryKey: 'id', searchable: ['tx_id', 'block_hash', 'hashboinc'], filterable: ['is_coinbase', 'is_coinstake', 'has_contract', 'block_height'], sortable: ['time'],
+      },
+      {
+        name: 'addresses', primaryKey: 'id', searchable: ['address'], filterable: [], sortable: ['balance', 'tx_count'],
+      },
+      {
+        name: 'claims', primaryKey: 'id', searchable: ['cpid', 'organization', 'client_version', 'mining_id'], filterable: ['is_mrc'], sortable: ['block_height'],
+      },
       // Searchable on quorum hash, on the height (string-form so users
       // can type "89000"), and on the per-project / per-CPID
       // breakdowns so a query for a project name like "Enigma@Home"
       // surfaces every superblock that included it.
-      { name: 'superblocks', primaryKey: 'id', searchable: ['quorum_hash', 'height_str', 'projects', 'cpids'], filterable: [], sortable: ['height', 'total_magnitude'] },
-      { name: 'polls', primaryKey: 'id', searchable: ['title', 'question', 'options'], filterable: ['response_type', 'weight_type'], sortable: ['start_time', 'end_time'] },
-      { name: 'beacons', primaryKey: 'id', searchable: ['cpid', 'address'], filterable: ['status'], sortable: ['block_height', 'expiration'] },
+      {
+        name: 'superblocks', primaryKey: 'id', searchable: ['quorum_hash', 'height_str', 'projects', 'cpids'], filterable: [], sortable: ['height', 'total_magnitude'],
+      },
+      {
+        name: 'polls', primaryKey: 'id', searchable: ['title', 'question', 'options'], filterable: ['response_type', 'weight_type'], sortable: ['start_time', 'end_time'],
+      },
+      {
+        name: 'beacons', primaryKey: 'id', searchable: ['cpid', 'address'], filterable: ['status'], sortable: ['block_height', 'expiration'],
+      },
       // Free-form transaction messages (`MESSAGE` contracts). The
       // entire payload IS the message text — searchable on `message`,
       // sortable by `time` so the search page can rank recent first.
-      { name: 'messages', primaryKey: 'id', searchable: ['message', 'sender_address'], filterable: [], sortable: ['time', 'block_height'] },
+      {
+        name: 'messages', primaryKey: 'id', searchable: ['message', 'sender_address'], filterable: [], sortable: ['time', 'block_height'],
+      },
     ];
 
     for (const s of settings) {

@@ -154,7 +154,7 @@ pollsRouter.get('/:poll_id', async (req: Request, res: Response) => {
 
   // Block-time lookup for vote rows.
   const heights = Array.from(new Set(votes.map((v) => v.block_height)));
-  let timeByHeight = new Map<number, number>();
+  const timeByHeight = new Map<number, number>();
   if (heights.length > 0) {
     const r = await ch.query({
       query: 'SELECT height, toUnixTimestamp(time) AS time FROM blocks FINAL WHERE height IN ({hs: Array(UInt32)})',

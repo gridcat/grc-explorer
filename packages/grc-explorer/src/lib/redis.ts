@@ -123,12 +123,12 @@ function readWalletHash(address: string, raw: Record<string, string>): WalletSta
   if (!raw || Object.keys(raw).length === 0) return null;
   return {
     address,
-    balance:        BigInt(raw.balance ?? '0'),
-    totalReceived:  BigInt(raw.total_received ?? '0'),
-    totalSent:      BigInt(raw.total_sent ?? '0'),
-    txCount:        Number(raw.tx_count ?? '0'),
+    balance: BigInt(raw.balance ?? '0'),
+    totalReceived: BigInt(raw.total_received ?? '0'),
+    totalSent: BigInt(raw.total_sent ?? '0'),
+    txCount: Number(raw.tx_count ?? '0'),
     firstSeenBlock: raw.first_seen_block ? Number(raw.first_seen_block) : null,
-    lastSeenBlock:  raw.last_seen_block ? Number(raw.last_seen_block) : null,
+    lastSeenBlock: raw.last_seen_block ? Number(raw.last_seen_block) : null,
   };
 }
 
@@ -188,14 +188,14 @@ export async function applyWalletDeltasBatch(deltas: WalletDelta[]): Promise<voi
   const pipe = redis.pipeline();
   for (const [address, a] of agg) {
     const key = walletKey(address);
-    pipe.hincrby(key, 'balance',         a.delta.toString() as unknown as number);
-    pipe.hincrby(key, 'total_received',  a.received.toString() as unknown as number);
-    pipe.hincrby(key, 'total_sent',      a.sent.toString() as unknown as number);
-    pipe.hincrby(key, 'tx_count',        a.txCountDelta);
-    pipe.hsetnx (key, 'first_seen_block', String(a.firstHeight));
-    pipe.hset   (key, 'last_seen_block',  String(a.lastHeight));
-    pipe.zincrby(BY_BALANCE,   Number(a.delta), address);
-    pipe.zadd   (BY_LAST_SEEN, a.lastHeight,    address);
+    pipe.hincrby(key, 'balance', a.delta.toString() as unknown as number);
+    pipe.hincrby(key, 'total_received', a.received.toString() as unknown as number);
+    pipe.hincrby(key, 'total_sent', a.sent.toString() as unknown as number);
+    pipe.hincrby(key, 'tx_count', a.txCountDelta);
+    pipe.hsetnx(key, 'first_seen_block', String(a.firstHeight));
+    pipe.hset(key, 'last_seen_block', String(a.lastHeight));
+    pipe.zincrby(BY_BALANCE, Number(a.delta), address);
+    pipe.zadd(BY_LAST_SEEN, a.lastHeight, address);
   }
   await pipe.exec();
 }
@@ -219,19 +219,19 @@ export async function applyWalletDelta(
   const pipe = redis.pipeline();
   // hincrby's third arg signature is `number | string`; passing the
   // BigInt's string form keeps full integer precision over the wire.
-  pipe.hincrby(key, 'balance',         delta.toString() as unknown as number);
-  pipe.hincrby(key, 'total_received',  received.toString() as unknown as number);
-  pipe.hincrby(key, 'total_sent',      sent.toString() as unknown as number);
-  pipe.hincrby(key, 'tx_count',        txCountDelta);
-  pipe.hsetnx(key,  'first_seen_block', String(height));
-  pipe.hset   (key, 'last_seen_block',  String(height));
+  pipe.hincrby(key, 'balance', delta.toString() as unknown as number);
+  pipe.hincrby(key, 'total_received', received.toString() as unknown as number);
+  pipe.hincrby(key, 'total_sent', sent.toString() as unknown as number);
+  pipe.hincrby(key, 'tx_count', txCountDelta);
+  pipe.hsetnx(key, 'first_seen_block', String(height));
+  pipe.hset(key, 'last_seen_block', String(height));
   const results = await pipe.exec();
   if (!results) throw new Error(`applyWalletDelta: pipeline failed for ${address}`);
   const newBalance = BigInt(results[0][1] as string | number);
 
   await Promise.all([
-    redis.zadd(BY_BALANCE,   Number(newBalance), address),
-    redis.zadd(BY_LAST_SEEN, height,             address),
+    redis.zadd(BY_BALANCE, Number(newBalance), address),
+    redis.zadd(BY_LAST_SEEN, height, address),
   ]);
   return newBalance;
 }

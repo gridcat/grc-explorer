@@ -1,10 +1,10 @@
-import { toBigInt } from '../../src/services/jobs/PollWeightAggregator';
+import { toBigInt } from '../../src/lib/coerce';
 
-// `toBigInt` is the coercion helper that bridges between MySQL's
-// `SUM(BIGINT) -> DECIMAL` (which Prisma surfaces as `Prisma.Decimal`)
-// and our schema's BigInt columns. Bug it was added to fix:
-// PrismaClientValidationError on `polls.av_w_balance` because the
-// raw query returned a Decimal-shaped object.
+// `toBigInt` is the coercion helper that bridges between numeric values
+// of unknown shape (BigInt, number, string, Decimal-like) and a clean
+// `bigint`. Originally added inside PollWeightAggregator to handle
+// Prisma.Decimal returns from raw SUM(BIGINT) queries; promoted to
+// lib/coerce during the CH migration as a general-purpose utility.
 
 describe('toBigInt', () => {
   it('passes bigints through unchanged', () => {

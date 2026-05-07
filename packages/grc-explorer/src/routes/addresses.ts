@@ -309,7 +309,9 @@ addressesRouter.get('/:address/balance-history', async (req: Request, res: Respo
     data: {
       type: 'address_balance_history',
       id: address,
-      attributes: { address, from: fromTs, to: toTs, granularity, points },
+      attributes: {
+        address, from: fromTs, to: toTs, granularity, points,
+      },
     },
   }));
 });

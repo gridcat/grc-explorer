@@ -19,6 +19,7 @@ declare global {
 }
 
 if (!('toJSON' in BigInt.prototype)) {
+  // eslint-disable-next-line no-extend-native
   Object.defineProperty(BigInt.prototype, 'toJSON', {
     value(this: bigint): string {
       return this.toString();

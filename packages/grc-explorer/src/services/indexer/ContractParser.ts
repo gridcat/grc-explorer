@@ -1,7 +1,9 @@
 import { config } from '../../config';
 import { grc2halford, sumHalford } from '../../lib/halford';
 import { pubkeyToAddress } from '../../lib/address';
-import { ContractEnvelope, VerboseBlock, BlockTx, Vout } from './types';
+import {
+  ContractEnvelope, VerboseBlock, BlockTx, Vout,
+} from './types';
 
 /**
  * Pure transformation: a verbose=2 block + the prev-tx address/value
@@ -440,9 +442,9 @@ export function parseBeaconContract(
   // V1 hashboinc address for pre-Fern beacons (where body.public_key is
   // empty). Without the V1 fallback every pre-Fern add silently dropped
   // — that lost ~57 of the ~154 currently-active CPIDs on testnet.
-  const pubkeyHex = typeof body.publicKey === 'string'
-    ? body.publicKey
-    : (typeof body.public_key === 'string' ? body.public_key : '');
+  let pubkeyHex = '';
+  if (typeof body.publicKey === 'string') pubkeyHex = body.publicKey;
+  else if (typeof body.public_key === 'string') pubkeyHex = body.public_key;
   let address = pubkeyHex ? pubkeyToAddress(pubkeyHex, config.NETWORK) : null;
   if (!address && hashboinc) {
     address = parseLegacyV1Address(hashboinc);
@@ -566,11 +568,9 @@ export function parseMessageContract(
   if (contract.type !== MESSAGE_TYPE) return null;
   // body is a raw string for MESSAGE contracts — but be defensive about
   // daemons that ever wrap it.
-  const raw = typeof contract.body === 'string'
-    ? contract.body
-    : (contract.body && typeof contract.body === 'object'
-        ? JSON.stringify(contract.body)
-        : '');
+  let raw = '';
+  if (typeof contract.body === 'string') raw = contract.body;
+  else if (contract.body && typeof contract.body === 'object') raw = JSON.stringify(contract.body);
   const message = raw.slice(0, MESSAGE_MAX_LEN);
   if (message.length === 0) return null;
   return {

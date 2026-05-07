@@ -166,7 +166,7 @@ export function Network() {
         the long-tail precision survives JSON.parse. <code>avg</code> is
         a float (the daily sum / count divide is already lossy).{' '}
         <code>samples</code> is the block count for the day — gives a
-        rough "thinness" signal for early-PoW days.
+        rough &quot;thinness&quot; signal for early-PoW days.
       </Typography>
     </Box>
   );

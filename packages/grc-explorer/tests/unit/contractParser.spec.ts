@@ -126,7 +126,9 @@ describe('parseVoteContract', () => {
       version: 1,
       type: 'vote',
       action: 'A',
-      body: { key: 'foo;bar', miningId: 'INVESTOR', amount: 0, magnitude: 0, responses: 'no' },
+      body: {
+        key: 'foo;bar', miningId: 'INVESTOR', amount: 0, magnitude: 0, responses: 'no',
+      },
     };
     const rows = parseVoteContract(contract, 'legacyTx', 0, null);
     expect(rows[0].voterCpid).toBeNull();
@@ -254,24 +256,37 @@ describe('parseBeaconContract', () => {
     expect(row!.timestamp).toBe(1_700_000_000);
   });
 
-  it('returns null for an add missing the pubkey — the original beacon-loss bug', () => {
+  it('records an add with empty address when pubkey is missing — the V1-hashboinc fallback path', () => {
+    // Pre-Fern beacon-loss bug fix: even without body.publicKey, we emit
+    // a row (address = '' if the V1 hashboinc fallback can't synthesise
+    // one either). Losing the cpid event entirely was worse — it broke
+    // ~57 of ~154 testnet CPIDs. See ContractParser.parseBeaconContract.
     const contract: ContractEnvelope = {
       version: 2,
       type: 'beacon',
       action: 'A',
       body: { version: 2, cpid }, // no publicKey at all
     };
-    expect(parseBeaconContract(contract, 'tx', 0, 0)).toBeNull();
+    const row = parseBeaconContract(contract, 'tx', 0, 0);
+    expect(row).not.toBeNull();
+    expect(row!.cpid).toBe(cpid);
+    expect(row!.address).toBe('');
   });
 
-  it('returns null for an add with an invalid (non-hex) pubkey', () => {
+  it('records an add with empty address when pubkey is malformed (non-hex)', () => {
+    // Same V1-fallback path as above. A malformed pubkey can't derive
+    // an address; the row is still emitted with address = '' rather
+    // than dropped, matching the production semantics.
     const contract: ContractEnvelope = {
       version: 2,
       type: 'beacon',
       action: 'A',
       body: { version: 2, cpid, publicKey: 'not-a-valid-pubkey' },
     };
-    expect(parseBeaconContract(contract, 'tx', 0, 0)).toBeNull();
+    const row = parseBeaconContract(contract, 'tx', 0, 0);
+    expect(row).not.toBeNull();
+    expect(row!.cpid).toBe(cpid);
+    expect(row!.address).toBe('');
   });
 
   it('returns null for non-beacon contract types', () => {

@@ -37,6 +37,7 @@
     "@types/yayson": "^2.0.5",
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.3",
+    "typescript-eslint": "^8.0.0",
     "semantic-release": "^23.0.8",
     "semantic-release-monorepo": "^8.0.2",
     "typescript": "^5.2.2",

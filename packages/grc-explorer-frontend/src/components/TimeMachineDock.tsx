@@ -30,6 +30,14 @@ export function TimeMachineDock() {
   const tm = useTimeMachine();
   const theme = useTheme();
   const [copied, setCopied] = useState(false);
+  // Local "scrubbing" override. While the user is actively dragging the
+  // slider we paint with this value but DON'T broadcast — every pixel
+  // of drag would otherwise trigger a refetch in every panel. Once the
+  // user releases (Slider's onChangeCommitted), we push the final value
+  // up to the context and the consumers refetch exactly once.
+  // Hoisted above the live-mode early-return so the hook order stays
+  // identical between live and replay renders.
+  const [scrubAt, setScrubAt] = useState<number | null>(null);
 
   const handleCopyLink = () => {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return;
@@ -75,12 +83,6 @@ export function TimeMachineDock() {
   const min = tm.bounds?.minTs ?? 0;
   const max = tm.bounds?.maxTs ?? Math.floor(Date.now() / 1000);
   const committedAt = tm.at ?? max;
-  // Local "scrubbing" override. While the user is actively dragging the
-  // slider we paint with this value but DON'T broadcast — every pixel
-  // of drag would otherwise trigger a refetch in every panel. Once the
-  // user releases (Slider's onChangeCommitted), we push the final value
-  // up to the context and the consumers refetch exactly once.
-  const [scrubAt, setScrubAt] = useState<number | null>(null);
   const cur = scrubAt ?? committedAt;
   const formattedCur = new Date(cur * 1000).toLocaleString(undefined, {
     year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit',

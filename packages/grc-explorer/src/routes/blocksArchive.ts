@@ -101,15 +101,15 @@ async function periodStats(whereSql: string, queryParams: Record<string, unknown
   const b = blocksAgg[0] ?? {};
   const t = txsAgg[0] ?? {};
   return {
-    blockCount:      num(b.block_count),
-    txCount:         num(b.tx_count),
-    posCount:        num(b.pos_count),
+    blockCount: num(b.block_count),
+    txCount: num(b.tx_count),
+    posCount: num(b.pos_count),
     superblockCount: num(b.superblock_count),
-    bytesTotal:      num(b.bytes_total),
-    mintTotalGrc:    halford2grc(BigInt(b.mint_total ?? 0)),
-    valueMovedGrc:   halford2grc(BigInt(t.value_moved ?? 0)),
-    feeTotalGrc:     halford2grc(BigInt(t.fee_total ?? 0)),
-    userTxCount:     num(t.user_tx_count),
+    bytesTotal: num(b.bytes_total),
+    mintTotalGrc: halford2grc(BigInt(b.mint_total ?? 0)),
+    valueMovedGrc: halford2grc(BigInt(t.value_moved ?? 0)),
+    feeTotalGrc: halford2grc(BigInt(t.fee_total ?? 0)),
+    userTxCount: num(t.user_tx_count),
   };
 }
 
@@ -162,13 +162,13 @@ blocksArchiveRouter.get('/years', async (_req: Request, res: Response) => {
       type: 'archive-year',
       id: String(b.year),
       attributes: {
-        year:            Number(b.year),
-        blockCount:      num(b.block_count),
-        txCount:         num(b.tx_count),
+        year: Number(b.year),
+        blockCount: num(b.block_count),
+        txCount: num(b.tx_count),
         superblockCount: num(b.superblock_count),
-        mintTotalGrc:    halford2grc(BigInt(b.mint_total ?? 0)),
-        valueMovedGrc:   halford2grc(BigInt(t?.value_moved ?? 0)),
-        feeTotalGrc:     halford2grc(BigInt(t?.fee_total ?? 0)),
+        mintTotalGrc: halford2grc(BigInt(b.mint_total ?? 0)),
+        valueMovedGrc: halford2grc(BigInt(t?.value_moved ?? 0)),
+        feeTotalGrc: halford2grc(BigInt(t?.fee_total ?? 0)),
       },
     };
   });
@@ -182,7 +182,7 @@ blocksArchiveRouter.get('/years', async (_req: Request, res: Response) => {
  */
 blocksArchiveRouter.get('/:year', async (req: Request, res: Response) => {
   const year = parseInt(param(req, 'year'), 10);
-  if (!isYearShape(year)) return badParam(res, `year must be 2009-2099, got ${year}`);
+  if (!isYearShape(year)) { badParam(res, `year must be 2009-2099, got ${year}`); return; }
 
   const [stats, monthsBlocks, monthsTxs] = await Promise.all([
     periodStats('toYear(bucket_date) = {year:UInt16}', { year }),
@@ -230,13 +230,13 @@ blocksArchiveRouter.get('/:year', async (req: Request, res: Response) => {
   const months = monthsBlocks.map((m) => {
     const t = txByMonth.get(Number(m.month));
     return {
-      month:           Number(m.month),
-      blockCount:      num(m.block_count),
-      txCount:         num(m.tx_count),
+      month: Number(m.month),
+      blockCount: num(m.block_count),
+      txCount: num(m.tx_count),
       superblockCount: num(m.superblock_count),
-      mintTotalGrc:    halford2grc(BigInt(m.mint_total ?? 0)),
-      valueMovedGrc:   halford2grc(BigInt(t?.value_moved ?? 0)),
-      feeTotalGrc:     halford2grc(BigInt(t?.fee_total ?? 0)),
+      mintTotalGrc: halford2grc(BigInt(m.mint_total ?? 0)),
+      valueMovedGrc: halford2grc(BigInt(t?.value_moved ?? 0)),
+      feeTotalGrc: halford2grc(BigInt(t?.fee_total ?? 0)),
     };
   });
 
@@ -256,8 +256,8 @@ blocksArchiveRouter.get('/:year', async (req: Request, res: Response) => {
 blocksArchiveRouter.get('/:year/:month', async (req: Request, res: Response) => {
   const year = parseInt(param(req, 'year'), 10);
   const month = parseInt(param(req, 'month'), 10);
-  if (!isYearShape(year)) return badParam(res, `year must be 2009-2099, got ${year}`);
-  if (!isMonthShape(month)) return badParam(res, `month must be 1-12, got ${month}`);
+  if (!isYearShape(year)) { badParam(res, `year must be 2009-2099, got ${year}`); return; }
+  if (!isMonthShape(month)) { badParam(res, `month must be 1-12, got ${month}`); return; }
 
   const where = 'toYear(bucket_date) = {year:UInt16} AND toMonth(bucket_date) = {month:UInt8}';
   const queryParams = { year, month };
@@ -302,13 +302,13 @@ blocksArchiveRouter.get('/:year/:month', async (req: Request, res: Response) => 
   const days = daysBlocks.map((d) => {
     const t = txByDay.get(Number(d.day));
     return {
-      day:             Number(d.day),
-      blockCount:      num(d.block_count),
-      txCount:         num(d.tx_count),
+      day: Number(d.day),
+      blockCount: num(d.block_count),
+      txCount: num(d.tx_count),
       superblockCount: num(d.superblock_count),
-      mintTotalGrc:    halford2grc(BigInt(d.mint_total ?? 0)),
-      valueMovedGrc:   halford2grc(BigInt(t?.value_moved ?? 0)),
-      feeTotalGrc:     halford2grc(BigInt(t?.fee_total ?? 0)),
+      mintTotalGrc: halford2grc(BigInt(d.mint_total ?? 0)),
+      valueMovedGrc: halford2grc(BigInt(t?.value_moved ?? 0)),
+      feeTotalGrc: halford2grc(BigInt(t?.fee_total ?? 0)),
     };
   });
 
@@ -316,7 +316,9 @@ blocksArchiveRouter.get('/:year/:month', async (req: Request, res: Response) => 
     data: {
       type: 'archive-month',
       id: `${year}-${String(month).padStart(2, '0')}`,
-      attributes: { year, month, ...stats, days },
+      attributes: {
+        year, month, ...stats, days,
+      },
     },
   });
 });
@@ -333,9 +335,9 @@ blocksArchiveRouter.get('/:year/:month/:day', async (req: Request, res: Response
   const year = parseInt(param(req, 'year'), 10);
   const month = parseInt(param(req, 'month'), 10);
   const day = parseInt(param(req, 'day'), 10);
-  if (!isYearShape(year)) return badParam(res, `year must be 2009-2099, got ${year}`);
-  if (!isMonthShape(month)) return badParam(res, `month must be 1-12, got ${month}`);
-  if (!isDayShape(day)) return badParam(res, `day must be 1-31, got ${day}`);
+  if (!isYearShape(year)) { badParam(res, `year must be 2009-2099, got ${year}`); return; }
+  if (!isMonthShape(month)) { badParam(res, `month must be 1-12, got ${month}`); return; }
+  if (!isDayShape(day)) { badParam(res, `day must be 1-31, got ${day}`); return; }
 
   // toDate({iso}) catches Feb 30 etc. by returning 1970-01-01 — we
   // cross-check against the input components below so a malformed
@@ -344,7 +346,7 @@ blocksArchiveRouter.get('/:year/:month/:day', async (req: Request, res: Response
   const dt = new Date(`${iso}T00:00:00Z`);
   if (Number.isNaN(dt.getTime()) || dt.getUTCFullYear() !== year
       || dt.getUTCMonth() + 1 !== month || dt.getUTCDate() !== day) {
-    return badParam(res, `invalid date ${iso}`);
+    badParam(res, `invalid date ${iso}`); return;
   }
 
   const dayStart = Math.floor(dt.getTime() / 1000);
@@ -372,7 +374,9 @@ blocksArchiveRouter.get('/:year/:month/:day', async (req: Request, res: Response
         ORDER BY height DESC
         LIMIT {limit:UInt32} OFFSET {offset:UInt32}
       `,
-      query_params: { start: dayStart, end: dayEnd, limit: pageSize, offset },
+      query_params: {
+        start: dayStart, end: dayEnd, limit: pageSize, offset,
+      },
       format: 'JSONEachRow',
     }).then((r) => r.json<{
       height: number; hash: string; time: string;
@@ -384,17 +388,17 @@ blocksArchiveRouter.get('/:year/:month/:day', async (req: Request, res: Response
   ]);
 
   const blocks = rows.map((b) => ({
-    height:       b.height,
-    hash:         b.hash,
-    time:         Math.floor(new Date(b.time).getTime() / 1000),
-    version:      b.n_version,
-    size:         b.size,
-    txCount:      b.tx_count,
-    isPos:        b.is_pos,
+    height: b.height,
+    hash: b.hash,
+    time: Math.floor(new Date(b.time).getTime() / 1000),
+    version: b.n_version,
+    size: b.size,
+    txCount: b.tx_count,
+    isPos: b.is_pos,
     minerAddress: b.miner_address,
-    stakerCpid:   b.staker_cpid,
+    stakerCpid: b.staker_cpid,
     isSuperblock: b.is_superblock,
-    mintGrc:      halford2grc(BigInt(b.mint)),
+    mintGrc: halford2grc(BigInt(b.mint)),
   }));
 
   res.status(StatusCodes.OK).send({
@@ -402,7 +406,10 @@ blocksArchiveRouter.get('/:year/:month/:day', async (req: Request, res: Response
       type: 'archive-day',
       id: iso,
       attributes: {
-        year, month, day, iso,
+        year,
+        month,
+        day,
+        iso,
         ...stats,
         blocks,
         pagination: {

@@ -199,10 +199,15 @@ networkRouter.get('/history', async (req: Request, res: Response) => {
   }
 
   if (step > 0 && points.length > 0) {
-    const buckets = new Map<number, { sumPeer: number; sumMempool: number; sumTip: number; lastDifficulty: string; n: number }>();
+    type Bucket = {
+      sumPeer: number; sumMempool: number; sumTip: number; lastDifficulty: string; n: number;
+    };
+    const buckets = new Map<number, Bucket>();
     for (const p of points) {
       const key = Math.floor(p.ts / step) * step;
-      const b = buckets.get(key) ?? { sumPeer: 0, sumMempool: 0, sumTip: 0, lastDifficulty: p.difficulty, n: 0 };
+      const b = buckets.get(key) ?? {
+        sumPeer: 0, sumMempool: 0, sumTip: 0, lastDifficulty: p.difficulty, n: 0,
+      };
       b.sumPeer += p.peerCount;
       b.sumMempool += p.mempoolSize;
       b.sumTip += p.tipHeight;
@@ -225,7 +230,9 @@ networkRouter.get('/history', async (req: Request, res: Response) => {
     data: {
       type: 'network_history',
       id: `last_${hours}h`,
-      attributes: { hours, endAt, step, points },
+      attributes: {
+        hours, endAt, step, points,
+      },
     },
   }));
 });
@@ -398,7 +405,9 @@ networkRouter.get('/bounds', async (_req: Request, res: Response) => {
     minTs: number | null; maxTs: number | null;
     minHeight: number | null; maxHeight: number | null;
   }>();
-  const r = rows[0] ?? { minTs: null, maxTs: null, minHeight: null, maxHeight: null };
+  const r = rows[0] ?? {
+    minTs: null, maxTs: null, minHeight: null, maxHeight: null,
+  };
   res.status(StatusCodes.OK).send(withMeta({
     data: {
       type: 'time_bounds',
