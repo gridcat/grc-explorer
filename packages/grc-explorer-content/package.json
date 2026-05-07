@@ -1,0 +1,11 @@
+{
+  "name": "grc-explorer-content",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Markdown articles + structured content for the Gridcoin explorer (year reviews, fork pages, project profiles). Pure data — no runtime code.",
+  "scripts": {
+    "test:lint": "echo 'no lint'",
+    "test:unit": "echo 'no tests'",
+    "typecheck": "echo 'no typecheck'"
+  }
+}

@@ -1,0 +1,42 @@
+FROM node:22.16.0 AS builder
+
+WORKDIR /usr/src/app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+# `next build` inlines every NEXT_PUBLIC_* into the client bundle at
+# build time — they cannot be flipped at runtime. We therefore ship
+# one image per network: a single `NETWORK` build arg picks which
+# .env file is sourced. Mainnet uses the committed .env; testnet
+# overlays .env.testnet via .env.production.local (highest precedence
+# in Next.js's env-file load order). Same pattern as
+# stamp.gridcoin.club's Dockerfile.
+ARG NETWORK=mainnet
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN if [ "$NETWORK" = "testnet" ]; then \
+      echo "Building for testnet — overlaying .env.testnet onto .env.production.local"; \
+      cp .env.testnet .env.production.local; \
+    fi && \
+    npm run build
+
+FROM node:22.16.0
+
+WORKDIR /usr/src/app
+
+COPY package*.json ./
+RUN npm ci --only=production
+COPY --from=builder /usr/src/app/.next ./.next
+COPY --from=builder /usr/src/app/public ./public
+COPY --from=builder /usr/src/app/next.config.js ./next.config.js
+
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser && \
+    chown -R appuser:appgroup /usr/src/app
+USER appuser
+
+EXPOSE 3002
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+CMD ["npx", "next", "start", "-p", "3002"]

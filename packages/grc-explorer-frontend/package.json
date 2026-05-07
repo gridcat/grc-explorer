@@ -1,0 +1,69 @@
+{
+  "name": "grc-explorer-frontend",
+  "version": "0.0.0",
+  "private": true,
+  "commitlint": {
+    "extends": [
+      "@commitlint/config-conventional"
+    ]
+  },
+  "dependencies": {
+    "@emotion/cache": "^11.14.0",
+    "@emotion/react": "^11.14.0",
+    "@emotion/server": "^11.11.0",
+    "@emotion/styled": "^11.14.1",
+    "@mui/icons-material": "^9.0.0",
+    "@mui/material": "^9.0.0",
+    "axios": "^1.15.0",
+    "date-fns": "^4.1.0",
+    "framer-motion": "^11.18.2",
+    "next": "16.2.3",
+    "prism-react-renderer": "^2.4.1",
+    "react": "19.2.5",
+    "react-dom": "19.2.5",
+    "recharts": "^2.15.0",
+    "sharp": "^0.34.5",
+    "yayson": "^3.0.0"
+  },
+  "devDependencies": {
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/commit-analyzer": "^12.0.0",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^10.0.3",
+    "@semantic-release/npm": "^12.0.2",
+    "@semantic-release/release-notes-generator": "^13.0.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "19.2.14",
+    "@types/yayson": "^2.0.5",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^16.2.3",
+    "semantic-release": "^23.0.8",
+    "semantic-release-monorepo": "^8.0.2",
+    "typescript": "^5.2.2",
+    "vitest": "^4.1.4"
+  },
+  "release": {
+    "plugins": [
+      "@semantic-release/commit-analyzer",
+      "@semantic-release/release-notes-generator",
+      "@semantic-release/changelog",
+      "@semantic-release/npm",
+      [
+        "@semantic-release/git",
+        {
+          "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+        }
+      ],
+      "@semantic-release/github"
+    ]
+  },
+  "scripts": {
+    "build": "next build",
+    "dev": "next dev -p 3002",
+    "semantic-release": "semantic-release -e semantic-release-monorepo",
+    "start": "next start -p 3002",
+    "test:lint": "eslint .",
+    "test:unit": "vitest run",
+    "typecheck": "tsc --project ./tsconfig.json --noEmit --pretty false"
+  }
+}

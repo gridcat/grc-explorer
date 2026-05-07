@@ -1,0 +1,36 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "grc-explorer",
+  "root": "packages/grc-explorer",
+  "projectType": "application",
+  "targets": {
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run typecheck",
+        "cwd": "packages/grc-explorer"
+      }
+    },
+    "test:lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run test:lint",
+        "cwd": "packages/grc-explorer"
+      }
+    },
+    "test:unit": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run test:unit",
+        "cwd": "packages/grc-explorer"
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run build",
+        "cwd": "packages/grc-explorer"
+      }
+    }
+  }
+}

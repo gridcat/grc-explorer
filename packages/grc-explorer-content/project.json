@@ -1,0 +1,20 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "grc-explorer-content",
+  "root": "packages/grc-explorer-content",
+  "projectType": "library",
+  "targets": {
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": { "command": "echo 'no typecheck'", "cwd": "packages/grc-explorer-content" }
+    },
+    "test:lint": {
+      "executor": "nx:run-commands",
+      "options": { "command": "echo 'no lint'", "cwd": "packages/grc-explorer-content" }
+    },
+    "test:unit": {
+      "executor": "nx:run-commands",
+      "options": { "command": "echo 'no tests'", "cwd": "packages/grc-explorer-content" }
+    }
+  }
+}
