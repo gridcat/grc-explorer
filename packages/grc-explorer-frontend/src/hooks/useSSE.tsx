@@ -14,7 +14,9 @@ interface SSEContextValue {
 
 const SSEContext = createContext<SSEContextValue | null>(null);
 
-const PUBLIC_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:7002';
+// See lib/api.ts — same rationale: fall back to '/api' so a prod build
+// without the env never leaks dev localhost into the EventSource URL.
+const PUBLIC_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 
 /**
  * One shared EventSource per browser tab. Components register topic

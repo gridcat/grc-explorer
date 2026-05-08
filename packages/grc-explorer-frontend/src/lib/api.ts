@@ -4,7 +4,12 @@ import axios, { AxiosInstance } from 'axios';
 //   NEXT_PUBLIC_API_URL         — used in the browser
 //   NEXT_PUBLIC_API_URL_SERVER  — used during SSR / getServerSideProps
 //                                 (typically the internal Docker host)
-const PUBLIC_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:7002';
+// Fall back to '/api' (same-origin via nginx) rather than the dev
+// server, so a prod image built without the env present still resolves
+// against the public ingress instead of leaking localhost into the
+// client bundle. Dev is unaffected — `.env` always supplies the value
+// explicitly when running `npm run dev`.
+const PUBLIC_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 const SERVER_BASE = process.env.NEXT_PUBLIC_API_URL_SERVER ?? PUBLIC_BASE;
 
 const isServer = typeof window === 'undefined';
