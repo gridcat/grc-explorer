@@ -301,35 +301,39 @@ async function wipeClickhouseFull(includeMempool: boolean): Promise<void> {
     return;
   }
 
-  // Default: TRUNCATE every table except the preserved set. Materialised
-  // views (engine = MaterializedView) wrap underlying *_inner / *_target
-  // storage and can't be TRUNCATEd directly — the engine name `Materialized*`
-  // covers their backing tables which DO support TRUNCATE.
+  // Default: TRUNCATE every table except the preserved set.
+  //
+  // Two filters worth being precise about:
+  //   1. `.inner_id.<uuid>` rows are the backing storage CH auto-creates
+  //      for MaterializedViews under the Atomic database engine. Their
+  //      names start with a literal dot which the SQL parser rejects in
+  //      `TRUNCATE TABLE .inner_id…`. They're not directly addressable
+  //      anyway — skip them entirely; the MV row itself handles their
+  //      data.
+  //   2. CH 21+ supports `TRUNCATE` on a MaterializedView directly,
+  //      which empties the backing storage. We rely on that here so
+  //      MV-accumulated state (e.g. difficulty_daily, fee_quantiles_1h)
+  //      doesn't survive a wipe and then double-count once the indexer
+  //      replays from genesis.
   console.log(`→ CH: TRUNCATE every chain-derived table (preserving ${[...PRESERVED_TABLES].join(', ')})`);
   const tables = await chQueryJson<{ name: string; engine: string }>(
-    `SELECT name, engine FROM system.tables WHERE database = '${CH_DB}' AND NOT is_temporary`,
+    `SELECT name, engine FROM system.tables
+     WHERE database = '${CH_DB}'
+       AND NOT is_temporary
+       AND name NOT LIKE '.inner%'`,
   );
   let truncated = 0;
   let skippedPreserved = 0;
-  let skippedView = 0;
   for (const t of tables) {
     if (PRESERVED_TABLES.has(t.name)) {
       skippedPreserved += 1;
-      continue;
-    }
-    if (t.engine === 'MaterializedView') {
-      // Backing storage gets TRUNCATEd via the underlying *_inner table
-      // CH auto-creates; the view itself is just a query against it.
-      skippedView += 1;
       continue;
     }
     // eslint-disable-next-line no-await-in-loop
     await chPost(`TRUNCATE TABLE ${t.name}`);
     truncated += 1;
   }
-  console.log(
-    `  truncated ${truncated} table(s), preserved ${skippedPreserved}, skipped ${skippedView} view(s)`,
-  );
+  console.log(`  truncated ${truncated} table(s), preserved ${skippedPreserved}`);
 }
 
 async function wipeRedisFull(): Promise<void> {
