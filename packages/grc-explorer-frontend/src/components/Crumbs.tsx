@@ -27,6 +27,12 @@ export interface CrumbItem {
   href?: string;
 }
 
+// Shared parent-section crumb for every page that lives under the
+// "Researchers" nav menu. Centralising the (label, href) pair means
+// renaming the section landing — or renaming the section itself —
+// is a single-line edit, not a 14-site sweep.
+export const RESEARCHERS_CRUMB: CrumbItem = { label: 'Researchers', href: '/superblocks' };
+
 export function Crumbs({ items, sx }: { items: CrumbItem[]; sx?: object }) {
   return (
     <Box

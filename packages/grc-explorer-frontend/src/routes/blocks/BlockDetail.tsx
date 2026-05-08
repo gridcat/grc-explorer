@@ -39,6 +39,8 @@ export interface ClaimSummary {
   research_subsidy: string;
   magnitude: number;
   is_mrc: boolean;
+  mrc_foundation_fees?: string;
+  mrc_staker_fees?: string;
 }
 
 export interface ClaimMrc {
@@ -112,10 +114,12 @@ export function BlockDetail({
           research_subsidy: c.research_subsidy?.toString() ?? '0',
           magnitude: c.magnitude ?? 0,
           is_mrc: !!c.is_mrc,
+          mrc_foundation_fees: c.mrc_foundation_fees?.toString() ?? '0',
+          mrc_staker_fees: c.mrc_staker_fees?.toString() ?? '0',
         });
       }
     }).catch(() => { /* ignore */ });
-  }, [height]);
+  }, [height, block]);
 
   if (!block) return <Layout><Typography>Loading…</Typography></Layout>;
 
@@ -210,6 +214,18 @@ export function BlockDetail({
               <DetailRow label="Block reward" value={`${formatGrc(claim.block_subsidy)} GRC`} />
               <DetailRow label="Research reward" value={`${formatGrc(claim.research_subsidy)} GRC`} />
               <DetailRow label="Magnitude" value={claim.magnitude.toFixed(4)} />
+              {claim.is_mrc && (
+                <>
+                  <DetailRow
+                    label="MRC fees → staker"
+                    value={`${formatGrc(claim.mrc_staker_fees ?? '0')} GRC`}
+                  />
+                  <DetailRow
+                    label="MRC fees → foundation"
+                    value={`${formatGrc(claim.mrc_foundation_fees ?? '0')} GRC`}
+                  />
+                </>
+              )}
               {claim.is_mrc && <Chip label="MRC" size="small" color="secondary" sx={{ mt: 1 }} />}
             </CardContent>
           </Card>
@@ -324,6 +340,8 @@ export async function fetchBlockDetailProps(height: string): Promise<BlockDetail
         research_subsidy: c.research_subsidy?.toString() ?? '0',
         magnitude: c.magnitude ?? 0,
         is_mrc: !!c.is_mrc,
+        mrc_foundation_fees: c.mrc_foundation_fees?.toString() ?? '0',
+        mrc_staker_fees: c.mrc_staker_fees?.toString() ?? '0',
       } : null,
       initialMrcs: r.data?.mrcs ?? [],
       initialTipHeight: typeof r.data?.tipHeight === 'number' ? r.data.tipHeight : null,

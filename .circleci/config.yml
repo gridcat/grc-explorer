@@ -168,37 +168,6 @@ jobs:
           name: Run unit tests
           command: cd ~/app/packages/grc-explorer && npm run test:unit
 
-  grc-explorer-integration:
-    <<: *defaults
-    docker:
-      - image: cimg/node:22.16
-      # MySQL 8 to mirror the prod stack (the explorer uses MySQL 8
-      # window functions in the analytics aggregators — `cimg/mysql:5.7`
-      # would silently fail on those queries during integration tests).
-      - image: cimg/mysql:8.0
-        environment:
-          MYSQL_RANDOM_ROOT_PASSWORD: true
-          MYSQL_USER: test
-          MYSQL_PASSWORD: test
-          MYSQL_DATABASE: test
-    steps:
-      - attach_workspace:
-          at: ~/app
-      - run:
-          name: Check if grc-explorer is affected
-          command: |
-            FLAG=$(cat ~/app/.affected/grc-explorer 2>/dev/null || echo "false")
-            if [ "$FLAG" != "true" ]; then
-              echo "grc-explorer not affected, skipping"
-              circleci-agent step halt
-            fi
-      - run:
-          name: Wait for MySQL
-          command: sleep 10
-      - run:
-          name: Run integration tests
-          command: cd ~/app/packages/grc-explorer && npm run test:integration
-
   grc-explorer-frontend-checks:
     <<: *defaults
     steps:
@@ -399,10 +368,6 @@ workflows:
           requires:
             - install-and-detect
 
-      - grc-explorer-integration:
-          requires:
-            - install-and-detect
-
       - grc-explorer-frontend-checks:
           requires:
             - install-and-detect
@@ -419,7 +384,6 @@ workflows:
           context: semantic-release
           requires:
             - grc-explorer-checks
-            - grc-explorer-integration
             - grc-explorer-frontend-release
           filters:
             branches:

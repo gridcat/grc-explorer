@@ -35,7 +35,7 @@ async function readIfExists(filePath: string): Promise<string | null> {
     // operator can see why prose isn't appearing on the page.
     if (code === 'ENOENT') return null;
     if (code === 'ENOTDIR' || (err as NodeJS.ErrnoException)?.errno === -20) return null;
-    // eslint-disable-next-line no-console
+
     console.warn(`[contentLoader] readFile failed for ${filePath}: ${(err as Error).message}`);
     return null;
   }
@@ -53,7 +53,7 @@ export async function loadYearArticle(year: number): Promise<Frontmatter | null>
   const file = path.join(contentDir(), 'blocks', 'years', `${year}.md`);
   const raw = await readIfExists(file);
   if (debug()) {
-    // eslint-disable-next-line no-console
+
     console.log(`[contentLoader] loadYearArticle(${year}) → ${file} ${raw ? '(found)' : '(missing)'}`);
   }
   return raw ? parseFrontmatter(raw) : null;

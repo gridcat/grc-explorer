@@ -118,11 +118,11 @@ function CodeBlockInner({ code, caption, language = 'text' }: CodeBlockProps) {
             {tokens.map((line, i) => {
               const lineProps = getLineProps({ line });
               return (
-                // eslint-disable-next-line react/no-array-index-key
+
                 <div key={i} {...lineProps}>
                   {line.map((token, j) => {
                     const tokenProps = getTokenProps({ token });
-                    // eslint-disable-next-line react/no-array-index-key
+
                     return <span key={j} {...tokenProps} />;
                   })}
                 </div>

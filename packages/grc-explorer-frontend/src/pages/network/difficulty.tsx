@@ -13,7 +13,7 @@ import { Layout } from '../../layouts/Layout';
 import {
   ChartAxes, ChartFrame, ChartFrameProvider, ChartTooltip, linearScale, niceTicks,
 } from '../../components/charts/SvgChart';
-import { Crumbs } from '../../components/Crumbs';
+import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { api } from '../../lib/api';
 
 interface Point {
@@ -166,12 +166,12 @@ export default function DifficultyHistory({ points }: DifficultyHistoryProps) {
         <Crumbs
           items={selectedYear !== null
             ? [
-              { label: 'Researchers', href: '/superblocks' },
+              RESEARCHERS_CRUMB,
               { label: 'Difficulty', href: '/network/difficulty' },
               { label: String(selectedYear) },
             ]
             : [
-              { label: 'Researchers', href: '/superblocks' },
+              RESEARCHERS_CRUMB,
               { label: 'Difficulty' },
             ]}
         />

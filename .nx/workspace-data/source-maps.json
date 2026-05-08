@@ -1,0 +1,1094 @@
+{
+  ".": {
+    "root": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "name": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "tags": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "tags.npm:private": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.0": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.1": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.2": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.3": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.4": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.5": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.js": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.js.packageName": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.js.isInPackageManagerWorkspaces": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:deps:fix": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:deps:fix.executor": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:deps:fix.options": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:deps:fix.metadata": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:deps:fix.options.script": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:deps:fix.metadata.scriptContent": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:deps:fix.metadata.runCommand": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:deps:lint": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:deps:lint.executor": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:deps:lint.options": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:deps:lint.metadata": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:deps:lint.options.script": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:deps:lint.metadata.scriptContent": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:deps:lint.metadata.runCommand": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test.executor": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test.options": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test.metadata": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test.options.script": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test.metadata.scriptContent": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test.metadata.runCommand": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test:lint": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test:lint.executor": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test:lint.options": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test:lint.metadata": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test:lint.options.script": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test:lint.metadata.scriptContent": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test:lint.metadata.runCommand": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test:unit": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test:unit.executor": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test:unit.options": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test:unit.metadata": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test:unit.options.script": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test:unit.metadata.scriptContent": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:test:unit.metadata.runCommand": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:typecheck": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:typecheck.executor": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:typecheck.options": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:typecheck.metadata": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:typecheck.options.script": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:typecheck.metadata.scriptContent": [
+      "package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev:typecheck.metadata.runCommand": [
+      "package.json",
+      "nx/core/package-json"
+    ]
+  },
+  "packages/grc-explorer": {
+    "root": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "name": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "tags": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "tags.npm:private": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.0": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.1": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.2": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.3": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.4": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.5": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.6": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.7": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.8": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.9": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.10": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.11": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.description": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.js": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.js.packageName": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.js.packageMain": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.js.isInPackageManagerWorkspaces": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.build:watch": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.build:watch.executor": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.build:watch.options": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.build:watch.metadata": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.build:watch.options.script": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.build:watch.metadata.scriptContent": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.build:watch.metadata.runCommand": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.clean": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.clean.executor": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.clean.options": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.clean.metadata": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.clean.options.script": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.clean.metadata.scriptContent": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.clean.metadata.runCommand": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.commit": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.commit.executor": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.commit.options": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.commit.metadata": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.commit.options.script": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.commit.metadata.scriptContent": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.commit.metadata.runCommand": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.predev": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.predev.executor": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.predev.options": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.predev.metadata": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.predev.options.script": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.predev.metadata.scriptContent": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.predev.metadata.runCommand": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev.executor": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev.options": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev.metadata": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev.options.script": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev.metadata.scriptContent": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev.metadata.runCommand": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.ch:migrate": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.ch:migrate.executor": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.ch:migrate.options": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.ch:migrate.metadata": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.ch:migrate.options.script": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.ch:migrate.metadata.scriptContent": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.ch:migrate.metadata.runCommand": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.wipe": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.wipe.executor": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.wipe.options": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.wipe.metadata": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.wipe.options.script": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.wipe.metadata.scriptContent": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.wipe.metadata.runCommand": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.semantic-release": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.semantic-release.executor": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.semantic-release.options": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.semantic-release.metadata": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.semantic-release.options.script": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.semantic-release.metadata.scriptContent": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.semantic-release.metadata.runCommand": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.prestart": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.prestart.executor": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.prestart.options": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.prestart.metadata": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.prestart.options.script": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.prestart.metadata.scriptContent": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.prestart.metadata.runCommand": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start.executor": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start.options": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start.metadata": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start.options.script": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start.metadata.scriptContent": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start.metadata.runCommand": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start:dev": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start:dev.executor": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start:dev.options": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start:dev.metadata": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start:dev.options.script": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start:dev.metadata.scriptContent": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start:dev.metadata.runCommand": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.test": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.test.executor": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.test.options": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.test.metadata": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.test.options.script": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.test.metadata.scriptContent": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.test.metadata.runCommand": [
+      "packages/grc-explorer/package.json",
+      "nx/core/package-json"
+    ],
+    "$schema": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "projectType": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.typecheck": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.typecheck.executor": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.typecheck.options": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.typecheck.options.command": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.typecheck.options.cwd": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:lint": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:lint.executor": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:lint.options": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:lint.options.command": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:lint.options.cwd": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:unit": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:unit.executor": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:unit.options": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:unit.options.command": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:unit.options.cwd": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.build": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.build.executor": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.build.options": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.build.options.command": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.build.options.cwd": [
+      "packages/grc-explorer/project.json",
+      "nx/core/project-json"
+    ]
+  },
+  "packages/grc-explorer-content": {
+    "root": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "name": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "tags": [
+      "packages/grc-explorer-content/package.json",
+      "nx/core/package-json"
+    ],
+    "tags.npm:private": [
+      "packages/grc-explorer-content/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups": [
+      "packages/grc-explorer-content/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.description": [
+      "packages/grc-explorer-content/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.js": [
+      "packages/grc-explorer-content/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.js.packageName": [
+      "packages/grc-explorer-content/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.js.isInPackageManagerWorkspaces": [
+      "packages/grc-explorer-content/package.json",
+      "nx/core/package-json"
+    ],
+    "targets": [
+      "packages/grc-explorer-content/package.json",
+      "nx/core/package-json"
+    ],
+    "$schema": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "projectType": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.typecheck": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.typecheck.executor": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.typecheck.options": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.typecheck.options.command": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.typecheck.options.cwd": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:lint": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:lint.executor": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:lint.options": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:lint.options.command": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:lint.options.cwd": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:unit": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:unit.executor": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:unit.options": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:unit.options.command": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:unit.options.cwd": [
+      "packages/grc-explorer-content/project.json",
+      "nx/core/project-json"
+    ]
+  },
+  "packages/grc-explorer-frontend": {
+    "root": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "name": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "tags": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "tags.npm:private": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.0": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.1": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.targetGroups.NPM Scripts.2": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.js": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.js.packageName": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "metadata.js.isInPackageManagerWorkspaces": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev.executor": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev.options": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev.metadata": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev.options.script": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev.metadata.scriptContent": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.dev.metadata.runCommand": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.semantic-release": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.semantic-release.executor": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.semantic-release.options": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.semantic-release.metadata": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.semantic-release.options.script": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.semantic-release.metadata.scriptContent": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.semantic-release.metadata.runCommand": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start.executor": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start.options": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start.metadata": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start.options.script": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start.metadata.scriptContent": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "targets.start.metadata.runCommand": [
+      "packages/grc-explorer-frontend/package.json",
+      "nx/core/package-json"
+    ],
+    "$schema": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "projectType": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.typecheck": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.typecheck.executor": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.typecheck.options": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.typecheck.options.command": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.typecheck.options.cwd": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:lint": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:lint.executor": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:lint.options": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:lint.options.command": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:lint.options.cwd": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:unit": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:unit.executor": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:unit.options": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:unit.options.command": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.test:unit.options.cwd": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.build": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.build.executor": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.build.options": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.build.options.command": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ],
+    "targets.build.options.cwd": [
+      "packages/grc-explorer-frontend/project.json",
+      "nx/core/project-json"
+    ]
+  }
+}

@@ -53,9 +53,23 @@ export function Cpids() {
   "beacons": [
     { "blockHeight": 88000, "address": "S6XqhSVj...",
       "expiration": 1791000000, "status": "active" }
+  ],
+  "mrcs": [
+    { "txId": "4f0d7710...", "researchSubsidy": "1228.01",
+      "feeOffered": "0.01093607", "firstSeen": 1776612237,
+      "blockHeight": 3154442, "blockTime": 1776612240,
+      "status": "confirmed", "waitSeconds": 3 }
   ]
 }`}
       />
+      <Typography gutterBottom variant="body1" component="p">
+        <code>mrcs</code> carries this CPID&apos;s MRC request history
+        (last 100, newest first). <code>status</code> is{' '}
+        <code>pending</code> | <code>confirmed</code> | <code>evicted</code>;
+        <code> waitSeconds</code> is <code>blockTime − firstSeen</code> for
+        confirmed requests we observed enter mempool, <code>null</code>
+        otherwise.
+      </Typography>
 
       <Typography variant="h6" component="h3" id="cpids-blocks" sx={{ pt: 2, pb: 1 }}>
         Blocks staked

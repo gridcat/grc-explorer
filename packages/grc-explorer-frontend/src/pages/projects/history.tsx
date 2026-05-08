@@ -12,7 +12,7 @@ import { Layout } from '../../layouts/Layout';
 import {
   ChartAxes, ChartFrame, ChartFrameProvider, linearScale, niceTicks,
 } from '../../components/charts/SvgChart';
-import { Crumbs } from '../../components/Crumbs';
+import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { api } from '../../lib/api';
 
 interface HistoryEvent {
@@ -150,13 +150,13 @@ export default function ProjectHistory({ points }: ProjectHistoryProps) {
         <Crumbs
           items={selectedYear !== null
             ? [
-              { label: 'Researchers', href: '/superblocks' },
+              RESEARCHERS_CRUMB,
               { label: 'BOINC projects', href: '/' },
               { label: 'History', href: '/projects/history' },
               { label: String(selectedYear) },
             ]
             : [
-              { label: 'Researchers', href: '/superblocks' },
+              RESEARCHERS_CRUMB,
               { label: 'BOINC projects', href: '/' },
               { label: 'History' },
             ]}
@@ -721,7 +721,7 @@ function YearGantt({
       if (a.endStatus !== b.endStatus) return a.endStatus === 'active' ? -1 : 1;
       return a.name.localeCompare(b.name);
     });
-  }, [allPoints, yearPoints, year, yearStartIso, yearEndIso]);
+  }, [allPoints, yearPoints, yearStartIso, yearEndIso]);
 
   if (timelines.length === 0) {
     return (
@@ -1036,7 +1036,7 @@ function YearTreemap({
       if (activeDays > 0) out.push({ name: project, activeDays, endStatus });
     }
     return out.sort((a, b) => b.activeDays - a.activeDays);
-  }, [allPoints, yearPoints, year, yearStartIso]);
+  }, [allPoints, yearPoints, yearStartIso]);
 
   const totalDaysInYear = yearPoints.length || 365;
 

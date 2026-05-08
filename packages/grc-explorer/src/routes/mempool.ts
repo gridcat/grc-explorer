@@ -4,6 +4,7 @@ import { ch } from '../lib/ch';
 import { halford2grc } from '../lib/halford';
 import { getPagination } from '../lib/pagination';
 import { withMeta } from '../lib/responseMeta';
+import { tsToUnix } from '../lib/time';
 import { parseAt } from '../lib/timeMachine';
 import { MempoolTxPresenter } from '../presenters';
 
@@ -19,13 +20,7 @@ interface MempoolRow {
   raw_json: string;
   confirmed_at: number | string | null;
   evicted_at: number | string | null;
-}
-
-function tsToUnix(t: number | string | null | undefined): number | null {
-  if (t === null || t === undefined) return null;
-  if (typeof t === 'number') return t;
-  const ms = new Date(t).getTime();
-  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+  is_mrc: boolean | number;
 }
 
 function presentMempoolRow(r: MempoolRow) {
@@ -35,24 +30,32 @@ function presentMempoolRow(r: MempoolRow) {
     fee_estimate: BigInt(r.fee_estimate),
     confirmed_at: tsToUnix(r.confirmed_at),
     evicted_at: tsToUnix(r.evicted_at),
+    is_mrc: Boolean(r.is_mrc),
   };
 }
 
 // Active mempool at instant T = entered before T, hadn't confirmed or
 // been evicted by T. Live mode (T undefined) = "active right now" =
 // confirmed_at IS NULL AND evicted_at IS NULL.
-function snapshotWhere(at: number | undefined): { sql: string; params: Record<string, unknown> } {
+//
+// `prefix` qualifies the column references for callers that JOIN
+// mempool_txs against another table — e.g., 'mp.'. Default empty for
+// the single-table case.
+function snapshotWhere(
+  at: number | undefined,
+  prefix = '',
+): { sql: string; params: Record<string, unknown> } {
   if (at === undefined) {
     return {
-      sql: 'confirmed_at IS NULL AND evicted_at IS NULL',
+      sql: `${prefix}confirmed_at IS NULL AND ${prefix}evicted_at IS NULL`,
       params: {},
     };
   }
   return {
     sql: `
-      first_seen <= toDateTime({at: UInt32})
-      AND (confirmed_at IS NULL OR confirmed_at > toDateTime({at: UInt32}))
-      AND (evicted_at   IS NULL OR evicted_at   > toDateTime({at: UInt32}))
+      ${prefix}first_seen <= toDateTime({at: UInt32})
+      AND (${prefix}confirmed_at IS NULL OR ${prefix}confirmed_at > toDateTime({at: UInt32}))
+      AND (${prefix}evicted_at   IS NULL OR ${prefix}evicted_at   > toDateTime({at: UInt32}))
     `,
     params: { at },
   };
@@ -62,23 +65,30 @@ mempoolRouter.get('/', async (req: Request, res: Response) => {
   const { offset, limit } = getPagination(req);
   const at = parseAt(req);
   const w = snapshotWhere(at);
+  const wMp = snapshotWhere(at, 'mp.');
 
   const [rowsResult, countResult] = await Promise.all([
     ch.query({
+      // ANY LEFT JOIN bounds the MRC lookup to the LIMIT-page rows
+      // rather than scanning the whole `mrc_requests` table per
+      // request — the IN-subquery shape we used before re-FINALed
+      // every MRC ever observed on every list call.
       query: `
         SELECT
-          tx_id,
-          toUnixTimestamp(first_seen) AS first_seen,
-          toString(fee_estimate)      AS fee_estimate,
-          size, vin_count, vout_count, raw_json,
-          toUnixTimestamp(confirmed_at) AS confirmed_at,
-          toUnixTimestamp(evicted_at)   AS evicted_at
-        FROM mempool_txs FINAL
-        WHERE ${w.sql}
-        ORDER BY first_seen DESC
+          mp.tx_id                          AS tx_id,
+          toUnixTimestamp(mp.first_seen)    AS first_seen,
+          toString(mp.fee_estimate)         AS fee_estimate,
+          mp.size, mp.vin_count, mp.vout_count, mp.raw_json,
+          toUnixTimestamp(mp.confirmed_at)  AS confirmed_at,
+          toUnixTimestamp(mp.evicted_at)    AS evicted_at,
+          (mr.tx_id != '')                  AS is_mrc
+        FROM mempool_txs AS mp FINAL
+        ANY LEFT JOIN mrc_requests AS mr FINAL ON mr.tx_id = mp.tx_id
+        WHERE ${wMp.sql}
+        ORDER BY mp.first_seen DESC
         LIMIT {limit: UInt32} OFFSET {offset: UInt32}
       `,
-      query_params: { ...w.params, limit, offset },
+      query_params: { ...wMp.params, limit, offset },
       format: 'JSONEachRow',
     }),
     ch.query({

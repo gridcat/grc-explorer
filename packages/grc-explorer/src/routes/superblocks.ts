@@ -6,8 +6,10 @@ import { getPagination } from '../lib/pagination';
 import { param } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
 import { SuperblockPresenter } from '../presenters';
+import { registerParamValidators } from '../lib/validators';
 
 export const superblocksRouter = Router();
+registerParamValidators(superblocksRouter);
 
 interface SuperblockRow {
   height: number;

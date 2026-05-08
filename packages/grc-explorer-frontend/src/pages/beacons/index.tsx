@@ -4,6 +4,7 @@ import {
 import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
+import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { HashTrim } from '../../components/HashTrim';
 import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
@@ -48,6 +49,11 @@ export default function BeaconsPage({ initialRows, initialTotal, initialStatus }
   return (
     <Layout>
       <Stack spacing={2}>
+        <Crumbs items={[
+          RESEARCHERS_CRUMB,
+          { label: 'Beacons' },
+        ]}
+        />
         <Box>
           <Typography variant="h4" sx={{ fontWeight: 700 }}>Beacons</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>

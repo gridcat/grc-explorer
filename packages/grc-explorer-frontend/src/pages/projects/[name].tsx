@@ -9,7 +9,7 @@ import { useMemo } from 'react';
 import {
   ChartAxes, ChartFrame, ChartFrameProvider, linearScale, niceTicks,
 } from '../../components/charts/SvgChart';
-import { Crumbs } from '../../components/Crumbs';
+import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
 import { formatNumber, formatTime } from '../../lib/format';
@@ -73,7 +73,7 @@ export default function ProjectPage({ attrs }: ProjectPageProps) {
       <Stack spacing={2}>
         <Crumbs
           items={[
-            { label: 'Researchers', href: '/superblocks' },
+            RESEARCHERS_CRUMB,
             { label: 'BOINC projects', href: '/' },
             { label: attrs.displayName },
           ]}

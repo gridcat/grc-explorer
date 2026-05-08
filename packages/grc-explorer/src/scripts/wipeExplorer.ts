@@ -1,9 +1,15 @@
 // Wipe explorer state — two modes:
 //
-//   FULL     (default)        — drops the CH database, flushes the prefixed
-//                               Redis namespace, deletes every Meili index.
-//                               Re-runs CH migrations so the next indexer
-//                               boot starts walking from genesis cleanly.
+//   FULL     (default)        — TRUNCATEs every chain-derived table, prunes
+//                               Meili and the prefixed Redis namespace, and
+//                               leaves the CH database + schema in place so
+//                               the next indexer boot walks from genesis.
+//                               Mempool tables (`mempool_txs`,
+//                               `mempool_snapshots`, `mrc_requests`) are
+//                               preserved by default — they record events
+//                               we observed live and can never reconstruct
+//                               from chain alone. `--include-mempool` opts
+//                               into the historical DROP DATABASE behaviour.
 //
 //   PARTIAL  (--from-height N) — surgical rewind: deletes every CH row with
 //                               height >= N (across all chain tables and
@@ -24,7 +30,8 @@
 // it at the end since the prefixed namespace survives.
 //
 // Usage:
-//   docker exec grc_explorer npm run wipe                  # full wipe
+//   docker exec grc_explorer npm run wipe                  # full wipe (preserves mempool)
+//   docker exec grc_explorer npm run wipe -- --include-mempool
 //   docker exec grc_explorer npm run wipe -- --from-height 1234567
 //   # or, on the host with deps installed:
 //   npm run wipe
@@ -258,26 +265,71 @@ async function chQueryJson<T>(sql: string): Promise<T[]> {
 // merges land, so the script's next step sees a clean table.
 const SYNC_MUTATION = { mutations_sync: '2' };
 
-async function wipeClickhouseFull(): Promise<void> {
-  console.log(`→ CH: DROP DATABASE IF EXISTS ${CH_DB}`);
-  await chPost(`DROP DATABASE IF EXISTS ${CH_DB}`, { withDb: false });
-  console.log('→ CH: re-running migrations…');
-  // Defer to migrate.mjs by spawning it through node — no transitive
-  // dependency on its internals beyond exit code.
-  const { spawnSync } = await import('node:child_process');
-  const result = spawnSync(
-    process.execPath,
-    [`${__dirname}/../../clickhouse/migrate.mjs`],
-    {
-      stdio: 'inherit',
-      env: {
-        ...process.env,
-        CLICKHOUSE_URL: CH_URL,
-        CLICKHOUSE_DATABASE: CH_DB,
+// Tables we never wipe by default. Mempool/MRC events are observed
+// live (first_seen, fee bid, eviction, MRC pending lifecycle) and can
+// never be reconstructed from chain alone — losing them is permanent.
+// `_migrations` stays so we don't replay every DDL on the next boot.
+// `--include-mempool` overrides this set and falls back to DROP DATABASE.
+const PRESERVED_TABLES = new Set([
+  'mempool_txs',
+  'mempool_snapshots',
+  'mrc_requests',
+  '_migrations',
+]);
+
+async function wipeClickhouseFull(includeMempool: boolean): Promise<void> {
+  if (includeMempool) {
+    console.log(`→ CH: DROP DATABASE IF EXISTS ${CH_DB} (--include-mempool: full nuke)`);
+    await chPost(`DROP DATABASE IF EXISTS ${CH_DB}`, { withDb: false });
+    console.log('→ CH: re-running migrations…');
+    // Defer to migrate.mjs by spawning it through node — no transitive
+    // dependency on its internals beyond exit code.
+    const { spawnSync } = await import('node:child_process');
+    const result = spawnSync(
+      process.execPath,
+      [`${__dirname}/../../clickhouse/migrate.mjs`],
+      {
+        stdio: 'inherit',
+        env: {
+          ...process.env,
+          CLICKHOUSE_URL: CH_URL,
+          CLICKHOUSE_DATABASE: CH_DB,
+        },
       },
-    },
+    );
+    if (result.status !== 0) throw new Error(`migrate.mjs exited ${result.status}`);
+    return;
+  }
+
+  // Default: TRUNCATE every table except the preserved set. Materialised
+  // views (engine = MaterializedView) wrap underlying *_inner / *_target
+  // storage and can't be TRUNCATEd directly — the engine name `Materialized*`
+  // covers their backing tables which DO support TRUNCATE.
+  console.log(`→ CH: TRUNCATE every chain-derived table (preserving ${[...PRESERVED_TABLES].join(', ')})`);
+  const tables = await chQueryJson<{ name: string; engine: string }>(
+    `SELECT name, engine FROM system.tables WHERE database = '${CH_DB}' AND NOT is_temporary`,
   );
-  if (result.status !== 0) throw new Error(`migrate.mjs exited ${result.status}`);
+  let truncated = 0;
+  let skippedPreserved = 0;
+  let skippedView = 0;
+  for (const t of tables) {
+    if (PRESERVED_TABLES.has(t.name)) {
+      skippedPreserved += 1;
+      continue;
+    }
+    if (t.engine === 'MaterializedView') {
+      // Backing storage gets TRUNCATEd via the underlying *_inner table
+      // CH auto-creates; the view itself is just a query against it.
+      skippedView += 1;
+      continue;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await chPost(`TRUNCATE TABLE ${t.name}`);
+    truncated += 1;
+  }
+  console.log(
+    `  truncated ${truncated} table(s), preserved ${skippedPreserved}, skipped ${skippedView} view(s)`,
+  );
 }
 
 async function wipeRedisFull(): Promise<void> {
@@ -408,12 +460,23 @@ async function wipeClickhouseFromHeight(fromHeight: number): Promise<void> {
   // Aggregate MVs are SummingMergeTree / AggregatingMergeTree on the
   // base tables — their triggers only fire on INSERT, so DELETEs above
   // never reached them. Rebuild from the now-trimmed bases.
+  //
+  // `max_partitions_per_insert_block=0` disables the per-INSERT
+  // partition-fanout guard: the rebuild SELECTs span the entire chain
+  // history and a fine-grained MV like `archive_blocks_daily`
+  // (toDate(time) → ~2K partitions across 5+ years of testnet) blows
+  // through the default 100 limit otherwise. The guard is a foot-gun
+  // for streaming inserts; for one-shot rebuilds it just gets in the
+  // way. CH still merges the resulting parts correctly afterwards.
   console.log('→ CH: rebuilding aggregate materialized views…');
   for (const mv of MV_REBUILDS) {
     // eslint-disable-next-line no-await-in-loop
     await chPost(`TRUNCATE TABLE ${mv.name}`);
     // eslint-disable-next-line no-await-in-loop
-    await chPost(`INSERT INTO ${mv.name} ${mv.selectSql}`);
+    await chPost(
+      `INSERT INTO ${mv.name} ${mv.selectSql}`,
+      { settings: { max_partitions_per_insert_block: '0' } },
+    );
     console.log(`  ${mv.name}: rebuilt`);
   }
 }
@@ -491,10 +554,12 @@ async function waitForIndexerQuiesce(
 
 interface WipeArgs {
   fromHeight: number | null;
+  includeMempool: boolean;
 }
 
 function parseArgs(argv: string[]): WipeArgs {
   let fromHeight: number | null = null;
+  let includeMempool = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--from-height' || arg === '--from') {
@@ -513,16 +578,19 @@ function parseArgs(argv: string[]): WipeArgs {
         throw new Error(`${arg}: expected non-negative integer, got "${value}"`);
       }
       fromHeight = n;
+    } else if (arg === '--include-mempool') {
+      includeMempool = true;
     }
   }
-  return { fromHeight };
+  return { fromHeight, includeMempool };
 }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.fromHeight === null) {
-    console.log(`Wiping explorer state for network=${config.NETWORK}`);
+    const note = args.includeMempool ? ' (including mempool — full nuke)' : ' (preserving mempool)';
+    console.log(`Wiping explorer state for network=${config.NETWORK}${note}`);
   } else {
     console.log(`Partial wipe (from height ${args.fromHeight}) for network=${config.NETWORK}`);
   }
@@ -543,7 +611,7 @@ async function main(): Promise<void> {
   console.log('');
 
   if (args.fromHeight === null) {
-    await wipeClickhouseFull();
+    await wipeClickhouseFull(args.includeMempool);
     await wipeRedisFull();
     await wipeMeiliFull();
   } else {

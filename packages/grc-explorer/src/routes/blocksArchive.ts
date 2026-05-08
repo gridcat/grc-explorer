@@ -4,6 +4,7 @@ import { ch } from '../lib/ch';
 import { ErrorModel } from '../lib/errors';
 import { halford2grc } from '../lib/halford';
 import { param } from '../lib/req';
+import { registerParamValidators } from '../lib/validators';
 
 /**
  * Date-archive API powering /blocks/YYYY[/MM[/DD]] on the frontend.
@@ -19,6 +20,7 @@ import { param } from '../lib/req';
  * blocks before the `time BETWEEN…` filter narrows further.
  */
 export const blocksArchiveRouter = Router();
+registerParamValidators(blocksArchiveRouter);
 
 const DAY_PAGE_SIZE = 250;
 const DAY_PAGE_MAX = 500;

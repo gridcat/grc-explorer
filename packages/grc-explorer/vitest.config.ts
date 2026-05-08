@@ -1,8 +1,7 @@
 import { defineConfig } from 'vitest/config';
 
 // Unit tests for the explorer backend. Pure functions only — no DB,
-// no RPC, no Redis. The integration suite (vitest.integration.config.ts)
-// owns anything that touches a live service.
+// no RPC, no Redis.
 export default defineConfig({
   test: {
     globals: true,

@@ -22,6 +22,7 @@ interface Entry {
   txId: string;
   enteredAt: number;
   state: 'pending' | 'confirmed' | 'evicted';
+  isMrc: boolean;
 }
 
 const MAX = 12;
@@ -38,12 +39,13 @@ export function LiveTxFeed() {
     api.get('/mempool', { params: { 'page[size]': MAX } }).then((r) => {
       if (cancelledRef.current) return;
       const rows = (r.data?.data ?? []) as Array<{
-        attributes: { txId: string; firstSeen: number };
+        attributes: { txId: string; firstSeen: number; isMrc?: boolean };
       }>;
       const seeded: Entry[] = rows.map((d) => ({
         txId: d.attributes.txId,
         enteredAt: d.attributes.firstSeen * 1000,
         state: 'pending' as const,
+        isMrc: Boolean(d.attributes.isMrc),
       }));
       setEntries((prev) => {
         // Prefer SSE-delivered state over polled — SSE may have already
@@ -75,12 +77,14 @@ export function LiveTxFeed() {
 
   useSSE(['mempool.entered', 'mempool.exited'], (topic, payload) => {
     if (topic === 'mempool.entered') {
-      const p = payload as { tx_id: string };
+      const p = payload as { tx_id: string; is_mrc?: boolean };
       setEntries((prev) => {
         // Drop any stale row for the same txId before prepending.
         const filtered = prev.filter((e) => e.txId !== p.tx_id);
         return [
-          { txId: p.tx_id, enteredAt: Date.now(), state: 'pending' as const },
+          {
+            txId: p.tx_id, enteredAt: Date.now(), state: 'pending' as const, isMrc: Boolean(p.is_mrc),
+          },
           ...filtered,
         ].slice(0, MAX);
       });
@@ -114,6 +118,9 @@ export function LiveTxFeed() {
                   {e.txId.slice(0, 16)}…{e.txId.slice(-6)}
                 </Typography>
               </Link>
+              {e.isMrc && (
+                <Chip size="small" label="MRC" color="secondary" variant="outlined" />
+              )}
               <Chip
                 size="small"
                 label={e.state}

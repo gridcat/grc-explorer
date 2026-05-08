@@ -5,13 +5,15 @@ import { ErrorModel } from '../lib/errors';
 import { rpc } from '../lib/gridcoin';
 import { halford2grc } from '../lib/halford';
 import { log } from '../lib/log';
-import { getCursor } from '../lib/redis';
+import { getCursor, redis } from '../lib/redis';
 import { param } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
 import { disassembleScript } from '../lib/scriptAsm';
 import { TransactionPresenter } from '../presenters';
+import { registerParamValidators } from '../lib/validators';
 
 export const transactionsRouter = Router();
+registerParamValidators(transactionsRouter);
 
 interface TxRow {
   tx_id: string;
@@ -46,9 +48,42 @@ function presentTx(r: TxRow) {
   };
 }
 
+// Redis cache for the raw-tx payload. Confirmed-tx bytes are
+// immutable, so a long TTL is safe; mempool-tx bytes are also stable
+// in practice (serialisation doesn't change between observation and
+// confirmation). Negative cache stops `/raw/$RANDOMHEX` flooding the
+// daemon with -5 lookups (audit P0 #2).
+const RAW_TX_CACHE_TTL_S = 24 * 3600;
+const RAW_TX_NEGATIVE_TTL_S = 5 * 60;
+const TXID_RE = /^[0-9a-f]{64}$/;
+
 transactionsRouter.get('/:tx_id/raw', async (req: Request, res: Response) => {
-  const txId = param(req, 'tx_id');
+  const txId = param(req, 'tx_id').toLowerCase();
+  if (!TXID_RE.test(txId)) {
+    res.status(StatusCodes.BAD_REQUEST).send({
+      errors: [new ErrorModel(StatusCodes.BAD_REQUEST, 'Bad txid', 'txid must be 64 hex characters')],
+    });
+    return;
+  }
+
+  const cacheKey = `raw:${txId}`;
+  const cached = await redis.get(cacheKey);
+  if (cached) {
+    if (cached === 'NOTFOUND') {
+      res.status(StatusCodes.NOT_FOUND).send({
+        errors: [new ErrorModel(StatusCodes.NOT_FOUND, 'Raw transaction not available')],
+      });
+      return;
+    }
+    res.status(StatusCodes.OK).send(withMeta({
+      data: { type: 'raw_transaction', id: txId, attributes: JSON.parse(cached) },
+    }));
+    return;
+  }
+
   try {
+    // Single RPC pair — no second pass for the decoded tree if
+    // mempool_txs already cached it.
     const cachedResult = await ch.query({
       query: 'SELECT raw_json FROM mempool_txs FINAL WHERE tx_id = {tx: String} LIMIT 1',
       query_params: { tx: txId },
@@ -68,40 +103,35 @@ transactionsRouter.get('/:tx_id/raw', async (req: Request, res: Response) => {
       getRawTransaction: (id: string, verbose: boolean) => Promise<string>;
     }).getRawTransaction(txId, false);
     rewriteAsmFields(decoded);
+    const attributes = { hex, decoded };
+    await redis.set(cacheKey, JSON.stringify(attributes), 'EX', RAW_TX_CACHE_TTL_S);
     res.status(StatusCodes.OK).send(withMeta({
-      data: {
-        type: 'raw_transaction',
-        id: txId,
-        attributes: { hex, decoded },
-      },
+      data: { type: 'raw_transaction', id: txId, attributes },
     }));
   } catch (err) {
-    log.warn(`getrawtransaction failed for ${txId}`, err);
+    if ((err as { code?: number })?.code === -5) {
+      await redis.set(cacheKey, 'NOTFOUND', 'EX', RAW_TX_NEGATIVE_TTL_S);
+    } else {
+      log.warn(`getrawtransaction failed for ${txId}`, err);
+    }
     res.status(StatusCodes.NOT_FOUND).send({
       errors: [new ErrorModel(StatusCodes.NOT_FOUND, 'Raw transaction not available', String(err))],
     });
   }
 });
 
-// Tx detail with three-tier fallback so the page never 404s on a tx
-// the daemon knows about. Order:
-//   1. `transactions FINAL` — fully indexed. Existing fast path with
-//      vin/vout joined against tx_outputs/tx_inputs and is_spent
-//      derivation.
-//   2. `mempool_txs FINAL` — caught by MempoolWatcher but block not
-//      yet indexed (or never confirmed). Parses raw_json for vin/vout;
-//      vin addresses come from the prev-output lookup (tx_outputs first,
-//      RPC fallback for unindexed parents).
-//   3. `getrawtransaction` — daemon truth. Renders even for txs the
-//      watcher missed entirely (mempool window shorter than poll
-//      interval), or for reorged-out txs the daemon still remembers.
-//      `is_spent` for the vouts is unknown without the index, so we
-//      surface it as null rather than guessing.
+// Tx detail with two-tier lookup. The previous tier-3 RPC fallback
+// (`getrawtransaction` for txs the indexer hadn't reached) was removed
+// for the public-mainnet hardening pass: `/transactions/$RANDOMHEX`
+// flooding from outside trips the same RpcBreaker the indexer uses,
+// halting block ingestion (audit P0 #2). Tier 1 + Tier 2 cover every
+// in-flight or confirmed tx the explorer has actually observed; the
+// brief 404 window during deep backfill is the deliberate tradeoff.
 //
-// Whichever tier wins, the response shape stays stable so the
-// frontend's existing `inMempool = !tx.blockHeight || confirmations === 0`
-// branch keeps working: indexed → blockHeight set + positive
-// confirmations; pending → blockHeight 0 / null + 0 confirmations.
+// Response shape stays stable across tiers so the frontend's
+// `inMempool = !tx.blockHeight || confirmations === 0` branch keeps
+// working: indexed → blockHeight set + positive confirmations;
+// pending → blockHeight 0 / null + 0 confirmations.
 transactionsRouter.get('/:tx_id', async (req: Request, res: Response) => {
   const txId = param(req, 'tx_id');
 
@@ -120,24 +150,9 @@ transactionsRouter.get('/:tx_id', async (req: Request, res: Response) => {
     return;
   }
 
-  // Tier 3: ask the daemon directly. -5 ('No information') means the
-  // tx genuinely doesn't exist on chain or in mempool — that's the
-  // only legitimate 404 path.
-  try {
-    const fromRpc = await loadRpcTx(txId);
-    res.status(StatusCodes.OK).send(fromRpc);
-  } catch (err) {
-    if ((err as { code?: number })?.code === -5) {
-      res.status(StatusCodes.NOT_FOUND).send({
-        errors: [new ErrorModel(StatusCodes.NOT_FOUND, 'Transaction not found')],
-      });
-      return;
-    }
-    log.warn(`tx detail RPC fallback failed for ${txId}`, err);
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).send({
-      errors: [new ErrorModel(StatusCodes.INTERNAL_SERVER_ERROR, 'Transaction lookup failed')],
-    });
-  }
+  res.status(StatusCodes.NOT_FOUND).send({
+    errors: [new ErrorModel(StatusCodes.NOT_FOUND, 'Transaction not found')],
+  });
 });
 
 // ---- Tier 1: indexed --------------------------------------------------
@@ -151,7 +166,7 @@ async function loadIndexedTx(txId: string): Promise<unknown | null> {
   const txRows = await txResult.json<TxRow>();
   if (txRows.length === 0) return null;
   const row = presentTx(txRows[0]);
-  const [vinResult, voutResult, cursor] = await Promise.all([
+  const [vinResult, voutResult, mrcRow, cursor] = await Promise.all([
     ch.query({
       query: 'SELECT vin_n, prev_tx, prev_vout, address, value FROM tx_inputs FINAL WHERE tx_id = {tx: String} ORDER BY vin_n ASC',
       query_params: { tx: txId },
@@ -180,6 +195,7 @@ async function loadIndexedTx(txId: string): Promise<unknown | null> {
       vout_n: number; value: string; address: string;
       script_type: string; is_spent: boolean; spent_in_tx: string | null;
     }>()),
+    loadMrcRow(txId),
     getCursor(),
   ]);
   const tipHeight = cursor?.height ?? row.block_height;
@@ -204,8 +220,91 @@ async function loadIndexedTx(txId: string): Promise<unknown | null> {
       // bytes rather than an empty string; trim and treat as null.
       spentInTx: trimNullBytes(o.spent_in_tx),
     })),
+    mrc: mrcRow,
     confirmations,
   });
+}
+
+interface MrcRowOut {
+  version: number;
+  cpid: string;
+  clientVersion: string;
+  organization: string;
+  researchSubsidy: string;
+  feeOffered: string;
+  magnitude: number;
+  magnitudeUnit: number;
+  lastBlockHash: string;
+  signature: string;
+  payToAddress: string | null;
+  firstSeen: number;
+  blockHeight: number | null;
+  blockTime: number | null;
+}
+
+async function loadMrcRow(txId: string): Promise<MrcRowOut | null> {
+  const result = await ch.query({
+    query: `
+      SELECT
+        version,
+        cpid,
+        client_version,
+        organization,
+        toString(research_subsidy) AS research_subsidy,
+        toString(fee_offered)      AS fee_offered,
+        magnitude, magnitude_unit, last_block_hash, signature, pay_to_address,
+        toUnixTimestamp(first_seen) AS first_seen,
+        block_height,
+        toUnixTimestamp(block_time) AS block_time
+      FROM mrc_requests FINAL
+      WHERE tx_id = {tx: String} LIMIT 1
+    `,
+    query_params: { tx: txId },
+    format: 'JSONEachRow',
+  });
+  const rows = await result.json<{
+    version: number;
+    cpid: string;
+    client_version: string;
+    organization: string;
+    research_subsidy: string;
+    fee_offered: string;
+    magnitude: number;
+    magnitude_unit: number;
+    last_block_hash: string;
+    signature: string;
+    pay_to_address: string | null;
+    first_seen: number | string;
+    block_height: number | null;
+    block_time: number | string | null;
+  }>();
+  if (rows.length === 0) return null;
+  const r = rows[0];
+  const firstSeen = typeof r.first_seen === 'number'
+    ? r.first_seen
+    : Math.floor(new Date(r.first_seen).getTime() / 1000);
+  let blockTime: number | null = null;
+  if (r.block_time !== null) {
+    blockTime = typeof r.block_time === 'number'
+      ? r.block_time
+      : Math.floor(new Date(r.block_time).getTime() / 1000);
+  }
+  return {
+    version: r.version,
+    cpid: r.cpid,
+    clientVersion: r.client_version,
+    organization: r.organization,
+    researchSubsidy: halford2grc(BigInt(r.research_subsidy)),
+    feeOffered: halford2grc(BigInt(r.fee_offered)),
+    magnitude: r.magnitude,
+    magnitudeUnit: r.magnitude_unit,
+    lastBlockHash: r.last_block_hash,
+    signature: r.signature,
+    payToAddress: r.pay_to_address,
+    firstSeen,
+    blockHeight: r.block_height,
+    blockTime,
+  };
 }
 
 // ---- Tier 2: mempool -------------------------------------------------
@@ -258,22 +357,6 @@ async function loadMempoolTx(txId: string): Promise<unknown | null> {
   });
 }
 
-// ---- Tier 3: RPC -----------------------------------------------------
-
-async function loadRpcTx(txId: string): Promise<unknown> {
-  const decoded = await (rpc as unknown as {
-    getRawTransaction: (id: string, verbose: boolean) => Promise<RawTxLike & { time?: number }>;
-  }).getRawTransaction(txId, true);
-  // Fee can't be derived without resolving prev outputs — done inside
-  // buildPendingResponse via prev-out lookups when possible.
-  return buildPendingResponse(txId, {
-    parsed: decoded,
-    blockTime: typeof decoded.time === 'number' ? decoded.time : 0,
-    fee: null, // computed downstream from totalIn/totalOut if all vins resolve
-    size: typeof decoded.size === 'number' ? decoded.size : 0,
-  });
-}
-
 // ---- Shared pending-response builder ---------------------------------
 
 interface PendingArgs {
@@ -298,8 +381,12 @@ async function buildPendingResponse(txId: string, args: PendingArgs): Promise<un
 
   // Resolve prev outputs for vin attribution. Indexed parents come
   // from CH; unindexed parents fall through to the daemon. Coinbase
-  // vins are skipped (no prev_tx).
-  const prevAttrs = await resolvePrevOutAttrs(vinList);
+  // vins are skipped (no prev_tx). The MRC lookup is independent —
+  // run both in parallel.
+  const [prevAttrs, mrcRow] = await Promise.all([
+    resolvePrevOutAttrs(vinList),
+    loadMrcRow(txId),
+  ]);
 
   let totalIn = 0n;
   const vins = vinList.map((v, i) => {
@@ -370,6 +457,7 @@ async function buildPendingResponse(txId: string, args: PendingArgs): Promise<un
   return withMeta(body, {
     vins,
     vouts,
+    mrc: mrcRow,
     confirmations: 0,
     pending: blockHash ? 'unindexed' : 'mempool',
   });

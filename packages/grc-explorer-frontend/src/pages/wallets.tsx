@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { Layout } from '../layouts/Layout';
 import { api } from '../lib/api';
 import { formatGrc } from '../lib/format';
+import { Crumbs } from '../components/Crumbs';
 import { HashTrim } from '../components/HashTrim';
 
 interface Wallet {
@@ -31,6 +32,7 @@ export default function WalletsPage({ initialRows, initialTotal }: WalletsPagePr
   return (
     <Layout>
       <Stack spacing={2}>
+        <Crumbs items={[{ label: 'Wallets' }]} />
         <Box>
           <Typography variant="h4" sx={{ fontWeight: 700 }}>Top 100 wallets</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>

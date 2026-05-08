@@ -56,11 +56,29 @@ export function Transactions() {
       { "voutN": 1, "value": "99.99990000", "address": "S6XqhSVj...",
         "scriptType": "pubkey", "isSpent": false, "spentInTx": null }
       ],
+      "mrc": null,
       "confirmations": 5
     }
   }
 }`}
       />
+      <Typography gutterBottom variant="body1" component="p">
+        When the transaction is an MRC request, the response carries an
+        <code> mrc</code> object alongside <code>vins</code> /{' '}
+        <code>vouts</code> with the request&apos;s parsed contract
+        body — <code>cpid</code>, <code>researchSubsidy</code>,
+        <code> feeOffered</code>, <code>magnitude</code>,
+        <code> lastBlockHash</code>, <code>signature</code>,
+        <code> firstSeen</code>, <code>blockHeight</code> /{' '}
+        <code>blockTime</code> when confirmed. <code>null</code> for
+        non-MRC txs.
+      </Typography>
+
+      <Typography gutterBottom variant="body1" component="p" sx={{ pt: 1 }}>
+        Lookup tiers: indexed transactions table, then mempool. Random
+        / unknown txids return 404; <code>tx_id</code> must be 64
+        lowercase hex characters or the request 400s at the edge.
+      </Typography>
 
       <Typography variant="h6" component="h3" id="transactions-raw" sx={{ pt: 2, pb: 1 }}>
         Raw transaction

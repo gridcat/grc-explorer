@@ -6,6 +6,7 @@ import type { GetServerSideProps } from 'next';
 import Head from 'next/head';
 import Link from 'next/link';
 import { Layout } from '../../layouts/Layout';
+import { Crumbs } from '../../components/Crumbs';
 import { fetchYearList, type YearListItem } from '../../routes/blocks/archive/fetch';
 
 interface HistoryProps {
@@ -50,6 +51,7 @@ export default function HistoryLanding({ years }: HistoryProps) {
       </Head>
 
       <Stack spacing={4}>
+        <Crumbs items={[{ label: 'History' }]} />
         <Box sx={{ textAlign: { xs: 'left', md: 'center' }, pt: { xs: 1, md: 3 } }}>
           <Typography component="h1" variant="h3" sx={{ fontWeight: 800, mb: 1 }}>
             Gridcoin chain history

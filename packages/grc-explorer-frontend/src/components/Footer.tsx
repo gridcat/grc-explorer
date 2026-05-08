@@ -1,9 +1,11 @@
 import { Container, Divider, Grid, Typography } from '@mui/material';
 import { styled } from '@mui/material/styles';
 import GithubIcon from '@mui/icons-material/GitHub';
-import Link from 'next/link';
 import { DaemonInfo } from './DaemonInfo';
-import { NETWORK } from '../lib/network';
+import { NextMuiLink } from './NextMuiLink';
+import {
+  IS_TESTNET, NETWORK, SISTER_NETWORK_LABEL, SISTER_NETWORK_URL,
+} from '../lib/network';
 
 const SubFooterTypography = styled(Typography)(({ theme }) => ({
   textAlign: 'left',
@@ -40,9 +42,6 @@ export function Footer() {
           <FooterTextTypography variant="caption" sx={{ color: 'text.disabled' }}>
             <DaemonInfo />
           </FooterTextTypography>
-          <FooterTextTypography variant="caption" sx={{ color: 'text.disabled' }}>
-            <Link href="/disclaimer" style={{ color: 'inherit' }}>Terms</Link>
-          </FooterTextTypography>
         </Grid>
         <Grid size={{ xs: 12, md: 6 }}>
           <FooterTextTypography variant="caption" sx={{ textAlign: 'right' }}>
@@ -71,6 +70,21 @@ export function Footer() {
         >
           Part of Gridcoin Club ↗
         </a>
+        {' · '}
+        <NextMuiLink href="/disclaimer">Terms</NextMuiLink>
+        {SISTER_NETWORK_URL && (
+          <>
+            {' · '}
+            <a
+              href={SISTER_NETWORK_URL}
+              style={{ color: 'inherit' }}
+              rel={IS_TESTNET ? undefined : 'nofollow'}
+            >
+              {SISTER_NETWORK_LABEL}
+              {' ↗'}
+            </a>
+          </>
+        )}
       </SubFooterTypography>
     </Container>
   );

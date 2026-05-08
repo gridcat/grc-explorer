@@ -6,7 +6,7 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { JsonTree } from '../../components/JsonTree';
 import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
@@ -30,6 +30,22 @@ interface Tx {
 interface Vin { vinN: number; prevTx: string; prevVout: number; address: string | null; value: string | null }
 interface Vout { voutN: number; value: string; address: string | null; scriptType: string; isSpent: boolean; spentInTx: string | null }
 interface RawTx { hex: string; decoded: unknown }
+interface MrcInfo {
+  version: number;
+  cpid: string;
+  clientVersion: string;
+  organization: string;
+  researchSubsidy: string;
+  feeOffered: string;
+  magnitude: number;
+  magnitudeUnit: number;
+  lastBlockHash: string;
+  signature: string;
+  payToAddress: string | null;
+  firstSeen: number;
+  blockHeight: number | null;
+  blockTime: number | null;
+}
 
 // `pending` is set when the cascade in /transactions/:tx_id falls
 // through to the mempool_txs row or RPC fallback (i.e. the tx isn't in
@@ -44,10 +60,11 @@ interface TxDetailProps {
   initialVouts: Vout[];
   initialConfirmations: number;
   initialPending: PendingState;
+  initialMrc: MrcInfo | null;
 }
 
 export default function TxDetail({
-  initialTx, initialVins, initialVouts, initialConfirmations, initialPending,
+  initialTx, initialVins, initialVouts, initialConfirmations, initialPending, initialMrc,
 }: TxDetailProps) {
   const router = useRouter();
   const { tx_id: txId } = router.query;
@@ -56,6 +73,17 @@ export default function TxDetail({
   const [vouts, setVouts] = useState<Vout[]>(initialVouts);
   const [confirmations, setConfirmations] = useState(initialConfirmations);
   const [pending, setPending] = useState<PendingState>(initialPending);
+  const [mrc, setMrc] = useState<MrcInfo | null>(initialMrc);
+
+  // Raw tx body — single fetch shared between the stamp-prefix
+  // detector (📮 chip in the header) and the collapsible "Raw
+  // transaction" accordion below. The /raw endpoint is Redis-cached,
+  // so the wire cost is one round trip per tx-detail mount; both
+  // consumers now derive from the same state instead of fetching
+  // twice with separate accordion-expand and on-mount handlers.
+  const [raw, setRaw] = useState<RawTx | null>(null);
+  const [rawLoading, setRawLoading] = useState(false);
+  const [rawError, setRawError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!txId) return;
@@ -66,8 +94,37 @@ export default function TxDetail({
       setVouts(r.data?.vouts ?? []);
       setConfirmations(r.data?.confirmations ?? 0);
       setPending((r.data?.pending as PendingState | undefined) ?? null);
+      setMrc((r.data?.mrc as MrcInfo | undefined) ?? null);
     }).catch(() => { /* ignore */ });
   }, [txId, tx]);
+
+  useEffect(() => {
+    if (typeof txId !== 'string' || !txId) return;
+    setRaw(null);
+    setRawError(null);
+    setRawLoading(true);
+    api.get(`/transactions/${txId}/raw`).then((r) => {
+      setRaw(r.data?.data?.attributes ?? null);
+    }).catch((e) => {
+      setRawError(e?.response?.data?.errors?.[0]?.detail ?? 'Failed to load raw transaction');
+    }).finally(() => setRawLoading(false));
+  }, [txId]);
+
+  // Stamp protocol detection: family Easter egg — surfaces a 📮 next
+  // to the tx when any vout is an OP_RETURN carrying the
+  // stamp.gridcoin.club `5ea1ed` prefix (memory:
+  // `project_stamp_block_prefix`). `asm` is deterministically derived
+  // from `hex`, so matching the hex byte sequence is the canonical
+  // test — no need to also probe the asm string.
+  const isStamp = useMemo(() => {
+    const decoded = raw?.decoded as
+      | { vout?: Array<{ scriptPubKey?: { type?: string; hex?: string } }> }
+      | undefined;
+    return Boolean(decoded?.vout?.some((v) => (
+      v?.scriptPubKey?.type === 'nulldata'
+      && /^6a[0-9a-f]{2}5ea1ed/i.test(v.scriptPubKey?.hex ?? '')
+    )));
+  }, [raw]);
 
   if (!tx) return <Layout><Typography>Loading…</Typography></Layout>;
 
@@ -97,6 +154,12 @@ export default function TxDetail({
         <Stack direction="row" spacing={1}>
           {tx.isCoinbase && <Chip label="coinbase" size="small" />}
           {tx.isCoinstake && <Chip label="coinstake" size="small" />}
+          {mrc && <Chip label="MRC request" size="small" color="secondary" variant="outlined" />}
+          {isStamp && (
+            <Tooltip title="OP_RETURN 5ea1ed — protocol marker for stamp.gridcoin.club">
+              <Chip label="📮 stamp" size="small" variant="outlined" />
+            </Tooltip>
+          )}
           {pending === 'mempool' && (
             <Chip label="pending in mempool" size="small" color="warning" />
           )}
@@ -139,6 +202,59 @@ export default function TxDetail({
             <DetailRow label="Fee" value={`${formatGrc(tx.fee)} GRC`} />
           </CardContent>
         </Card>
+
+        {mrc && (
+          <Card variant="outlined">
+            <CardContent>
+              <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
+                MRC request
+              </Typography>
+              <DetailRow label="CPID" value={(<Link href={`/cpids/${mrc.cpid}`} style={{ color: 'inherit' }}>{mrc.cpid}</Link>)} mono />
+              {mrc.organization && <DetailRow label="Organization" value={mrc.organization} />}
+              <DetailRow label="Client" value={mrc.clientVersion} />
+              <DetailRow label="MRC body version" value={`v${mrc.version}`} />
+              <DetailRow label="Requested payout" value={`${formatGrc(mrc.researchSubsidy)} GRC`} />
+              <DetailRow label="Bid fee" value={`${formatGrc(mrc.feeOffered)} GRC`} />
+              <DetailRow label="Magnitude" value={String(mrc.magnitude)} />
+              <DetailRow label="First seen" value={formatTime(mrc.firstSeen)} />
+              {mrc.payToAddress && (
+                <DetailRow
+                  label="Pay-to"
+                  value={(
+                    <Link href={`/addresses/${mrc.payToAddress}`} style={{ color: 'inherit' }}>
+                      {mrc.payToAddress}
+                    </Link>
+                  )}
+                  mono
+                />
+              )}
+              {mrc.blockHeight !== null ? (
+                <DetailRow
+                  label="Included in block"
+                  value={(
+                    <Link href={`/block/${mrc.blockHeight}`} style={{ color: 'inherit' }}>
+                      #{formatNumber(mrc.blockHeight)}
+                    </Link>
+                  )}
+                />
+              ) : (
+                <DetailRow label="Status" value={<span style={{ opacity: 0.6 }}>pending — waiting for a staker to bundle the payout</span>} />
+              )}
+              <DetailRow label="Anchor block" value={<HashTrim text={mrc.lastBlockHash} />} mono />
+              {mrc.signature && (
+                <DetailRow
+                  label="Signature"
+                  value={(
+                    <Box sx={{ wordBreak: 'break-all', maxHeight: 80, overflowY: 'auto', fontSize: 11 }}>
+                      {mrc.signature}
+                    </Box>
+                  )}
+                  mono
+                />
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' } }}>
           <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
@@ -197,7 +313,7 @@ export default function TxDetail({
           </Paper>
         </Box>
 
-        <RawTransactionSection txId={tx.txId} />
+        <RawTransactionSection raw={raw} loading={rawLoading} error={rawError} />
       </Stack>
     </Layout>
   );
@@ -215,16 +331,20 @@ function DetailRow({ label, value, mono }: { label: string; value: React.ReactNo
 }
 
 /**
- * Raw transaction view — collapsed by default. Fetches lazily on first
- * expand so we don't burn an RPC call against the wallet daemon for
- * every visitor of every tx page. Hex (the canonical wire format) and
- * decoded JSON are shown side by side; both have copy-to-clipboard.
+ * Raw transaction view — collapsed by default. Hex (the canonical wire
+ * format) and decoded JSON are shown side by side; both have
+ * copy-to-clipboard. The fetch and its loading/error state live in
+ * the parent so the same response also drives the 📮 stamp detector
+ * in the header.
  */
-function RawTransactionSection({ txId }: { txId: string }) {
+function RawTransactionSection({
+  raw, loading, error,
+}: {
+  raw: RawTx | null;
+  loading: boolean;
+  error: string | null;
+}) {
   const [expanded, setExpanded] = useState(false);
-  const [raw, setRaw] = useState<RawTx | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   // JSON tree fold control. Each click bumps `treeKey` so React
   // re-mounts the tree subtree; every Collapsible's useState reads
@@ -240,15 +360,6 @@ function RawTransactionSection({ txId }: { txId: string }) {
 
   const handleChange = (_e: React.SyntheticEvent, isExpanded: boolean) => {
     setExpanded(isExpanded);
-    if (isExpanded && !raw && !loading) {
-      setLoading(true);
-      setError(null);
-      api.get(`/transactions/${txId}/raw`).then((r) => {
-        setRaw(r.data?.data?.attributes ?? null);
-      }).catch((e) => {
-        setError(e?.response?.data?.errors?.[0]?.detail ?? 'Failed to load raw transaction');
-      }).finally(() => setLoading(false));
-    }
   };
 
   const copy = (text: string) => {
@@ -358,6 +469,7 @@ export const getServerSideProps: GetServerSideProps<TxDetailProps> = async (ctx)
         initialVouts: r.data?.vouts ?? [],
         initialConfirmations: r.data?.confirmations ?? 0,
         initialPending: (r.data?.pending as PendingState | undefined) ?? null,
+        initialMrc: (r.data?.mrc as MrcInfo | undefined) ?? null,
       },
     };
   } catch {

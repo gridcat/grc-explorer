@@ -7,10 +7,11 @@ import {
   useEffect, useRef, useState,
 } from 'react';
 import { api } from '../lib/api';
+import { formatGrc } from '../lib/format';
 import { useSSE } from '../hooks/useSSE';
 import { atParam, useTimeMachine } from '../hooks/useTimeMachine';
-import { timeAgo } from '../lib/format';
 import { HashTrim } from './HashTrim';
+import { TimeAgo } from './TimeAgo';
 
 interface BlockEntry {
   height: number;
@@ -19,36 +20,14 @@ interface BlockEntry {
   tx_count: number;
   is_pos: boolean;
   is_superblock: boolean;
+  is_mrc: boolean;
+  value_moved: string;
+  fee_total: string;
   miner_address?: string | null;
   staker_cpid?: string | null;
 }
 
 const MAX_VISIBLE = 12;
-
-// Per-row interval (rather than ticking the parent) keeps the rest of
-// the table from reconciling every second. Storing the formatted string
-// in state means React bails out when timeAgo's output is unchanged —
-// most rows are in minute-granularity, so 29/30 ticks are no-ops.
-// Pauses while the tab is hidden.
-function AgeCell({ time }: { time: number }) {
-  const [display, setDisplay] = useState(() => timeAgo(time));
-  useEffect(() => {
-    setDisplay(timeAgo(time));
-    if (typeof document === 'undefined') return undefined;
-    let id: ReturnType<typeof setInterval> | null = null;
-    const refresh = () => setDisplay(timeAgo(time));
-    const start = () => { if (id === null) id = setInterval(refresh, 1000); };
-    const stop = () => { if (id !== null) { clearInterval(id); id = null; } };
-    if (!document.hidden) start();
-    const onVis = () => {
-      if (document.hidden) stop();
-      else { refresh(); start(); }
-    };
-    document.addEventListener('visibilitychange', onVis);
-    return () => { stop(); document.removeEventListener('visibilitychange', onVis); };
-  }, [time]);
-  return <>{display}</>;
-}
 
 export function LiveBlockTicker() {
   const router = useRouter();
@@ -80,6 +59,9 @@ export function LiveBlockTicker() {
       txCount: number;
       isPos: boolean;
       isSuperblock: boolean;
+      isMrc: boolean;
+      valueMoved?: string;
+      feeTotal?: string;
       minerAddress?: string | null;
       stakerCpid?: string | null;
     }
@@ -95,6 +77,9 @@ export function LiveBlockTicker() {
         tx_count: d.attributes.txCount,
         is_pos: d.attributes.isPos,
         is_superblock: d.attributes.isSuperblock,
+        is_mrc: Boolean(d.attributes.isMrc),
+        value_moved: d.attributes.valueMoved ?? '0',
+        fee_total: d.attributes.feeTotal ?? '0',
         miner_address: d.attributes.minerAddress ?? null,
         staker_cpid: d.attributes.stakerCpid ?? null,
       }));
@@ -226,6 +211,8 @@ export function LiveBlockTicker() {
               <TableCell>Hash</TableCell>
               <TableCell sx={{ width: 110 }}>Age</TableCell>
               <TableCell align="right" sx={{ width: 70 }}>Txs</TableCell>
+              <TableCell align="right" sx={{ width: 110 }}>Amount</TableCell>
+              <TableCell align="right" sx={{ width: 90 }}>Fees</TableCell>
               <TableCell sx={{ width: 130 }}>Type</TableCell>
               <TableCell sx={{ width: 140 }}>Staker</TableCell>
             </TableRow>
@@ -268,11 +255,18 @@ export function LiveBlockTicker() {
                 <TableCell sx={{ fontFamily: 'monospace', fontSize: 12, color: 'text.secondary' }}>
                   <HashTrim text={b.hash} head={12} tail={6} />
                 </TableCell>
-                <TableCell sx={{ color: 'text.secondary' }}><AgeCell time={b.time} /></TableCell>
+                <TableCell sx={{ color: 'text.secondary' }}><TimeAgo unixSec={b.time} /></TableCell>
                 <TableCell align="right">{b.tx_count}</TableCell>
+                <TableCell align="right" sx={{ color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}>
+                  {formatGrc(b.value_moved ?? '0')}
+                </TableCell>
+                <TableCell align="right" sx={{ color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}>
+                  {formatGrc(b.fee_total ?? '0')}
+                </TableCell>
                 <TableCell>
                   <Stack direction="row" spacing={0.5}>
                     {b.is_superblock && <Chip label="SB" size="small" color="secondary" />}
+                    {b.is_mrc && <Chip label="MRC" size="small" color="secondary" variant="outlined" />}
                     {b.is_pos
                       ? <Chip label="PoS" size="small" variant="outlined" />
                       : <Chip label="PoW" size="small" variant="outlined" />}
@@ -305,7 +299,7 @@ export function LiveBlockTicker() {
             {Array.from({ length: Math.max(0, MAX_VISIBLE - blocks.length) }).map((_, i) => (
               <TableRow key={`pad-${i}`} sx={{ '& td': { borderColor: 'transparent' } }}>
                 <TableCell
-                  colSpan={6}
+                  colSpan={8}
                   sx={{
                     textAlign: 'center',
                     color: 'text.secondary',

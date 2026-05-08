@@ -118,6 +118,7 @@ const NAV_ITEMS: NavEntry[] = [
       { href: '/superblocks', label: 'Superblocks' },
       { href: '/beacons', label: 'Beacons' },
       { href: '/cpids/cohorts', label: 'Cohorts' },
+      { href: '/mrc-requests', label: 'MRC requests' },
       { href: '/network/difficulty', label: 'Difficulty' },
       { href: '/network/stakers', label: 'Active stakers' },
       { href: '/projects/history', label: 'BOINC projects' },

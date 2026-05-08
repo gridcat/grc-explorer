@@ -71,7 +71,9 @@ export async function applyBlocks(parsedList: ParsedBlock[], options: ApplyBlock
     insertVotes(parsedList, seq),
     insertTxMessages(parsedList, seq),
     insertProjectContracts(parsedList, seq),
+    insertMrcRequests(parsedList, seq),
     reconcileMempool(parsedList, seq),
+    captureMempoolSnapshots(parsedList, seq),
   ]);
   await insertBlocks(parsedList, seq);
 
@@ -252,6 +254,8 @@ async function insertClaims(parsedList: ParsedBlock[], seq: bigint): Promise<voi
     signature: p.claim.signature,
     is_mrc: p.claim.isMrc,
     mrc_tx_map_size: p.claim.mrcTxMapSize,
+    mrc_foundation_fees: p.claim.mrcFoundationFees.toString(),
+    mrc_staker_fees: p.claim.mrcStakerFees.toString(),
     _seq: seq.toString(),
   }] : []));
   if (rows.length === 0) return;
@@ -563,6 +567,54 @@ async function reconcileMempool(parsedList: ParsedBlock[], seq: bigint): Promise
   });
 }
 
+// Per-block snapshot of the active mempool at block.time. Materialises
+// the same `at=T` view that the /mempool route already supports, but
+// frozen for the moment a block landed — useful for studying the
+// candidate set the staker had in view, fee-priority behaviour, and
+// how long txs waited before confirmation.
+//
+// `was_included` is decided against the block's parsed tx list (the
+// canonical source of truth) rather than mempool_txs.confirmed_at —
+// `confirmed_at` is written by both MempoolWatcher.handleExit (with
+// wall-clock time) and reconcileMempool (with block.time), and which
+// one wins the race is undefined under Promise.all + shared _seq, so
+// any predicate over confirmed_at is unreliable.
+//
+// Old blocks (pre-watcher era, deep backfill) snapshot to zero rows
+// because mempool_txs has no first_seen <= block.time matches there.
+// Partition pruning on first_seen makes the empty case cheap.
+async function captureMempoolSnapshots(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
+  await Promise.all(parsedList.map(({ block, transactions }) => ch.command({
+    query: `
+      INSERT INTO mempool_snapshots
+      SELECT
+        {height: UInt32}                              AS block_height,
+        {hash: String}                                AS block_hash,
+        toDateTime({time: UInt32})                    AS block_time,
+        now()                                         AS captured_at,
+        tx_id,
+        first_seen,
+        fee_estimate,
+        size,
+        vin_count,
+        vout_count,
+        (tx_id IN ({block_tx_ids: Array(String)}))    AS was_included,
+        {seq: UInt64}                                 AS _seq
+      FROM mempool_txs FINAL
+      WHERE first_seen <= toDateTime({time: UInt32})
+        AND (confirmed_at IS NULL OR confirmed_at >= toDateTime({time: UInt32}))
+        AND (evicted_at   IS NULL OR evicted_at   >= toDateTime({time: UInt32}))
+    `,
+    query_params: {
+      height: block.height,
+      hash: block.hash,
+      time: block.time,
+      seq: seq.toString(),
+      block_tx_ids: transactions.map((t) => t.txId),
+    },
+  })));
+}
+
 async function insertProjectContracts(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
   const rows = parsedList.flatMap((p) => p.projectContracts.map((pc) => ({
     project_name: pc.projectName,
@@ -591,6 +643,32 @@ async function insertTxMessages(parsedList: ParsedBlock[], seq: bigint): Promise
   await ch.insert({ table: 'tx_messages', format: 'JSONEachRow', values: rows });
 }
 
+// Confirmed MRC request rows. The mempool path (MempoolWatcher) inserts
+// the same tx_id with NULL block_height when first seen; the
+// ReplacingMergeTree(_seq) merge keeps this confirmed version on top.
+async function insertMrcRequests(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
+  const rows = parsedList.flatMap((p) => p.mrcRequests.map((m) => ({
+    tx_id: m.txId,
+    version: m.version,
+    cpid: m.cpid,
+    client_version: m.clientVersion,
+    organization: m.organization,
+    research_subsidy: m.researchSubsidy.toString(),
+    fee_offered: m.feeOffered.toString(),
+    magnitude: m.magnitude,
+    magnitude_unit: m.magnitudeUnit,
+    last_block_hash: m.lastBlockHash,
+    signature: m.signature,
+    pay_to_address: m.payToAddress,
+    first_seen: m.firstSeen,
+    block_height: m.blockHeight,
+    block_time: m.blockTime,
+    _seq: seq.toString(),
+  })));
+  if (rows.length === 0) return;
+  await ch.insert({ table: 'mrc_requests', format: 'JSONEachRow', values: rows });
+}
+
 async function runPostCommit(parsedList: ParsedBlock[], options: ApplyBlockOptions): Promise<void> {
   // SSE first (cheap, in-memory). Skipped in backfill to keep the
   // dashboard from drowning in historical events.
@@ -607,8 +685,16 @@ async function runPostCommit(parsedList: ParsedBlock[], options: ApplyBlockOptio
             tx_count: parsed.block.txCount,
             is_pos: parsed.block.isPos,
             is_superblock: parsed.block.isSuperblock,
+            // Lets LiveBlockTicker render the MRC chip on new blocks
+            // as they arrive over SSE without re-fetching.
+            is_mrc: parsed.claim?.isMrc ?? false,
             miner_address: parsed.block.minerAddress,
             staker_cpid: parsed.block.stakerCpid,
+            // Reuse the parser's metric rollup — same coinbase/coinstake
+            // exclusion the /blocks list aggregate uses, so SSE-pushed
+            // rows render identical Amount/Fee values to a manual refresh.
+            value_moved: halford2grc(parsed.metrics.valueMoved),
+            fee_total: halford2grc(parsed.metrics.feeTotal),
           },
         });
       } catch (err) {

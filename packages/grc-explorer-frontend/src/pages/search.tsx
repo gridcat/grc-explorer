@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
 import { Layout } from '../layouts/Layout';
+import { Crumbs } from '../components/Crumbs';
 import { api } from '../lib/api';
 import { track } from '../lib/track';
 
@@ -53,6 +54,7 @@ export default function SearchPage({ initialQ, initialResults, initialLoaded }: 
   return (
     <Layout>
       <Stack spacing={2}>
+        <Crumbs items={[{ label: 'Search' }]} />
         <Typography variant="h4" sx={{ fontWeight: 700 }}>Search</Typography>
         <Typography variant="body1" color="text.secondary">
           Results for <strong>{q || '(none)'}</strong>

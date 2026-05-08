@@ -9,7 +9,7 @@ import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
 import { formatNumber, formatTime } from '../../lib/format';
 import { HashTrim } from '../../components/HashTrim';
-import { Crumbs } from '../../components/Crumbs';
+import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 
 interface Superblock {
   height: number;
@@ -63,7 +63,7 @@ export default function SuperblockDetail({
     <Layout>
       <Stack spacing={2}>
         <Crumbs items={[
-          { label: 'Researchers', href: '/superblocks' },
+          RESEARCHERS_CRUMB,
           { label: 'Superblocks', href: '/superblocks' },
           { label: `#${formatNumber(sb.height)}` },
         ]}

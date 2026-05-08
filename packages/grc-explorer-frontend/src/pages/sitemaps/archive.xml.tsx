@@ -48,12 +48,12 @@ export const getServerSideProps: GetServerSideProps = async (ctx) => {
     // at most ~13 years × 12 months ≈ 150 round trips.
     for (const y of years) {
       const yearNum = y.attributes.year;
-      // eslint-disable-next-line no-await-in-loop
+
       const yr = await api.get(`/blocks/archive/${yearNum}`);
       const months = (yr.data?.data?.attributes?.months ?? []) as Array<{ month: number }>;
       for (const m of months) {
         const fmtMonth = String(m.month).padStart(2, '0');
-        // eslint-disable-next-line no-await-in-loop
+
         const mr = await api.get(`/blocks/archive/${yearNum}/${fmtMonth}`).catch(() => null);
         const monthDays = (mr?.data?.data?.attributes?.days ?? []) as Array<{ day: number }>;
         for (const d of monthDays) {

@@ -88,6 +88,9 @@ interface Config {
   RATE_LIMIT_READS_PER_MIN: number;
   RATE_LIMIT_SEARCH_PER_MIN: number;
   RATE_LIMIT_SSE_SUBSCRIBE_PER_MIN: number;
+  // Global RPS ceiling across all IPs combined. Sheds distributed
+  // floods that wouldn't trip any single IP's per-minute budget.
+  RATE_LIMIT_GLOBAL_RPS: number;
 }
 
 const checkConfig = (settings: string[]): void => {
@@ -135,6 +138,7 @@ nconf
       'RATE_LIMIT_READS_PER_MIN',
       'RATE_LIMIT_SEARCH_PER_MIN',
       'RATE_LIMIT_SSE_SUBSCRIBE_PER_MIN',
+      'RATE_LIMIT_GLOBAL_RPS',
     ],
     parseValues: true,
   })
@@ -234,6 +238,7 @@ nconf
     RATE_LIMIT_READS_PER_MIN: 1800,
     RATE_LIMIT_SEARCH_PER_MIN: 300,
     RATE_LIMIT_SSE_SUBSCRIBE_PER_MIN: 60,
+    RATE_LIMIT_GLOBAL_RPS: 100,
   });
 
 checkConfig([

@@ -11,8 +11,10 @@ import { param } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
 import { parseAt, resolveAtHeight } from '../lib/timeMachine';
 import { AddressPresenter } from '../presenters';
+import { registerParamValidators } from '../lib/validators';
 
 export const addressesRouter = Router();
+registerParamValidators(addressesRouter);
 
 // Presenter expects the legacy snake_case shape produced by the old
 // MySQL `addresses` row. Map our Redis WalletState onto that shape.

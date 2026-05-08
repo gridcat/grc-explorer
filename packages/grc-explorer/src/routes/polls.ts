@@ -10,8 +10,10 @@ import { getPagination } from '../lib/pagination';
 import { param } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
 import { PollPresenter } from '../presenters';
+import { registerParamValidators } from '../lib/validators';
 
 export const pollsRouter = Router();
+registerParamValidators(pollsRouter);
 
 interface PollRow {
   poll_id: string;

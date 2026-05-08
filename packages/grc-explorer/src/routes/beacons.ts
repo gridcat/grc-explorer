@@ -7,8 +7,10 @@ import { param } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
 import { parseAt, resolveAtHeight } from '../lib/timeMachine';
 import { BeaconPresenter } from '../presenters';
+import { registerParamValidators } from '../lib/validators';
 
 export const beaconsRouter = Router();
+registerParamValidators(beaconsRouter);
 
 interface BeaconRow {
   cpid: string;

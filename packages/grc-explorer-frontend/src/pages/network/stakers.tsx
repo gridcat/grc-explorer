@@ -13,7 +13,7 @@ import { Layout } from '../../layouts/Layout';
 import {
   ChartAxes, ChartFrame, ChartFrameProvider, ChartTooltip, linearScale, niceTicks,
 } from '../../components/charts/SvgChart';
-import { Crumbs } from '../../components/Crumbs';
+import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { api } from '../../lib/api';
 
 interface Point {
@@ -204,12 +204,12 @@ export default function StakersHistory({ points: rawPoints }: StakersHistoryProp
         <Crumbs
           items={selectedYear !== null
             ? [
-              { label: 'Researchers', href: '/superblocks' },
+              RESEARCHERS_CRUMB,
               { label: 'Active stakers', href: '/network/stakers' },
               { label: String(selectedYear) },
             ]
             : [
-              { label: 'Researchers', href: '/superblocks' },
+              RESEARCHERS_CRUMB,
               { label: 'Active stakers' },
             ]}
         />

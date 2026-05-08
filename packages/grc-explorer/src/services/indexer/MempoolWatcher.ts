@@ -4,12 +4,19 @@ import { rpc } from '../../lib/gridcoin';
 import { grc2halford, halford2grc, sumHalford } from '../../lib/halford';
 import { log } from '../../lib/log';
 import { nextSeq } from '../../lib/redis';
+import { parseMrcContract } from './ContractParser';
+import { ContractEnvelope } from './types';
 
 interface RawTxInfo {
   txid: string;
   size: number;
   vin: Array<{ txid?: string; vout?: number; coinbase?: string }>;
-  vout: Array<{ value: number; n?: number }>;
+  vout: Array<{
+    value: number;
+    n?: number;
+    scriptPubKey?: { type?: string; addresses?: string[] };
+  }>;
+  contracts?: ContractEnvelope[];
 }
 
 // Polls `getrawmempool` every MEMPOOL_POLL_INTERVAL_MS, diffs against
@@ -84,6 +91,45 @@ export class MempoolWatcher {
           _seq: seq.toString(),
         }],
       });
+      // MRC requests get a dedicated `mrc_requests` row alongside the
+      // generic mempool_txs persist, so consumers don't have to parse
+      // raw_json. block_height/block_time stay NULL until BlockWriter's
+      // `insertMrcRequests` re-stamps the same tx_id with the carrying
+      // block. Multiple MRC contracts in one tx are theoretical only —
+      // the daemon serialises one MRC per tx — but the loop is harmless.
+      let mrcCount = 0;
+      const firstPayoutAddress = raw.vout?.find(
+        (v) => v.scriptPubKey?.type !== 'nulldata' && (v.scriptPubKey?.addresses?.length ?? 0) > 0,
+      )?.scriptPubKey?.addresses?.[0] ?? null;
+      for (const contract of raw.contracts ?? []) {
+        const mrc = parseMrcContract(contract, txId, firstSeen, firstPayoutAddress, null, null);
+        if (!mrc) continue;
+        mrcCount += 1;
+        // eslint-disable-next-line no-await-in-loop
+        await ch.insert({
+          table: 'mrc_requests',
+          format: 'JSONEachRow',
+          values: [{
+            tx_id: mrc.txId,
+            version: mrc.version,
+            cpid: mrc.cpid,
+            client_version: mrc.clientVersion,
+            organization: mrc.organization,
+            research_subsidy: mrc.researchSubsidy.toString(),
+            fee_offered: mrc.feeOffered.toString(),
+            magnitude: mrc.magnitude,
+            magnitude_unit: mrc.magnitudeUnit,
+            last_block_hash: mrc.lastBlockHash,
+            signature: mrc.signature,
+            pay_to_address: mrc.payToAddress,
+            first_seen: mrc.firstSeen,
+            block_height: null,
+            block_time: null,
+            _seq: seq.toString(),
+          }],
+        });
+      }
+
       events.publish({
         topic: 'mempool.entered',
         payload: {
@@ -93,6 +139,7 @@ export class MempoolWatcher {
           vin_count: raw.vin?.length ?? 0,
           vout_count: raw.vout?.length ?? 0,
           first_seen: firstSeen,
+          is_mrc: mrcCount > 0,
         },
       });
     } catch (err) {

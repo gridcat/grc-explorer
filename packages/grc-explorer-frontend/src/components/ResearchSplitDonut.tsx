@@ -36,7 +36,7 @@ export function ResearchSplitDonut() {
     for (const hours of FALLBACK_WINDOWS_HOURS) {
       if (cancelledRef.current) return;
       try {
-        // eslint-disable-next-line no-await-in-loop
+
         const r = await api.get('/metrics/research-split', {
           params: { hours, ...atParam(tm.at) },
         });

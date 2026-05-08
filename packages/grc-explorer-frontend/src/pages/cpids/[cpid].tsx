@@ -10,10 +10,11 @@ import {
   Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
 import { Layout } from '../../layouts/Layout';
+import { Stat } from '../../components/Stat';
 import { api } from '../../lib/api';
 import { formatGrc, shortHash } from '../../lib/format';
 import { HashTrim } from '../../components/HashTrim';
-import { Crumbs } from '../../components/Crumbs';
+import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 
 interface CpidSummary {
   cpid: string;
@@ -33,16 +34,27 @@ interface ClaimEntry {
 }
 interface MagPoint { superblockHeight: number; magnitude: number }
 interface Beacon { address: string; status: string; txId: string; blockHeight: number; expiration: number }
+interface MrcEntry {
+  txId: string;
+  researchSubsidy: string;
+  feeOffered: string;
+  firstSeen: number;
+  blockHeight: number | null;
+  blockTime: number | null;
+  status: 'pending' | 'confirmed' | 'evicted';
+  waitSeconds: number | null;
+}
 
 interface CpidDetailProps {
   initialSummary: CpidSummary | null;
   initialClaims: ClaimEntry[];
   initialMagnitudes: MagPoint[];
   initialBeacons: Beacon[];
+  initialMrcs: MrcEntry[];
 }
 
 export default function CpidDetail({
-  initialSummary, initialClaims, initialMagnitudes, initialBeacons,
+  initialSummary, initialClaims, initialMagnitudes, initialBeacons, initialMrcs,
 }: CpidDetailProps) {
   const theme = useTheme();
   const router = useRouter();
@@ -51,6 +63,7 @@ export default function CpidDetail({
   const [claims, setClaims] = useState<ClaimEntry[]>(initialClaims);
   const [magnitudes, setMagnitudes] = useState<MagPoint[]>(initialMagnitudes);
   const [beacons, setBeacons] = useState<Beacon[]>(initialBeacons);
+  const [mrcs, setMrcs] = useState<MrcEntry[]>(initialMrcs);
 
   useEffect(() => {
     if (!cpid) return;
@@ -60,6 +73,7 @@ export default function CpidDetail({
       setClaims(r.data?.claims ?? []);
       setMagnitudes(r.data?.magnitudes ?? []);
       setBeacons(r.data?.beacons ?? []);
+      setMrcs(r.data?.mrcs ?? []);
     }).catch(() => { /* ignore */ });
   }, [cpid, summary]);
 
@@ -69,7 +83,7 @@ export default function CpidDetail({
     <Layout>
       <Stack spacing={2}>
         <Crumbs items={[
-          { label: 'Researchers', href: '/superblocks' },
+          RESEARCHERS_CRUMB,
           { label: 'CPIDs', href: '/cpids/cohorts' },
           { label: shortHash(summary.cpid, 8, 6) },
         ]}
@@ -162,19 +176,59 @@ export default function CpidDetail({
             </TableBody>
           </Table>
         </Paper>
+
+        {mrcs.length > 0 && (
+          <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
+            <Typography variant="subtitle2" sx={{ p: 2 }} color="text.secondary">
+              MRC requests ({mrcs.length})
+            </Typography>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Tx</TableCell>
+                  <TableCell align="right">Requested</TableCell>
+                  <TableCell align="right">Bid fee</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell>Block</TableCell>
+                  <TableCell align="right">Wait</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {mrcs.map((m) => (
+                  <TableRow key={m.txId} hover>
+                    <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>
+                      <Link href={`/transactions/${m.txId}`} style={{ color: 'inherit' }}>
+                        <HashTrim text={m.txId} head={10} tail={6} />
+                      </Link>
+                    </TableCell>
+                    <TableCell align="right">{formatGrc(m.researchSubsidy)}</TableCell>
+                    <TableCell align="right">{formatGrc(m.feeOffered)}</TableCell>
+                    <TableCell>
+                      <Chip
+                        size="small"
+                        label={m.status}
+                        color={m.status === 'confirmed' ? 'success' : m.status === 'evicted' ? 'default' : 'primary'}
+                        variant={m.status === 'pending' ? 'filled' : 'outlined'}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      {m.blockHeight !== null ? (
+                        <Link href={`/block/${m.blockHeight}`} style={{ color: 'inherit' }}>
+                          #{m.blockHeight}
+                        </Link>
+                      ) : <span style={{ opacity: 0.5 }}>—</span>}
+                    </TableCell>
+                    <TableCell align="right">
+                      {m.waitSeconds !== null ? `${m.waitSeconds}s` : <span style={{ opacity: 0.5 }}>—</span>}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Paper>
+        )}
       </Stack>
     </Layout>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <Card variant="outlined">
-      <CardContent>
-        <Typography variant="caption" color="text.secondary">{label}</Typography>
-        <Typography variant="h5" sx={{ mt: 0.5, fontWeight: 700 }}>{value}</Typography>
-      </CardContent>
-    </Card>
   );
 }
 
@@ -191,6 +245,7 @@ export const getServerSideProps: GetServerSideProps<CpidDetailProps> = async (ct
         initialClaims: r.data?.claims ?? [],
         initialMagnitudes: r.data?.magnitudes ?? [],
         initialBeacons: r.data?.beacons ?? [],
+        initialMrcs: r.data?.mrcs ?? [],
       },
     };
   } catch {

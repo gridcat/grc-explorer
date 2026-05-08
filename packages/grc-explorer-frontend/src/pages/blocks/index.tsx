@@ -8,8 +8,9 @@ import { useState } from 'react';
 import { useSSE } from '../../hooks/useSSE';
 import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
-import { formatTime, timeAgo } from '../../lib/format';
+import { formatGrc, formatTime, timeAgo } from '../../lib/format';
 import { track } from '../../lib/track';
+import { Crumbs } from '../../components/Crumbs';
 import { HashTrim } from '../../components/HashTrim';
 import { fetchYearList, type YearListItem } from '../../routes/blocks/archive/fetch';
 
@@ -24,6 +25,9 @@ interface Block {
   txCount: number;
   isPos: boolean;
   isSuperblock: boolean;
+  isMrc: boolean;
+  valueMoved?: string;
+  feeTotal?: string;
   stakerCpid: string | null;
   minerAddress?: string | null;
   difficulty?: string;
@@ -46,8 +50,9 @@ export default function BlocksList({ initialRows, years }: BlocksListProps) {
   useSSE(['block.new'], (_topic, payload) => {
     const p = payload as {
       height: number; hash: string; time: number; tx_count: number;
-      is_pos: boolean; is_superblock: boolean; staker_cpid: string | null;
-      miner_address?: string | null;
+      is_pos: boolean; is_superblock: boolean; is_mrc?: boolean;
+      value_moved?: string; fee_total?: string;
+      staker_cpid: string | null; miner_address?: string | null;
     };
     const incoming: Block = {
       height: p.height,
@@ -56,6 +61,9 @@ export default function BlocksList({ initialRows, years }: BlocksListProps) {
       txCount: p.tx_count,
       isPos: p.is_pos,
       isSuperblock: p.is_superblock,
+      isMrc: Boolean(p.is_mrc),
+      valueMoved: p.value_moved ?? '0',
+      feeTotal: p.fee_total ?? '0',
       stakerCpid: p.staker_cpid,
       minerAddress: p.miner_address ?? null,
     };
@@ -69,6 +77,7 @@ export default function BlocksList({ initialRows, years }: BlocksListProps) {
   return (
     <Layout>
       <Stack spacing={2}>
+        <Crumbs items={[{ label: 'Blocks' }]} />
         {years.length > 0 && <ArchiveRail years={years} />}
         <Typography variant="h4" sx={{ fontWeight: 700 }}>Recent blocks</Typography>
         <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
@@ -79,6 +88,8 @@ export default function BlocksList({ initialRows, years }: BlocksListProps) {
                 <TableCell>Hash</TableCell>
                 <TableCell sx={{ width: 110 }}>Age</TableCell>
                 <TableCell align="right" sx={{ width: 70 }}>Txs</TableCell>
+                <TableCell align="right" sx={{ width: 110 }}>Amount</TableCell>
+                <TableCell align="right" sx={{ width: 90 }}>Fees</TableCell>
                 <TableCell sx={{ width: 130 }}>Type</TableCell>
                 <TableCell sx={{ width: 140 }}>Staker</TableCell>
               </TableRow>
@@ -130,9 +141,16 @@ export default function BlocksList({ initialRows, years }: BlocksListProps) {
                     {timeAgo(b.time)}
                   </TableCell>
                   <TableCell align="right">{b.txCount}</TableCell>
+                  <TableCell align="right" sx={{ color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}>
+                    {formatGrc(b.valueMoved ?? '0')}
+                  </TableCell>
+                  <TableCell align="right" sx={{ color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}>
+                    {formatGrc(b.feeTotal ?? '0')}
+                  </TableCell>
                   <TableCell>
                     <Box sx={{ display: 'flex', gap: 0.5 }}>
                       {b.isSuperblock && <Chip label="SB" size="small" color="secondary" />}
+                      {b.isMrc && <Chip label="MRC" size="small" color="secondary" variant="outlined" />}
                       {b.isPos
                         ? <Chip label="PoS" size="small" variant="outlined" />
                         : <Chip label="PoW" size="small" variant="outlined" />}
@@ -160,7 +178,7 @@ export default function BlocksList({ initialRows, years }: BlocksListProps) {
               {Array.from({ length: Math.max(0, PAGE_SIZE - rows.length) }).map((_, i) => (
                 <TableRow key={`pad-${i}`} sx={{ '& td': { borderColor: 'transparent' } }}>
                   <TableCell
-                    colSpan={6}
+                    colSpan={8}
                     sx={{
                       textAlign: 'center',
                       color: 'text.secondary',

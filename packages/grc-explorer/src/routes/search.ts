@@ -1,10 +1,13 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
+import Joi from 'joi';
 import { halford2grc } from '../lib/halford';
 import { isHiddenPoll } from '../lib/hiddenPolls';
 import { meili, meiliIndexId, MeiliIndexName } from '../lib/meili';
 import { getWallet, searchWalletsByPrefix } from '../lib/redis';
 import { withMeta } from '../lib/responseMeta';
+import { SEARCH_QUERY } from '../lib/validators';
+import { validate } from '../middleware/validate';
 
 export const searchRouter = Router();
 
@@ -15,7 +18,28 @@ const ALL_INDICES: MeiliIndexName[] = [
 
 interface SearchHit { index: MeiliIndexName; hits: Record<string, unknown>[]; estimatedTotalHits?: number }
 
-searchRouter.get('/', async (req: Request, res: Response) => {
+// Audit P0 #10. q ≤ 256 (closes L5 unbounded Meili input), indices
+// must be a comma-separated subset of ALL_INDICES (closes the
+// audit's "indices ⊂ ALL_INDICES" requirement at the edge), limit
+// clamped to 1–100. Joi runs in `validate` middleware so the route
+// handler can assume well-formed query.
+const searchQuerySchema = Joi.object({
+  q: SEARCH_QUERY.optional().allow(''),
+  indices: Joi.string()
+    .max(256)
+    .pattern(/^[a-z,]+$/i)
+    .custom((value: string, helpers) => {
+      const names = value.split(',').filter(Boolean);
+      const bad = names.filter((n) => !ALL_INDICES.includes(n as MeiliIndexName));
+      if (bad.length > 0) return helpers.error('any.invalid', { bad });
+      return value;
+    })
+    .optional(),
+  limit: Joi.number().integer().min(1).max(100)
+    .optional(),
+}).unknown(true);
+
+searchRouter.get('/', validate({ query: searchQuerySchema }), async (req: Request, res: Response) => {
   const q = String(req.query.q ?? '').trim();
   if (!q) {
     res.status(StatusCodes.OK).send(withMeta({ data: [] }));

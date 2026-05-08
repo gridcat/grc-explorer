@@ -37,7 +37,7 @@ export default class MyDocument extends Document<ExplorerDocumentProps> {
             was the toggle bug.
           */}
           <style
-            // eslint-disable-next-line react/no-danger
+
             dangerouslySetInnerHTML={{
               __html: `body{background-color:${initialBg};margin:0;}`,
             }}
@@ -63,12 +63,12 @@ MyDocument.getInitialProps = async (ctx: DocumentContext) => {
 
   const initialProps = await Document.getInitialProps(ctx);
   const emotionStyles = extractCriticalToChunks(initialProps.html);
-  // eslint-disable-next-line react/no-danger -- emotion SSR requires this; CSS is server-generated, not user input
+
   const emotionStyleTags = emotionStyles.styles.map((style) => (
     <style
       data-emotion={`${style.key} ${style.ids.join(' ')}`}
       key={style.key}
-      // eslint-disable-next-line react/no-danger
+
       dangerouslySetInnerHTML={{ __html: style.css }}
     />
   ));

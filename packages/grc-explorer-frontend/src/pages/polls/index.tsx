@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useEffect, useRef, useState } from 'react';
 import { Layout } from '../../layouts/Layout';
+import { Crumbs } from '../../components/Crumbs';
 import { api } from '../../lib/api';
 import { formatTime } from '../../lib/format';
 
@@ -99,6 +100,7 @@ export default function PollsList({
   return (
     <Layout>
       <Stack spacing={2}>
+        <Crumbs items={[{ label: 'Polls' }]} />
         <Box>
           <Typography variant="h4" sx={{ fontWeight: 700 }}>Governance polls</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>

@@ -12,6 +12,7 @@ import {
   Errors,
   Mempool,
   Metrics,
+  MrcRequests,
   Network,
   Overview,
   Polls,
@@ -64,6 +65,7 @@ export default function DevelopersPage() {
             <Cpids />
             <Polls />
             <Beacons />
+            <MrcRequests />
             <Network />
             <Metrics />
             <Search />

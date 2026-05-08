@@ -31,10 +31,13 @@ export class BlockPresenter extends Presenter {
       txCount: b.tx_count,
       isPos: b.is_pos,
       isSuperblock: b.is_superblock,
+      isMrc: b.is_mrc ?? false,
       minerAddress: b.miner_address,
       stakerCpid: b.staker_cpid,
       mint: halford2grc(b.mint),
       moneySupply: halford2grc(b.money_supply),
+      valueMoved: halford2grc(b.value_moved ?? 0n),
+      feeTotal: halford2grc(b.fee_total ?? 0n),
     };
   }
 
@@ -205,6 +208,7 @@ export class MempoolTxPresenter extends Presenter {
       size: m.size,
       vinCount: m.vin_count,
       voutCount: m.vout_count,
+      isMrc: m.is_mrc,
     };
   }
 
@@ -241,6 +245,18 @@ interface BlockRow {
   tx_count: number; is_pos: boolean; is_superblock: boolean;
   miner_address: string | null; staker_cpid: string | null;
   mint: bigint; money_supply: bigint;
+  // Joined from `claims.is_mrc` on the list query so the frontend can
+  // tag MRC-bundled blocks alongside the existing PoS / Superblock
+  // chips. Optional because not every code path that builds a
+  // BlockPresenter input has a claim to JOIN against (block detail
+  // path renders MRC info from a separate claim card).
+  is_mrc?: boolean;
+  // Per-block aggregates of user-moved value and fees, computed at
+  // list time (excludes coinbase/coinstake). Optional for the same
+  // reason as is_mrc — the block-detail path renders these via the
+  // embedded transactions array, not from a presenter aggregate.
+  value_moved?: bigint;
+  fee_total?: bigint;
 }
 interface TransactionRow {
   tx_id: string; block_height: number; block_hash: string; time: number;
@@ -275,6 +291,7 @@ interface PollRow {
 interface MempoolTxRow {
   tx_id: string; first_seen: number; fee_estimate: bigint;
   size: number; vin_count: number; vout_count: number;
+  is_mrc: boolean;
 }
 interface TxOutputRow {
   tx_id: string; vout_n: number; value: bigint;

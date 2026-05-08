@@ -1,16 +1,19 @@
 import {
-  Box, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography,
+  Box, Chip, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography,
 } from '@mui/material';
 import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { LiveTxFeed } from '../components/LiveTxFeed';
 import { MempoolFeeMarket } from '../components/MempoolFeeMarket';
 import { Layout } from '../layouts/Layout';
+import { useSSE } from '../hooks/useSSE';
 import { api } from '../lib/api';
-import { formatGrc, timeAgo } from '../lib/format';
+import { formatGrc } from '../lib/format';
 import { track } from '../lib/track';
 import { HashTrim } from '../components/HashTrim';
+import { Crumbs } from '../components/Crumbs';
+import { TimeAgo } from '../components/TimeAgo';
 
 interface MempoolTx {
   txId: string;
@@ -19,31 +22,68 @@ interface MempoolTx {
   size: number;
   vinCount: number;
   voutCount: number;
+  isMrc?: boolean;
 }
 
 interface MempoolPageProps {
   initialRows: MempoolTx[];
 }
 
+const MAX_ROWS = 100;
+
 export default function MempoolPage({ initialRows }: MempoolPageProps) {
   const [rows, setRows] = useState<MempoolTx[]>(initialRows);
 
-  // Mempool is the one place we keep wall-clock polling: tx churn is
-  // sub-second and SSE doesn't carry the full row payload, so a 5 s
-  // refresh keeps the table aligned with the daemon's view. SSR
-  // populates the first paint; this loop handles thereafter.
-  useEffect(() => {
-    const fetchOnce = () => api.get('/mempool', { params: { 'page[size]': 100 } }).then((r) => {
+  const refresh = useCallback(() => api
+    .get('/mempool', { params: { 'page[size]': MAX_ROWS } })
+    .then((r) => {
       const data = (r.data?.data ?? []) as Array<{ attributes: MempoolTx }>;
       setRows(data.map((d) => d.attributes));
-    }).catch(() => { /* ignore */ });
-    const id = setInterval(fetchOnce, 5000);
+    })
+    .catch(() => { /* ignore */ }), []);
+
+  // Safety-net poll for when SSE drops. Same shape as LiveTxFeed.
+  useEffect(() => {
+    const id = setInterval(refresh, 60_000);
     return () => clearInterval(id);
-  }, []);
+  }, [refresh]);
+
+  useSSE(['mempool.entered', 'mempool.exited'], (topic, payload) => {
+    if (topic === 'mempool.entered') {
+      const p = payload as {
+        tx_id: string;
+        fee: string;
+        size: number;
+        vin_count: number;
+        vout_count: number;
+        first_seen: number;
+        is_mrc?: boolean;
+      };
+      setRows((prev) => {
+        const filtered = prev.filter((e) => e.txId !== p.tx_id);
+        return [
+          {
+            txId: p.tx_id,
+            firstSeen: p.first_seen,
+            feeEstimate: p.fee,
+            size: p.size,
+            vinCount: p.vin_count,
+            voutCount: p.vout_count,
+            isMrc: Boolean(p.is_mrc),
+          },
+          ...filtered,
+        ].slice(0, MAX_ROWS);
+      });
+    } else if (topic === 'mempool.exited') {
+      const p = payload as { tx_id: string };
+      setRows((prev) => prev.filter((e) => e.txId !== p.tx_id));
+    }
+  });
 
   return (
     <Layout>
       <Stack spacing={3}>
+        <Crumbs items={[{ label: 'Mempool' }]} />
         <Box>
           <Typography variant="h4" sx={{ fontWeight: 700 }}>Mempool</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
@@ -80,19 +120,22 @@ export default function MempoolPage({ initialRows }: MempoolPageProps) {
               {rows.map((m) => (
                 <TableRow key={m.txId} hover>
                   <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>
-                    <Link
-                      href={`/transactions/${m.txId}`}
-                      style={{ color: 'inherit' }}
-                      onClick={() => track('Tx: open', { from: 'mempool' })}
-                    >
-                      <HashTrim text={m.txId} />
-                    </Link>
+                    <Stack direction="row" spacing={1} sx={{ alignItems: 'center' }}>
+                      <Link
+                        href={`/transactions/${m.txId}`}
+                        style={{ color: 'inherit' }}
+                        onClick={() => track('Tx: open', { from: 'mempool' })}
+                      >
+                        <HashTrim text={m.txId} />
+                      </Link>
+                      {m.isMrc && <Chip label="MRC" size="small" color="secondary" variant="outlined" />}
+                    </Stack>
                   </TableCell>
                   <TableCell align="right">{formatGrc(m.feeEstimate)}</TableCell>
                   <TableCell align="right">{m.size}</TableCell>
                   <TableCell align="right">{m.vinCount}</TableCell>
                   <TableCell align="right">{m.voutCount}</TableCell>
-                  <TableCell>{timeAgo(m.firstSeen)}</TableCell>
+                  <TableCell><TimeAgo unixSec={m.firstSeen} /></TableCell>
                 </TableRow>
               ))}
             </TableBody>

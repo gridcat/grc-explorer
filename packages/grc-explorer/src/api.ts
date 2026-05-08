@@ -1,11 +1,11 @@
 import express, { NextFunction, Request, Response } from 'express';
 import HttpStatus from 'http-status-codes';
-import methodOverride from 'method-override';
 import morgan from 'morgan';
 import packageJson from '../package.json';
 import { config } from './config';
 import { ErrorModel } from './lib/errors';
 import { log } from './lib/log';
+import { requestContextMiddleware } from './lib/requestContext';
 import { readsLimiter, searchLimiter } from './middleware/rateLimit';
 import { addressesRouter } from './routes/addresses';
 import { beaconsRouter } from './routes/beacons';
@@ -14,6 +14,7 @@ import { blocksArchiveRouter } from './routes/blocksArchive';
 import { cpidsRouter } from './routes/cpids';
 import { eventsRouter } from './routes/events';
 import { mempoolRouter } from './routes/mempool';
+import { mrcRequestsRouter } from './routes/mrcRequests';
 import { metricsRouter } from './routes/metrics';
 import { networkRouter } from './routes/network';
 import { pollsRouter } from './routes/polls';
@@ -40,10 +41,14 @@ app.set('port', config.PORT);
 // Restore Express 4 / JSON:API-friendly nested parsing.
 app.set('query parser', 'extended');
 
+// AsyncLocalStorage carrier for the request's AbortSignal. Every
+// downstream CH call reads it via the wrapper in lib/ch.ts so client
+// disconnects propagate as query cancellations (audit P0 #6).
+app.use(requestContextMiddleware);
+
 app.use(express.json({ type: 'application/vnd.api+json' }));
 app.use(express.json());
 app.disable('x-powered-by');
-app.use(methodOverride('X-HTTP-Method-Override'));
 
 if (!config.isTesting) {
   app.use(morgan('combined'));
@@ -55,9 +60,19 @@ app.use((_req, res, next) => {
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.header(
     'Access-Control-Allow-Headers',
-    'x-forwarded-proto,Accept,DNT,X-CustomHeader,Keep-Alive,User-Agent,'
+    'Accept,DNT,X-CustomHeader,Keep-Alive,User-Agent,'
     + 'X-Requested-With,If-Modified-Since,Cache-Control,Content-Type',
   );
+  // Helmet-equivalent headers (audit P0 #9). The API only returns JSON
+  // so framing protection is DENY (it's never legitimately embeddable),
+  // referrer is no-referrer (no leak of internal paths to upstream
+  // RPC errors etc.), and `Cross-Origin-Resource-Policy: same-site`
+  // keeps the API responses out of cross-site `<img>` / `<script>`
+  // smuggling vectors. HSTS is set at the edge nginx, not here.
+  res.header('X-Content-Type-Options', 'nosniff');
+  res.header('X-Frame-Options', 'DENY');
+  res.header('Referrer-Policy', 'no-referrer');
+  res.header('Cross-Origin-Resource-Policy', 'same-site');
   next();
 });
 
@@ -87,6 +102,7 @@ app.use('/network', readsLimiter, networkRouter);
 app.use('/transactions', readsLimiter, transactionsRouter);
 app.use('/addresses', readsLimiter, addressesRouter);
 app.use('/mempool', readsLimiter, mempoolRouter);
+app.use('/mrc-requests', readsLimiter, mrcRequestsRouter);
 app.use('/superblocks', readsLimiter, superblocksRouter);
 app.use('/cpids', readsLimiter, cpidsRouter);
 app.use('/polls', readsLimiter, pollsRouter);
@@ -123,7 +139,22 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 
 export function startApi(): import('http').Server | null {
   if (config.isTesting) return null;
-  return app.listen(app.get('port'), () => {
+  const server = app.listen(app.get('port'), () => {
     log.info(`${packageJson.name} is running on port ${app.get('port')} (network=${config.NETWORK})`);
   });
+  // Audit P0 #5. Defaults are slowloris-friendly:
+  //   headersTimeout    Infinity → finite ceiling on header receive
+  //   requestTimeout    0        → finite ceiling on full request
+  //   keepAliveTimeout  5 s      → too short for SSR keep-alive,
+  //                                bump so nginx upstream connections
+  //                                stop being torn down between hits
+  //   maxConnections    none     → cap total open sockets so a flood
+  //                                can't exhaust ephemeral ports
+  // SSE responses override per-route via `res.setTimeout(0)` if the
+  // stream needs to live past `requestTimeout`.
+  server.headersTimeout = 15_000;
+  server.requestTimeout = 30_000;
+  server.keepAliveTimeout = 10_000;
+  server.maxConnections = 5_000;
+  return server;
 }

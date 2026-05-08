@@ -38,14 +38,19 @@ export function Status() {
       "lastIndexedHash": "a5296f58a974...",
       "tipHeight": 89281,
       "reorgDepth": 0
-      }
+      },
+      "mempoolSnapshotsFromHeight": 89200
     }
   }
 }`}
       />
       <Typography gutterBottom variant="body1" component="p" sx={{ color: 'text.secondary' }}>
         <code>indexer.status</code> is one of <code>backfilling</code>,{' '}
-        <code>live</code>, or <code>reorg</code>.
+        <code>live</code>, or <code>reorg</code>.{' '}
+        <code>mempoolSnapshotsFromHeight</code> is the earliest block
+        for which <code>/api/blocks/:height/mempool-snapshot</code>
+        returns rows; <code>null</code> if the deployment hasn&apos;t
+        captured any yet. Older heights return empty.
       </Typography>
     </Box>
   );

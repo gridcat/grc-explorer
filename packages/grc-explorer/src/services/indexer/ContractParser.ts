@@ -28,6 +28,9 @@ export interface ParsedBlock {
   claim?: ParsedClaimRow;
   /** Per-CPID MRC payouts in v12+ blocks (empty otherwise). */
   claimMrcs: ParsedClaimMrcRow[];
+  /** MRC request txs found in this block (the tx side, not the
+   *  payout side — pair with `claimMrcs` via cpid + block_height). */
+  mrcRequests: ParsedMrcRequestRow[];
   superblock?: ParsedSuperblockRow;
   superblockMagnitudes: ParsedSuperblockMagnitudeRow[];
   /** Per-project RAC breakdown for this superblock. */
@@ -49,6 +52,29 @@ export interface ParsedClaimMrcRow {
   researchSubsidy: bigint;
   magnitude: number;
   payToAddress: string | null;
+}
+
+// One row per MRC request transaction. Pending while the tx sits in
+// mempool (block_height/blockTime null), confirmed when the carrying
+// block lands.
+export interface ParsedMrcRequestRow {
+  txId: string;
+  // m_version of the MRC body (1 today; future-versioned).
+  version: number;
+  cpid: string;
+  clientVersion: string;
+  organization: string;
+  researchSubsidy: bigint;
+  feeOffered: bigint;
+  magnitude: number;
+  magnitudeUnit: number;
+  lastBlockHash: string;
+  // Base64 ECDSA signature the wallet emits in MRCToJson.
+  signature: string;
+  payToAddress: string | null;
+  firstSeen: number;
+  blockHeight: number | null;
+  blockTime: number | null;
 }
 
 export interface ParsedBlockRow {
@@ -132,6 +158,11 @@ export interface ParsedClaimRow {
   signature: string;
   isMrc: boolean;
   mrcTxMapSize: number;
+  // Per-block split of all bundled MRCs' bid fees: foundation share
+  // (chain-defined) + staker incentive. Both halford. Zero on
+  // pre-MRC blocks and on MRC-eligible blocks that bundled none.
+  mrcFoundationFees: bigint;
+  mrcStakerFees: bigint;
 }
 
 export interface ParsedSuperblockRow {
@@ -264,6 +295,7 @@ const VOTE_TYPE = 'vote';
 const BEACON_TYPE = 'beacon';
 const MESSAGE_TYPE = 'message';
 const PROJECT_TYPE = 'project';
+const MRC_TYPE = 'mrc';
 
 // MySQL TEXT can hold ~64KB; on-chain message contracts can be at most
 // the size of a tx contract field but we still cap to keep the row size
@@ -582,6 +614,67 @@ export function parseMessageContract(
   };
 }
 
+// MRC request body, camelCased by gridcoin-rpc. Some fields use
+// numeric-as-string in older daemons, so research_subsidy / fee can
+// arrive as either number or string — `grc2halford` accepts both
+// without a Number() round-trip (which would silently truncate the
+// 8-decimal halford precision past ~15 significant digits).
+interface MrcRequestBody {
+  version?: number;
+  cpid?: string;
+  clientVersion?: string;
+  organization?: string;
+  researchSubsidy?: number | string;
+  fee?: number | string;
+  magnitude?: number;
+  magnitudeUnit?: number;
+  lastBlockHash?: string;
+  signature?: string;
+}
+
+function asGrcLike(v: number | string | undefined): bigint {
+  if (typeof v === 'number' || (typeof v === 'string' && v.length > 0)) {
+    return grc2halford(v);
+  }
+  return 0n;
+}
+
+export function parseMrcContract(
+  contract: ContractEnvelope,
+  txId: string,
+  firstSeen: number,
+  payToAddress: string | null,
+  blockHeight: number | null,
+  blockTime: number | null,
+): ParsedMrcRequestRow | null {
+  if (contract.type !== MRC_TYPE) return null;
+  const body = contract.body as MrcRequestBody;
+  // Per `m_mining_id.Which() == MiningId::Kind::CPID` in the wallet's
+  // SerializationOp, only CPID-kind MRCs carry research_subsidy and
+  // fee on the wire. Non-CPID (INVESTOR) MRCs can't accrue rewards
+  // and would surface here with cpid != 32 hex; reject them so the
+  // table stays uniform.
+  const cpid = typeof body.cpid === 'string' ? body.cpid.toLowerCase() : '';
+  if (cpid.length !== 32) return null;
+  return {
+    txId,
+    version: typeof body.version === 'number' && Number.isFinite(body.version) ? body.version : 1,
+    cpid,
+    clientVersion: typeof body.clientVersion === 'string' ? body.clientVersion : '',
+    organization: typeof body.organization === 'string' ? body.organization : '',
+    researchSubsidy: asGrcLike(body.researchSubsidy),
+    feeOffered: asGrcLike(body.fee),
+    magnitude: typeof body.magnitude === 'number' && Number.isFinite(body.magnitude) ? body.magnitude : 0,
+    magnitudeUnit: typeof body.magnitudeUnit === 'number' && Number.isFinite(body.magnitudeUnit) ? body.magnitudeUnit : 0,
+    lastBlockHash: typeof body.lastBlockHash === 'string' ? body.lastBlockHash : '',
+    signature: typeof body.signature === 'string' ? body.signature : '',
+    payToAddress,
+    firstSeen,
+    blockHeight,
+    blockTime,
+  };
+}
+
 export function parseVoteContract(
   contract: ContractEnvelope,
   txId: string,
@@ -730,6 +823,7 @@ export function parseBlock(
   const votes: ParsedVoteRow[] = [];
   const messages: ParsedMessageRow[] = [];
   const projectContracts: ParsedProjectContractRow[] = [];
+  const mrcRequests: ParsedMrcRequestRow[] = [];
 
   let valueMoved = 0n;
   let feeTotal = 0n;
@@ -828,6 +922,13 @@ export function parseBlock(
     // shows under "Creator".
     const senderAddress = txInputs.find((i) => i.txId === tx.txid && i.address)?.address ?? null;
 
+    // First non-OP_RETURN output's address — for MRC requests this is
+    // typically the requester's own change address (Gridcoin pays the
+    // MRC out to the same address the request was funded from).
+    const firstPayoutAddress = tx.vout.find(
+      (v) => v.scriptPubKey.type !== 'nulldata' && (v.scriptPubKey.addresses?.length ?? 0) > 0,
+    )?.scriptPubKey.addresses?.[0] ?? null;
+
     tx.contracts?.forEach((contract) => {
       const beacon = parseBeaconContract(contract, tx.txid, block.height, block.time, hashboinc);
       if (beacon) beacons.push(beacon);
@@ -838,6 +939,15 @@ export function parseBlock(
       if (msg) messages.push(msg);
       const project = parseProjectContract(contract, tx.txid, block.height, block.time);
       if (project) projectContracts.push(project);
+      const mrc = parseMrcContract(
+        contract,
+        tx.txid,
+        block.time,
+        firstPayoutAddress,
+        block.height,
+        block.time,
+      );
+      if (mrc) mrcRequests.push(mrc);
     });
   });
 
@@ -857,6 +967,11 @@ export function parseBlock(
       signature: block.claim.signature,
       isMrc: (block.claim.mMrcTxMapSize ?? 0) > 0,
       mrcTxMapSize: block.claim.mMrcTxMapSize ?? 0,
+      // Block-level MRC fee splits — emitted by the daemon on the
+      // verbose getblock as `mrc_foundation_fees` / `mrc_staker_fees`
+      // (camelCased by gridcoin-rpc). Values are GRC; convert here.
+      mrcFoundationFees: grc2halford(block.mrcFoundationFees ?? 0),
+      mrcStakerFees: grc2halford(block.mrcStakerFees ?? 0),
     }
     : undefined;
 
@@ -947,6 +1062,7 @@ export function parseBlock(
     addressDeltas,
     claim,
     claimMrcs,
+    mrcRequests,
     superblock: superblockRow,
     superblockMagnitudes,
     superblockProjects,

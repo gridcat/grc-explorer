@@ -5,6 +5,7 @@ import { useTheme } from '@mui/material/styles';
 import type { GetServerSideProps } from 'next';
 import { useState } from 'react';
 import { Layout } from '../../layouts/Layout';
+import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { api } from '../../lib/api';
 
 interface Point { monthOffset: number; bucketTs: number; active: number }
@@ -37,6 +38,11 @@ export default function CpidCohortsPage({ initialCohorts }: CpidCohortsProps) {
   return (
     <Layout>
       <Stack spacing={3}>
+        <Crumbs items={[
+          RESEARCHERS_CRUMB,
+          { label: 'Cohorts' },
+        ]}
+        />
         <Box>
           <Typography variant="h4" sx={{ fontWeight: 700 }}>CPID cohort retention</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>

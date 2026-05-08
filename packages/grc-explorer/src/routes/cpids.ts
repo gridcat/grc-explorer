@@ -2,12 +2,15 @@ import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { ch } from '../lib/ch';
 import { halford2grc } from '../lib/halford';
+import { statusOf, waitSecondsOf } from '../lib/mrcStatus';
 import { getPagination } from '../lib/pagination';
 import { param } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
 import { parseAt, parseUnixSeconds, resolveAtHeight } from '../lib/timeMachine';
+import { registerParamValidators } from '../lib/validators';
 
 export const cpidsRouter = Router();
+registerParamValidators(cpidsRouter);
 
 // Static routes must be declared before any parameterised `/:cpid`
 // handler, otherwise Express matches `/:cpid` first and a request to
@@ -113,13 +116,17 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
   const cpid = param(req, 'cpid');
   const at = parseAt(req);
   const atHeight = at !== undefined ? await resolveAtHeight(at) : null;
-  const cap = atHeight !== null && at !== undefined ? 'AND block_height <= {h: UInt32}' : '';
-  const sbCap = atHeight !== null && at !== undefined ? 'AND superblock_height <= {h: UInt32}' : '';
-  const blockCap = atHeight !== null && at !== undefined ? 'AND height <= {h: UInt32}' : '';
+  const hasAtFilter = atHeight !== null && at !== undefined;
+  const cap = hasAtFilter ? 'AND block_height <= {h: UInt32}' : '';
+  const sbCap = hasAtFilter ? 'AND superblock_height <= {h: UInt32}' : '';
+  const blockCap = hasAtFilter ? 'AND height <= {h: UInt32}' : '';
+  // Same predicate as `cap` but qualified for the JOIN against
+  // mrc_requests so the planner doesn't see ambiguous block_height.
+  const mrcCap = hasAtFilter ? 'AND m.block_height <= {h: UInt32}' : '';
   const params: Record<string, unknown> = { cpid };
-  if (atHeight !== null && at !== undefined) params.h = atHeight;
+  if (hasAtFilter) params.h = atHeight;
 
-  const [claimResult, magResult, beaconResult, blockCountResult] = await Promise.all([
+  const [claimResult, magResult, beaconResult, blockCountResult, mrcResult] = await Promise.all([
     ch.query({
       query: `
         SELECT block_height, organization,
@@ -160,6 +167,24 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
       query_params: params,
       format: 'JSONEachRow',
     }),
+    ch.query({
+      query: `
+        SELECT
+          m.tx_id                       AS tx_id,
+          toString(m.research_subsidy)  AS research_subsidy,
+          toString(m.fee_offered)       AS fee_offered,
+          toUnixTimestamp(m.first_seen) AS first_seen,
+          m.block_height                AS block_height,
+          toUnixTimestamp(m.block_time) AS block_time,
+          (mt.evicted_at IS NOT NULL)   AS is_evicted
+        FROM mrc_requests AS m FINAL
+        ANY LEFT JOIN mempool_txs AS mt FINAL ON mt.tx_id = m.tx_id
+        WHERE m.cpid = {cpid: String} ${mrcCap}
+        ORDER BY m.first_seen DESC LIMIT 100
+      `,
+      query_params: params,
+      format: 'JSONEachRow',
+    }),
   ]);
   const claims = await claimResult.json<{
     block_height: number; organization: string; block_subsidy: string;
@@ -171,6 +196,11 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
     block_height: number; timestamp: number; expiration: number; superseded_at_height: number | null;
   }>();
   const blocksStaked = Number((await blockCountResult.json<{ c: string | number }>())[0]?.c ?? 0);
+  const mrcs = await mrcResult.json<{
+    tx_id: string; research_subsidy: string; fee_offered: string;
+    first_seen: number; block_height: number | null; block_time: number | null;
+    is_evicted: boolean;
+  }>();
 
   res.status(StatusCodes.OK).send(withMeta({
     data: {
@@ -204,6 +234,20 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
       blockHeight: b.block_height,
       timestamp: b.timestamp,
       expiration: b.expiration,
+    })),
+    mrcs: mrcs.map((m) => ({
+      txId: m.tx_id,
+      researchSubsidy: halford2grc(BigInt(m.research_subsidy)),
+      feeOffered: halford2grc(BigInt(m.fee_offered)),
+      firstSeen: m.first_seen,
+      blockHeight: m.block_height,
+      blockTime: m.block_time,
+      status: statusOf({ blockHeight: m.block_height, evicted: m.is_evicted }),
+      waitSeconds: waitSecondsOf({
+        blockHeight: m.block_height,
+        firstSeen: m.first_seen,
+        blockTime: m.block_time,
+      }),
     })),
   }));
 });

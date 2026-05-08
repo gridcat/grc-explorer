@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { useState } from 'react';
 import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
+import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { HashTrim } from '../../components/HashTrim';
 
 interface Superblock {
@@ -26,6 +27,11 @@ export default function SuperblocksList({ initialRows }: SuperblocksListProps) {
   return (
     <Layout>
       <Stack spacing={2}>
+        <Crumbs items={[
+          RESEARCHERS_CRUMB,
+          { label: 'Superblocks' },
+        ]}
+        />
         <Typography variant="h4" sx={{ fontWeight: 700 }}>Superblocks</Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
           Superblocks are periodic snapshots of every researcher&apos;s

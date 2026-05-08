@@ -46,6 +46,7 @@ export function Blocks() {
       "txCount": 1,
       "isPos": true,
       "isSuperblock": false,
+      "isMrc": false,
       "minerAddress": "S6XqhSVj...",
       "stakerCpid": "ab12...c34d"
       }
@@ -58,6 +59,11 @@ export function Blocks() {
   ]
 }`}
       />
+      <Typography gutterBottom variant="body1" component="p">
+        <code>isMrc</code> is true when the block&apos;s claim included
+        any MRC payouts. Combined with <code>isSuperblock</code> it lets
+        a list view tag the row visually without an extra round-trip.
+      </Typography>
 
       <Typography variant="h6" component="h3" id="blocks-get" sx={{ pt: 2, pb: 1 }}>
         Get a block by height
@@ -66,7 +72,11 @@ export function Blocks() {
       <Typography gutterBottom variant="body1" component="p">
         Returns the block plus embedded transactions and (for staking
         blocks) the claim payload, the same shape the dashboard&apos;s
-        block detail page consumes.
+        block detail page consumes. The claim object also carries
+        <code> mrc_foundation_fees</code> and <code>mrc_staker_fees</code>
+        when the block bundled MRC payouts — the chain&apos;s own
+        accounting of how the bid fees were split between the
+        Foundation and the staker.
       </Typography>
       <CodeBlock
         caption="Request"
@@ -104,7 +114,8 @@ export function Blocks() {
   ],
   "claim": { "cpid": "ab12...c34d", "organization": "world community grid",
              "client_version": "5.4.10.0", "block_subsidy": "0",
-             "research_subsidy": "5.00000000", "magnitude": 12.34, "is_mrc": false },
+             "research_subsidy": "5.00000000", "magnitude": 12.34, "is_mrc": false,
+             "mrc_foundation_fees": "0", "mrc_staker_fees": "0" },
   "mrcs": [],
   "tipHeight": 89281,
   "meta": { "network": "testnet", "version": "1.0.0" }

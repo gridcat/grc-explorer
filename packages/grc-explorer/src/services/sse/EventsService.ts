@@ -3,8 +3,26 @@ import { randomUUID } from 'node:crypto';
 import { events } from '../../lib/emitter';
 import { log } from '../../lib/log';
 
+// Audit P0 #4 caps. The pre-hardening service had no bounds anywhere
+// — a single attacker could open thousands of connections, repeatedly
+// subscribe with 100-KB topic arrays, and burn server memory holding
+// all of them.
+//
+// Per-IP defaults stay generous because a power user can easily run a
+// dozen browser tabs (each opens its own EventSource) and we'd rather
+// keep them connected than reject the 6th tab. The audit's original
+// "5 conns per IP" suggestion was conservative; total + global RPS
+// already shed the worst floods, so we trade a little per-IP slack
+// for the self-foot-gun risk of capping legitimate users. Tunable
+// via env if a real attack pattern emerges.
+export const MAX_CONNECTIONS_TOTAL = Number(process.env.SSE_MAX_CONNECTIONS_TOTAL ?? 5_000);
+export const MAX_CONNECTIONS_PER_IP = Number(process.env.SSE_MAX_CONNECTIONS_PER_IP ?? 50);
+export const MAX_TOPICS_PER_STREAM = Number(process.env.SSE_MAX_TOPICS_PER_STREAM ?? 32);
+export const MAX_TOPIC_LENGTH = Number(process.env.SSE_MAX_TOPIC_LENGTH ?? 64);
+
 interface Client {
   id: string;
+  ip: string;
   res: Response;
   /** Topic patterns this client wants. Exact match or "prefix.*" wildcard. */
   topics: Set<string>;
@@ -57,12 +75,21 @@ export class EventsService {
     setInterval(() => this.ping(), 15_000);
   }
 
-  addClient(res: Response): string {
+  addClient(res: Response, ip: string): { ok: true; id: string } | { ok: false; reason: 'total' | 'per-ip' } {
+    if (this.clients.length >= MAX_CONNECTIONS_TOTAL) {
+      return { ok: false, reason: 'total' };
+    }
+    const ipCount = this.clients.reduce((n, c) => (c.ip === ip ? n + 1 : n), 0);
+    if (ipCount >= MAX_CONNECTIONS_PER_IP) {
+      return { ok: false, reason: 'per-ip' };
+    }
     const id = randomUUID();
-    this.clients.push({ id, res, topics: new Set() });
+    this.clients.push({
+      id, ip, res, topics: new Set(),
+    });
     log.info(`[SSE] client ${id} connected (total=${this.clients.length})`);
     res.write(`event: hello\ndata: ${JSON.stringify({ stream_id: id })}\n\n`);
-    return id;
+    return { ok: true, id };
   }
 
   removeClient(id: string): void {
@@ -70,7 +97,13 @@ export class EventsService {
     log.info(`[SSE] client ${id} disconnected (total=${this.clients.length})`);
   }
 
-  /** Replace a client's topic set. Returns true if the client exists. */
+  /**
+   * Replace a client's topic set. Caller is expected to have already
+   * filtered the topics list down to strings ≤ MAX_TOPIC_LENGTH and
+   * truncated to MAX_TOPICS_PER_STREAM — the route enforces those
+   * limits so we don't pay the cost twice on broadcast paths.
+   * Returns true if the client exists.
+   */
   subscribe(id: string, topics: string[]): boolean {
     const client = this.clients.find((c) => c.id === id);
     if (!client) return false;

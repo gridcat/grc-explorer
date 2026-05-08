@@ -1,0 +1,1504 @@
+{
+  "version": "6.0",
+  "nxVersion": "21.5.2",
+  "pathMappings": {},
+  "nxJsonPlugins": [],
+  "fileMap": {
+    "nonProjectFiles": [],
+    "projectFileMap": {
+      "grc-explorer-content": [
+        {
+          "file": "packages/grc-explorer-content/README.md",
+          "hash": "1170755962071185064"
+        },
+        {
+          "file": "packages/grc-explorer-content/blocks/forks/.gitkeep",
+          "hash": "3244421341483603138"
+        },
+        {
+          "file": "packages/grc-explorer-content/blocks/months/.gitkeep",
+          "hash": "3244421341483603138"
+        },
+        {
+          "file": "packages/grc-explorer-content/blocks/years/.gitkeep",
+          "hash": "3244421341483603138"
+        },
+        {
+          "file": "packages/grc-explorer-content/blocks/years/2013.md",
+          "hash": "14735617258611386041"
+        },
+        {
+          "file": "packages/grc-explorer-content/blocks/years/2014.md",
+          "hash": "14791522985452255887"
+        },
+        {
+          "file": "packages/grc-explorer-content/blocks/years/2015.md",
+          "hash": "18366925937238399676"
+        },
+        {
+          "file": "packages/grc-explorer-content/blocks/years/2016.md",
+          "hash": "515263565048924024"
+        },
+        {
+          "file": "packages/grc-explorer-content/blocks/years/2017.md",
+          "hash": "10080599513780659601"
+        },
+        {
+          "file": "packages/grc-explorer-content/blocks/years/2018.md",
+          "hash": "5711144635594201027"
+        },
+        {
+          "file": "packages/grc-explorer-content/blocks/years/2019.md",
+          "hash": "9117104030712329089"
+        },
+        {
+          "file": "packages/grc-explorer-content/blocks/years/2020.md",
+          "hash": "3178178530665326845"
+        },
+        {
+          "file": "packages/grc-explorer-content/blocks/years/2021.md",
+          "hash": "17903177334960638958"
+        },
+        {
+          "file": "packages/grc-explorer-content/blocks/years/2022.md",
+          "hash": "10383404972792753687"
+        },
+        {
+          "file": "packages/grc-explorer-content/blocks/years/2023.md",
+          "hash": "3458391052975514571"
+        },
+        {
+          "file": "packages/grc-explorer-content/blocks/years/2024.md",
+          "hash": "14626021063212238044"
+        },
+        {
+          "file": "packages/grc-explorer-content/blocks/years/2025.md",
+          "hash": "14298002526490903460"
+        },
+        {
+          "file": "packages/grc-explorer-content/blocks/years/2026.md",
+          "hash": "1281196745027469924"
+        },
+        {
+          "file": "packages/grc-explorer-content/package-lock.json",
+          "hash": "6055400590970082243"
+        },
+        {
+          "file": "packages/grc-explorer-content/package.json",
+          "hash": "6092773448627441327"
+        },
+        {
+          "file": "packages/grc-explorer-content/project.json",
+          "hash": "11953238643773200752"
+        },
+        {
+          "file": "packages/grc-explorer-content/projects/.gitkeep",
+          "hash": "3244421341483603138"
+        }
+      ],
+      "grc-explorer": [
+        {
+          "file": "packages/grc-explorer/.eslintignore",
+          "hash": "17238092243717333143"
+        },
+        {
+          "file": "packages/grc-explorer/.eslintrc.js",
+          "hash": "1617653303986258071"
+        },
+        {
+          "file": "packages/grc-explorer/.npmrc",
+          "hash": "7292214116122896442"
+        },
+        {
+          "file": "packages/grc-explorer/.nvmrc",
+          "hash": "829843512082591272"
+        },
+        {
+          "file": "packages/grc-explorer/Dockerfile",
+          "hash": "252678488570287975"
+        },
+        {
+          "file": "packages/grc-explorer/Dockerfile.prod",
+          "hash": "15887064373882340000"
+        },
+        {
+          "file": "packages/grc-explorer/clickhouse/migrate.mjs",
+          "hash": "14708354656857528549"
+        },
+        {
+          "file": "packages/grc-explorer/clickhouse/migrations/0001_init.sql",
+          "hash": "17080060571802406197"
+        },
+        {
+          "file": "packages/grc-explorer/clickhouse/migrations/0002_contracts.sql",
+          "hash": "1068096426736029665"
+        },
+        {
+          "file": "packages/grc-explorer/clickhouse/migrations/0003_views.sql",
+          "hash": "1204132225241583280"
+        },
+        {
+          "file": "packages/grc-explorer/clickhouse/migrations/0004_metric_aggregates.sql",
+          "hash": "2029569400882744872"
+        },
+        {
+          "file": "packages/grc-explorer/clickhouse/migrations/0005_archive_aggregates.sql",
+          "hash": "8611759136613520245"
+        },
+        {
+          "file": "packages/grc-explorer/clickhouse/migrations/0006_backfill_archive_aggregates.sql",
+          "hash": "7502574780806373583"
+        },
+        {
+          "file": "packages/grc-explorer/clickhouse/migrations/0007_difficulty_aggregates.sql",
+          "hash": "17709895864651421572"
+        },
+        {
+          "file": "packages/grc-explorer/clickhouse/migrations/0008_stakers_aggregates.sql",
+          "hash": "2617310438228279082"
+        },
+        {
+          "file": "packages/grc-explorer/clickhouse/migrations/0009_project_contracts.sql",
+          "hash": "14526777145579322980"
+        },
+        {
+          "file": "packages/grc-explorer/clickhouse/migrations/0010_mempool_snapshots.sql",
+          "hash": "13821024478805311182"
+        },
+        {
+          "file": "packages/grc-explorer/clickhouse/migrations/0011_mrc_requests.sql",
+          "hash": "2753753749732943903"
+        },
+        {
+          "file": "packages/grc-explorer/clickhouse/migrations/0012_mrc_extra_fields.sql",
+          "hash": "12227966253076240098"
+        },
+        {
+          "file": "packages/grc-explorer/jest.config.js",
+          "hash": "12803641053996103229"
+        },
+        {
+          "file": "packages/grc-explorer/package-lock.json",
+          "hash": "14422494605579307987"
+        },
+        {
+          "file": "packages/grc-explorer/package.json",
+          "hash": "3152914006745560686",
+          "deps": [
+            "npm:@types/express",
+            "npm:@types/node",
+            "npm:eslint",
+            "npm:typescript",
+            "npm:vitest",
+            "npm:axios",
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/project.json",
+          "hash": "18181600663555156027"
+        },
+        {
+          "file": "packages/grc-explorer/src/api.ts",
+          "hash": "7541260395897319823",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/config.ts",
+          "hash": "13309790139432928600"
+        },
+        {
+          "file": "packages/grc-explorer/src/index.ts",
+          "hash": "1036500254624816511"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/address.ts",
+          "hash": "4716579489732718529"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/bigintJson.ts",
+          "hash": "9362701279555641434"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/ch.ts",
+          "hash": "11483477839117752105"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/coerce.ts",
+          "hash": "11699030139142759468"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/emitter.ts",
+          "hash": "13822199883368138765"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/errors.ts",
+          "hash": "16405438924506882430"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/fanout.ts",
+          "hash": "6122699709891524480"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/gridcoin.ts",
+          "hash": "4595627726884651688"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/halford.ts",
+          "hash": "4002695683715475322"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/hiddenPolls.ts",
+          "hash": "17143517405186320432"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/indexerTip.ts",
+          "hash": "8363597259125594478"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/log.ts",
+          "hash": "11179458455471081182"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/meili.ts",
+          "hash": "3046432177339055934"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/mrcStatus.ts",
+          "hash": "3233381076473319455"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/pagination.ts",
+          "hash": "11561632108552816925",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/redis.ts",
+          "hash": "8935249320568119526"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/req.ts",
+          "hash": "1281317924061677896",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/requestContext.ts",
+          "hash": "17393191503880341534",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/responseMeta.ts",
+          "hash": "9146254078260544842"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/schedule.ts",
+          "hash": "5038483512455504064"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/scriptAsm.ts",
+          "hash": "9621951794800554201"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/time.ts",
+          "hash": "9306111405177555193"
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/timeMachine.ts",
+          "hash": "6492347129179102912",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/lib/validators.ts",
+          "hash": "13664713535538095371",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/middleware/rateLimit.ts",
+          "hash": "8906331713530788413",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/middleware/validate.ts",
+          "hash": "9315514171921650082",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/presenters/index.ts",
+          "hash": "17556714746022915899"
+        },
+        {
+          "file": "packages/grc-explorer/src/presenters/types.ts",
+          "hash": "13728510627693466253"
+        },
+        {
+          "file": "packages/grc-explorer/src/routes/addresses.ts",
+          "hash": "12676163125123072747",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/routes/beacons.ts",
+          "hash": "6414755276707287026",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/routes/blocks.ts",
+          "hash": "5693819019178653740",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/routes/blocksArchive.ts",
+          "hash": "15933319192888625970",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/routes/cpids.ts",
+          "hash": "2947357313553678529",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/routes/events.ts",
+          "hash": "1122241572622496617",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/routes/mempool.ts",
+          "hash": "16511873343903547478",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/routes/metrics.ts",
+          "hash": "17098632665606378039",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/routes/mrcRequests.ts",
+          "hash": "8610018989547958922",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/routes/network.ts",
+          "hash": "16328637759299832238",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/routes/polls.ts",
+          "hash": "2362288990721515379",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/routes/projects.ts",
+          "hash": "4204895022042694992",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/routes/search.ts",
+          "hash": "11883511380731719713",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/routes/status.ts",
+          "hash": "16577888248574445254",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/routes/superblocks.ts",
+          "hash": "6423971314239199733",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/routes/transactions.ts",
+          "hash": "10347222829507109535",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/scripts/rebuildWallets.ts",
+          "hash": "17284266210063571550"
+        },
+        {
+          "file": "packages/grc-explorer/src/scripts/wipeExplorer.ts",
+          "hash": "12839375145249638833"
+        },
+        {
+          "file": "packages/grc-explorer/src/services/indexer/BlockWriter.ts",
+          "hash": "10255174320811024036"
+        },
+        {
+          "file": "packages/grc-explorer/src/services/indexer/ChainReorgHandler.ts",
+          "hash": "10694971805231659452"
+        },
+        {
+          "file": "packages/grc-explorer/src/services/indexer/ContractParser.ts",
+          "hash": "17654705370970820849"
+        },
+        {
+          "file": "packages/grc-explorer/src/services/indexer/HistoricalBackfiller.ts",
+          "hash": "7875599759194342284"
+        },
+        {
+          "file": "packages/grc-explorer/src/services/indexer/MempoolWatcher.ts",
+          "hash": "6683198814930357291"
+        },
+        {
+          "file": "packages/grc-explorer/src/services/indexer/TipFollower.ts",
+          "hash": "16994331789604566330"
+        },
+        {
+          "file": "packages/grc-explorer/src/services/indexer/prevOutputs.ts",
+          "hash": "2692726463022423967"
+        },
+        {
+          "file": "packages/grc-explorer/src/services/indexer/types.ts",
+          "hash": "9871499224598923983"
+        },
+        {
+          "file": "packages/grc-explorer/src/services/jobs/PollWeightAggregator.ts",
+          "hash": "1331333782202456528"
+        },
+        {
+          "file": "packages/grc-explorer/src/services/jobs/WealthSnapshotJob.ts",
+          "hash": "16661285091287048144"
+        },
+        {
+          "file": "packages/grc-explorer/src/services/network/NetworkStatsPoller.ts",
+          "hash": "4711244735791262601"
+        },
+        {
+          "file": "packages/grc-explorer/src/services/search/MeiliIndexer.ts",
+          "hash": "7447042146216418569"
+        },
+        {
+          "file": "packages/grc-explorer/src/services/sse/EventsService.ts",
+          "hash": "4368458756182685929",
+          "deps": [
+            "npm:express"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer/src/typings.d.ts",
+          "hash": "4467584213783887480"
+        },
+        {
+          "file": "packages/grc-explorer/tests/setEnv.ts",
+          "hash": "14522246090581394189"
+        },
+        {
+          "file": "packages/grc-explorer/tests/unit/contractParser.spec.ts",
+          "hash": "225466536608922783"
+        },
+        {
+          "file": "packages/grc-explorer/tests/unit/halford.spec.ts",
+          "hash": "233776748898681331"
+        },
+        {
+          "file": "packages/grc-explorer/tests/unit/pollWeightAggregator.spec.ts",
+          "hash": "8325765069367510615"
+        },
+        {
+          "file": "packages/grc-explorer/tsconfig.json",
+          "hash": "13831412764139816747"
+        },
+        {
+          "file": "packages/grc-explorer/vitest.config.ts",
+          "hash": "3179418785917494288",
+          "deps": [
+            "npm:vitest"
+          ]
+        }
+      ],
+      "grc-explorer-frontend": [
+        {
+          "file": "packages/grc-explorer-frontend/.env.example",
+          "hash": "1740937667769964131"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/.env.testnet",
+          "hash": "13362556368773049484"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/.npmrc",
+          "hash": "7292214116122896442"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/.nvmrc",
+          "hash": "829843512082591272"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/Dockerfile",
+          "hash": "17079035237643680049"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/Dockerfile.prod",
+          "hash": "2487728264556611798"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/eslint.config.mjs",
+          "hash": "582774625054537061"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/next-env.d.ts",
+          "hash": "14616603516216875299"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/next.config.js",
+          "hash": "11298281254835811249"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/package-lock.json",
+          "hash": "8668268386788082728"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/package.json",
+          "hash": "3655557992589176130",
+          "deps": [
+            "npm:@types/node",
+            "npm:eslint",
+            "npm:typescript",
+            "npm:vitest",
+            "npm:axios",
+            "npm:next",
+            "npm:react",
+            "npm:react-dom",
+            "npm:sharp"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/project.json",
+          "hash": "12660852292789812243"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/public/fonts/SFUIText/SFUIText-Bold.woff",
+          "hash": "35008273134150594"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/public/fonts/SFUIText/SFUIText-BoldItalic.woff",
+          "hash": "12999022234273777382"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/public/fonts/SFUIText/SFUIText-Heavy.woff",
+          "hash": "9627459167078252325"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/public/fonts/SFUIText/SFUIText-HeavyItalic.woff",
+          "hash": "2823154389876629591"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/public/fonts/SFUIText/SFUIText-Light.woff",
+          "hash": "163540837724112951"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/public/fonts/SFUIText/SFUIText-LightItalic.woff",
+          "hash": "1137968196281450806"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/public/fonts/SFUIText/SFUIText-Medium.woff",
+          "hash": "18161322382398898872"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/public/fonts/SFUIText/SFUIText-MediumItalic.woff",
+          "hash": "1727849198913746483"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/public/fonts/SFUIText/SFUIText-Regular.woff",
+          "hash": "10371021638299326254"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/public/fonts/SFUIText/SFUIText-RegularItalic.woff",
+          "hash": "9862684634654154108"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/public/fonts/SFUIText/SFUIText-Semibold.woff",
+          "hash": "15209515758838798913"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/public/fonts/SFUIText/SFUIText-SemiboldItalic.woff",
+          "hash": "7260053161616506556"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/public/ic-error.svg",
+          "hash": "2924582683459269061"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/public/ic-logo-mainnet.svg",
+          "hash": "12640379003090861384"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/public/ic-logo-testnet.svg",
+          "hash": "10295143302017790452"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/public/il-background-error-page.svg",
+          "hash": "16628590076002346199"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/AddressBalanceSparkline.tsx",
+          "hash": "10474306828914793279",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/BeaconFlux.tsx",
+          "hash": "10969076540814643484",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/BeaconSurvival.tsx",
+          "hash": "16269404825387724426",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/CalendarHeatmap.tsx",
+          "hash": "7195001664002898661",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/CodeBlock/CodeBlock.tsx",
+          "hash": "16696840316330731639",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/CohortRetentionPreview.tsx",
+          "hash": "8421145063122631029",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/Crumbs.tsx",
+          "hash": "10154806710187941259",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/DaemonInfo.tsx",
+          "hash": "8866833729352405532",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/Endpoint/Endpoint.tsx",
+          "hash": "13896909942687397455"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/Footer.tsx",
+          "hash": "4182166204490131899"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/GradientLine.tsx",
+          "hash": "8451947143621534407"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/HashTrim.tsx",
+          "hash": "703326449715619776",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/Header.tsx",
+          "hash": "15206454464886813554",
+          "deps": [
+            "npm:react",
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/JsonTree.tsx",
+          "hash": "8668662300121948235",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/LazyOnVisible.tsx",
+          "hash": "7597357539242453165",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/LiveBlockTicker.tsx",
+          "hash": "13705079533096666431",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/LiveTxFeed.tsx",
+          "hash": "17117983034644531642",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/MagnitudeLeaderboard.tsx",
+          "hash": "17569532298305031147",
+          "deps": [
+            "npm:react",
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/MempoolFeeMarket.tsx",
+          "hash": "11122794886088302087",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/MempoolFeePercentiles.tsx",
+          "hash": "2232896893171862231",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/ModeToggle.tsx",
+          "hash": "4826939707354537189"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/MoneyFlowChart.tsx",
+          "hash": "11511290353388116207",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/NavMenuMobile.tsx",
+          "hash": "17543029917583446267",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/NetworkVitals.tsx",
+          "hash": "6265301327178144064",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/NextMuiLink.tsx",
+          "hash": "10217542134726962321",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/PageContents/PageContents.tsx",
+          "hash": "2553428267536941546",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/PageWrapper.tsx",
+          "hash": "1871628065811550333"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/ProjectsBoard.tsx",
+          "hash": "9794330136888259042",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/ResearchSplitDonut.tsx",
+          "hash": "2708827151823641587",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/ScrollTopFab.tsx",
+          "hash": "13191085996466662417"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/StakerMix.tsx",
+          "hash": "17081302523886174040",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/Stat.tsx",
+          "hash": "2779662360840947380"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/TimeAgo.tsx",
+          "hash": "15595868710420877573",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/TimeMachineDock.tsx",
+          "hash": "514971904554072664",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/TopMovers.tsx",
+          "hash": "10605790713012025081",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/TxsPerBlockChart.tsx",
+          "hash": "9762554743886489426",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/WealthDistributionChart.tsx",
+          "hash": "5299984568892289331",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/components/charts/SvgChart.tsx",
+          "hash": "8783503189742824785",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/createEmotionCache.ts",
+          "hash": "11358583396252597660"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/hooks/useSSE.tsx",
+          "hash": "16516512416505220722",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/hooks/useThemeMode.tsx",
+          "hash": "538010952857620357",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/hooks/useTimeMachine.tsx",
+          "hash": "6701433506454438961",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/layouts/Layout.tsx",
+          "hash": "8157439929307309915",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/lib/api.ts",
+          "hash": "8580329741912539905",
+          "deps": [
+            "npm:axios"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/lib/contentLoader.ts",
+          "hash": "6174786563603383394"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/lib/featureFlags.ts",
+          "hash": "1777204244971436518"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/lib/format.ts",
+          "hash": "6823003204140224797"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/lib/frontmatter.ts",
+          "hash": "1736455766582397396"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/lib/markdown.ts",
+          "hash": "11360238429252712480",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/lib/mode.ts",
+          "hash": "13799106199440651434"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/lib/network.ts",
+          "hash": "14840186971950181062"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/lib/safeUrl.ts",
+          "hash": "9720758835373220441"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/lib/sitemap.ts",
+          "hash": "17259766300865720061",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/lib/track.ts",
+          "hash": "17786070497848875515"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/lib/useScrollSpy.ts",
+          "hash": "10517530381421378875",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/404.tsx",
+          "hash": "16714043605081216152"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/_app.tsx",
+          "hash": "6073508100910247217",
+          "deps": [
+            "npm:next",
+            "npm:react",
+            [
+              "npm:next",
+              "dynamic"
+            ]
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/_document.tsx",
+          "hash": "988454359219316444",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/addresses/[address].tsx",
+          "hash": "15334244859066875185",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/beacons/index.tsx",
+          "hash": "4906010432259039857",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/block/[height].tsx",
+          "hash": "17315735531411888352",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/blocks/[year].tsx",
+          "hash": "11999093073379846532",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/blocks/[year]/[month]/[day].tsx",
+          "hash": "12907868778358923543",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/blocks/[year]/[month]/index.tsx",
+          "hash": "13995141147091651685",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/blocks/index.tsx",
+          "hash": "17345596688855026674",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/cpids/[cpid].tsx",
+          "hash": "5282646950862625274",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/cpids/cohorts.tsx",
+          "hash": "14986176412162891870",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/developers.tsx",
+          "hash": "9459589036800509235"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/disclaimer.tsx",
+          "hash": "5322709796576827507"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/history/index.tsx",
+          "hash": "8235747921046338640",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/index.tsx",
+          "hash": "6662370187611167420",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/llms.txt.tsx",
+          "hash": "51899508678425148",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/mempool.tsx",
+          "hash": "9125144555895071459",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/mrc-requests.tsx",
+          "hash": "3355314625173490362",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/network/difficulty.tsx",
+          "hash": "4045012636216156595",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/network/stakers.tsx",
+          "hash": "7372440777828921192",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/polls/[poll_id].tsx",
+          "hash": "17368791646845333085",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/polls/index.tsx",
+          "hash": "3921539495612515696",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/projects/[name].tsx",
+          "hash": "15223686773191411055",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/projects/history.tsx",
+          "hash": "9964476273054364841",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/robots.txt.tsx",
+          "hash": "4099836634496408462",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/search.tsx",
+          "hash": "16077249185639080923",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/sitemap.xml.tsx",
+          "hash": "17752610514999429921",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/sitemaps/archive.xml.tsx",
+          "hash": "64967181677729878",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/sitemaps/blocks-[chunk].xml.tsx",
+          "hash": "12832784052946209786",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/sitemaps/static.xml.tsx",
+          "hash": "5084715186341647330",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/superblocks/[height].tsx",
+          "hash": "14110655940851976539",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/superblocks/index.tsx",
+          "hash": "5574472962674482930",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/transactions/[tx_id].tsx",
+          "hash": "16006049536916920597",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/pages/wallets.tsx",
+          "hash": "11351036746259146558",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/blocks/BlockDetail.tsx",
+          "hash": "5936368040453192893",
+          "deps": [
+            "npm:next",
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/blocks/archive/Article.tsx",
+          "hash": "7266887945699250077"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/blocks/archive/DayArchive.tsx",
+          "hash": "487051198153314138",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/blocks/archive/EmptyPeriodBanner.tsx",
+          "hash": "6723433776352734262"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/blocks/archive/MonthArchive.tsx",
+          "hash": "5326413924274026686",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/blocks/archive/PeriodStats.tsx",
+          "hash": "3538942922781132942"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/blocks/archive/YearArchive.tsx",
+          "hash": "10497775423950057023",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/blocks/archive/fetch.ts",
+          "hash": "3043058636933868426"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/blocks/archive/types.ts",
+          "hash": "18302972489258076812"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/Addresses.tsx",
+          "hash": "8327635118188958215"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/Beacons.tsx",
+          "hash": "4887839247603507213"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/Blocks.tsx",
+          "hash": "17810080064492562530"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/Conventions.tsx",
+          "hash": "4307606089792201261"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/Cpids.tsx",
+          "hash": "8475693687340229714"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/Errors.tsx",
+          "hash": "14639422722076870483"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/Mempool.tsx",
+          "hash": "1421232529926407515",
+          "deps": [
+            "npm:react"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/Metrics.tsx",
+          "hash": "1898139998883830117"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/MrcRequests.tsx",
+          "hash": "14987945702405566829"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/Network.tsx",
+          "hash": "11879638514358453342"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/Overview.tsx",
+          "hash": "1212859586008137151"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/Polls.tsx",
+          "hash": "9218037916407433237"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/Search.tsx",
+          "hash": "15186961347544407869"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/Status.tsx",
+          "hash": "10590988717435113770"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/Superblocks.tsx",
+          "hash": "14340729873070680921"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/Transactions.tsx",
+          "hash": "16270822584706344477"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/apiBase.ts",
+          "hash": "4168863435418585699"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Chapters/index.ts",
+          "hash": "11747318653627308608"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/developers/Contents.tsx",
+          "hash": "7749216818802804592"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/routes/not-found/index.tsx",
+          "hash": "16652171603508630879",
+          "deps": [
+            "npm:next"
+          ]
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/styles/style.css",
+          "hash": "16086964145230785706"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/src/theme.ts",
+          "hash": "1523046830525751931"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/tests/format.spec.ts",
+          "hash": "8059840363332767016"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/tsconfig.json",
+          "hash": "15557103223059736777"
+        },
+        {
+          "file": "packages/grc-explorer-frontend/vitest.config.ts",
+          "hash": "8571301113168591246",
+          "deps": [
+            "npm:vitest"
+          ]
+        }
+      ],
+      "grc-explorer-gridcoin-club": [
+        {
+          "file": ".circleci/config.yml",
+          "hash": "4038765584962904555"
+        },
+        {
+          "file": ".github/workflows/stamp-release.yml",
+          "hash": "14582116347339690417"
+        },
+        {
+          "file": ".gitignore",
+          "hash": "3775682900868285666"
+        },
+        {
+          "file": ".npmrc",
+          "hash": "16116932659823639839"
+        },
+        {
+          "file": ".nvmrc",
+          "hash": "829843512082591272"
+        },
+        {
+          "file": ".vscode/settings.json",
+          "hash": "10307214602105498203"
+        },
+        {
+          "file": "LICENSE",
+          "hash": "7526915120489426836"
+        },
+        {
+          "file": "README.md",
+          "hash": "8968245379094029395"
+        },
+        {
+          "file": "nx.json",
+          "hash": "10306756411131098359"
+        },
+        {
+          "file": "package-lock.json",
+          "hash": "7682057042847427972"
+        },
+        {
+          "file": "package.json",
+          "hash": "13748723645994721960",
+          "deps": [
+            "npm:@nx/eslint",
+            "npm:@nx/jest",
+            "npm:@nx/next",
+            "npm:jest",
+            "npm:nx",
+            "npm:syncpack"
+          ]
+        }
+      ]
+    }
+  },
+  "externalNodesHash": "8404834239840665222"
+}
