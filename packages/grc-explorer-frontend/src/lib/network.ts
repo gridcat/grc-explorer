@@ -1,8 +1,8 @@
 import { Network } from '../theme';
 
-const RAW = process.env.NEXT_PUBLIC_NETWORK ?? 'testnet';
+const RAW = process.env.NEXT_PUBLIC_NETWORK ?? 'mainnet';
 
-export const NETWORK: Network = RAW === 'mainnet' ? 'mainnet' : 'testnet';
+export const NETWORK: Network = RAW === 'testnet' ? 'testnet' : 'mainnet';
 
 export const IS_TESTNET = NETWORK === 'testnet';
 
