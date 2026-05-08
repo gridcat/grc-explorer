@@ -1,3 +1,10 @@
+# [grc-explorer-frontend-v1.0.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.0.0...grc-explorer-frontend-v1.0.1) (2026-05-08)
+
+
+### Bug Fixes
+
+* mainnet is default ([427137c](https://github.com/gridcat/grc-explorer/commit/427137c4588de45349fa44f0b815c2c1727b789f))
+
 # grc-explorer-frontend-v1.0.0 (2026-05-08)
 
 
