@@ -1,3 +1,10 @@
+# [grc-explorer-v1.0.3](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.0.2...grc-explorer-v1.0.3) (2026-05-08)
+
+
+### Bug Fixes
+
+* fix wipe script ([ea23762](https://github.com/gridcat/grc-explorer/commit/ea23762cd144f7d1ca892e4f258d68fb0ae708fa))
+
 # [grc-explorer-v1.0.2](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.0.1...grc-explorer-v1.0.2) (2026-05-08)
 
 
