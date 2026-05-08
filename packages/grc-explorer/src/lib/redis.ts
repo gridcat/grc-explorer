@@ -9,14 +9,25 @@ const baseOpts = {
   maxRetriesPerRequest: 3,
 };
 
-// Three logical clients. ioredis requires separate connections for
-// blocking commands (XREAD) and pub/sub (subscribe), so we share a
-// "command" client for normal ops and dedicated ones for streams /
-// pub/sub. Each is created lazily on first import.
+// Pub/sub clients must NOT carry a keyPrefix. ioredis applies the
+// prefix to channel arguments on publish/(p)subscribe too, which would
+// double-prefix every fanout channel when the indexer publishes and
+// the api psubscribes — the wire channel ends up
+// `grc-explorer:mainnet:grc-explorer:mainnet:events:block.new` and the
+// subscriber's `channel.slice(CHANNEL_PREFIX.length)` then strips only
+// one of those prefixes, so events.emit() lands on a topic name no
+// SSE client is listening for. fanout.ts already namespaces channels
+// explicitly via CHANNEL_PREFIX, so opt these clients out.
+const pubsubOpts = { ...baseOpts, keyPrefix: undefined };
+
+// Logical clients. ioredis requires separate connections for blocking
+// commands (XREAD) and pub/sub (subscribe), so we share a "command"
+// client for normal ops and dedicated ones for streams / pub/sub.
+// Each is created lazily on first import.
 export const redis = new Redis(baseOpts);
 export const redisStreams = new Redis(baseOpts);
-export const redisSub = new Redis(baseOpts);
-export const redisPub = new Redis(baseOpts);
+export const redisSub = new Redis(pubsubOpts);
+export const redisPub = new Redis(pubsubOpts);
 
 // Keys aren't auto-prefixed when used inside Lua / pub/sub channel
 // names; export the prefix so callers can compose keys explicitly when
