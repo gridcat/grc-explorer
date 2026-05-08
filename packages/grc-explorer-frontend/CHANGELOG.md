@@ -1,3 +1,10 @@
+# [grc-explorer-frontend-v1.0.2](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.0.1...grc-explorer-frontend-v1.0.2) (2026-05-08)
+
+
+### Bug Fixes
+
+* fix hosts ([683db98](https://github.com/gridcat/grc-explorer/commit/683db982ab8d038513b7a9d3f4069404d25abf4b))
+
 # [grc-explorer-frontend-v1.0.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.0.0...grc-explorer-frontend-v1.0.1) (2026-05-08)
 
 
