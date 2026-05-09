@@ -20,6 +20,15 @@ interface MyAppProps extends AppProps {
   emotionCache?: EmotionCache;
   /** SSR-injected initial mode (read from cookie in _document.tsx). */
   mode?: ThemeMode;
+  /**
+   * Whether the Plausible tracker should be loaded. Resolved server-
+   * side from `process.env.NEXT_PUBLIC_TRACK` and threaded as a prop:
+   * the client bundle can't read it directly because Turbopack pulls
+   * in the `process` polyfill (with an empty `env`) instead of
+   * statically replacing the value, so the conditional always loses
+   * at runtime in the browser.
+   */
+  track?: boolean;
 }
 
 /**
@@ -42,7 +51,9 @@ function AppShell({ Component, pageProps }: { Component: AppProps['Component']; 
 }
 
 export default function MyApp(props: MyAppProps) {
-  const { Component, emotionCache = clientSideEmotionCache, pageProps, mode } = props;
+  const {
+    Component, emotionCache = clientSideEmotionCache, pageProps, mode, track,
+  } = props;
   const titlePrefix = IS_TESTNET ? '[testnet] ' : '';
   // Favicon mirrors the AppBar logo. Network is build-time fixed; the
   // dark/light mode is user-toggled through ThemeModeProvider below.
@@ -57,7 +68,7 @@ export default function MyApp(props: MyAppProps) {
         {IS_TESTNET && <meta name="robots" content="noindex,nofollow" />}
         <title>{`${titlePrefix}Gridcoin Block Explorer`}</title>
       </Head>
-      {process.env.NEXT_PUBLIC_TRACK === 'true' && (
+      {track && (
         <Script
           src="https://daj.pw/js/plausible.js"
           data-domain={IS_TESTNET ? 'testnet-explorer.gridcoin.club' : 'explorer.gridcoin.club'}
@@ -84,5 +95,6 @@ MyApp.getInitialProps = async (appCtx: import('next/app').AppContext) => {
     const m = cookieHeader.match(/(?:^|;\s*)theme=(dark|light)/);
     if (m) mode = m[1] as ThemeMode;
   }
-  return { ...appProps, mode };
+  const track = process.env.NEXT_PUBLIC_TRACK === 'true';
+  return { ...appProps, mode, track };
 };
