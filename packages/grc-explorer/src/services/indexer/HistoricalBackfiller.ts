@@ -1,5 +1,5 @@
 import { config } from '../../config';
-import { heavyRpc, liveRpc } from '../../lib/gridcoin';
+import { heavyRpc, liveRpc, simpleRpc } from '../../lib/gridcoin';
 import { log } from '../../lib/log';
 import { events } from '../../lib/emitter';
 import { getCursor, isWipeInProgress, setCursor } from '../../lib/redis';
@@ -45,17 +45,28 @@ export class HistoricalBackfiller {
       return true;
     }
 
-    log.info(`Backfilling from height ${nextHeight} → ${targetHeight} (tip=${tipHeight})`);
+    const modeTag = config.BACKFILL_SEQUENTIAL ? ' [sequential]' : '';
+    log.info(`Backfilling from height ${nextHeight} → ${targetHeight} (tip=${tipHeight})${modeTag}`);
 
-    // One continuous pump: fetcher stays full from `nextHeight` all the
-    // way to `targetHeight`. The earlier windowed loop drained the
-    // fetcher pipeline at every BACKFILL_BATCH_SIZE boundary (and slept
-    // 100ms between windows), which left the daemon idle while we
-    // spun up the next 8 parallel RPCs. With no API customers during
-    // the catch-up window the yield is unnecessary, and `processRange`
-    // already flushes per BACKFILL_TX_BATCH_SIZE so commit cadence is
-    // unchanged — the only thing that disappears is the gap.
-    await this.processRange(nextHeight, targetHeight, tipHeight);
+    if (config.BACKFILL_SEQUENTIAL) {
+      // Sequential mode: one block at a time, fetched + parsed +
+      // committed before the next call. Slow but boring; bypasses
+      // semaphore, AIMD, fetch buffer and txBatchSize accumulator.
+      // Each committed block is durable before the next fetch
+      // starts, so a single RPC failure costs at most one block of
+      // work — the schedule's next tick resumes from the cursor.
+      await this.processRangeSequential(nextHeight, targetHeight, tipHeight);
+    } else {
+      // One continuous pump: fetcher stays full from `nextHeight` all the
+      // way to `targetHeight`. The earlier windowed loop drained the
+      // fetcher pipeline at every BACKFILL_BATCH_SIZE boundary (and slept
+      // 100ms between windows), which left the daemon idle while we
+      // spun up the next 8 parallel RPCs. With no API customers during
+      // the catch-up window the yield is unnecessary, and `processRange`
+      // already flushes per BACKFILL_TX_BATCH_SIZE so commit cadence is
+      // unchanged — the only thing that disappears is the gap.
+      await this.processRange(nextHeight, targetHeight, tipHeight);
+    }
 
     if (!this.aborted) {
       await this.markLive();
@@ -82,6 +93,63 @@ export class HistoricalBackfiller {
     // a Phase-3 chunk; the chain-data spine doesn't depend on it. The
     // dirty-sentinel auto-reindex will re-attach once the search path
     // is ported.
+  }
+
+  /**
+   * Boring sequential walk: one block per RPC, committed before the
+   * next fetch starts. No semaphore, no AIMD, no buffer Map, no
+   * pending accumulator, no out-of-order arrivals. If any step
+   * throws, the loop returns and the schedule's next 60s tick
+   * resumes from the persisted cursor. Throughput floor; durability
+   * ceiling. Toggled by BACKFILL_SEQUENTIAL=true.
+   */
+  private async processRangeSequential(
+    from: number,
+    to: number,
+    tipHeight: number,
+  ): Promise<void> {
+    /* eslint-disable no-await-in-loop */
+    for (let height = from; height <= to; height += 1) {
+      if (this.aborted) return;
+      if (await isWipeInProgress()) {
+        log.info('HistoricalBackfiller: wipe in progress, aborting sequential walk');
+        return;
+      }
+
+      const result = await (simpleRpc as unknown as {
+        getBlocksBatch: <T extends boolean>(
+          start: number,
+          n: number,
+          txinfo: T,
+        ) => Promise<{ blockCount: number; blocks: VerboseBlock[] }>;
+      }).getBlocksBatch(height, 1, true);
+      const block = result?.blocks?.[0];
+      if (!block || typeof block.height !== 'number') {
+        // Daemon answered but didn't return the block we asked for.
+        // Bail this run; the next schedule tick retries from the
+        // same height (cursor isn't advanced, so we'll retry).
+        log.warn(
+          `HistoricalBackfiller (sequential): no block at height ${height}; will retry next tick`,
+        );
+        return;
+      }
+
+      const lookup = await buildPrevOutputsLookupMulti([block.tx]);
+      const parsed = parseBlock(block, lookup);
+      await applyBlocks([parsed], { emitLiveEvents: true, deferPostCommit: true });
+
+      const pct = tipHeight > 0 ? (height / tipHeight) * 100 : 0;
+      events.publish({
+        topic: 'backfill.progress',
+        payload: { height, tip: tipHeight, pct },
+      });
+      if (height % 1_000 === 0) {
+        log.info(
+          `Backfill progress (sequential): ${height}/${tipHeight} (${pct.toFixed(2)}%)`,
+        );
+      }
+    }
+    /* eslint-enable no-await-in-loop */
   }
 
   /** Pull and apply blocks `[from, to]` inclusive in strict height order. */

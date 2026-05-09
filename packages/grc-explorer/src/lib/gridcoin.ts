@@ -300,6 +300,16 @@ export const liveRpc = makeProxy(liveBreaker, undefined, undefined, 'stress-only
 //      drain naturally and new pump iterations honor the new limits.
 export const heavyRpc = makeProxy(heavyBreaker, heavySemaphore, liveBreaker, 'both');
 
+// `simpleRpc` — bare wrapper used by the sequential backfill mode
+// (BACKFILL_SEQUENTIAL=true). Only the per-call timeout + breaker
+// remain; no semaphore, no live-lane dependency, no AIMD signals.
+// Sequential mode does one block at a time and commits each one
+// before the next call, so the only safety net it needs is the
+// breaker's "5 timeouts in a row → 30s cooldown" backstop. Shares
+// the heavyBreaker instance so a tripped breaker pauses both modes
+// — they don't run concurrently anyway.
+export const simpleRpc = makeProxy(heavyBreaker);
+
 // Block until the wallet daemon answers a basic health check. Used at
 // boot so we don't crash-loop the container before the daemon's done
 // loading the blockchain.

@@ -53,10 +53,20 @@ interface Config {
   // blocks since last run". 1h is plenty.
   POLL_RESCAN_INTERVAL_MS: number;
   BACKFILL_BATCH_SIZE: number;
+  // Sequential mode. When true, HistoricalBackfiller bypasses the
+  // entire pipeline (semaphore, AIMD, fetch buffer, txBatchSize
+  // accumulator) and walks the chain one block at a time: fetch
+  // single block, parse, apply, advance cursor, repeat. Slow but
+  // boring — no parallelism, no out-of-order arrivals, no batch
+  // accumulation that can be lost on a single-call failure. Each
+  // committed block is durable before the next call starts. Use
+  // when the daemon is too stressed for the parallel pipeline.
+  BACKFILL_SEQUENTIAL: boolean;
   // Maximum (and starting) heavy-lane concurrency. Adaptive
   // backpressure halves the *effective* concurrency under daemon
   // stress and ramps it back toward this ceiling on sustained
-  // success — see `services/indexer/AdaptiveLimits.ts`.
+  // success — see `services/indexer/AdaptiveLimits.ts`. Ignored
+  // entirely when BACKFILL_SEQUENTIAL=true.
   BACKFILL_CONCURRENCY: number;
   // Floor for adaptive concurrency. At least one batch is always
   // permitted under stress so backfill makes some forward progress
@@ -161,6 +171,7 @@ nconf
       'NETWORK_STATS_INTERVAL_MS',
       'POLL_RESCAN_INTERVAL_MS',
       'BACKFILL_BATCH_SIZE',
+      'BACKFILL_SEQUENTIAL',
       'BACKFILL_CONCURRENCY',
       'BACKFILL_CONCURRENCY_MIN',
       'BACKFILL_BATCH_DELAY_MS',
@@ -228,6 +239,7 @@ nconf
     //    pumps through the fetcher pipeline. Bigger = longer in-flight
     //    queue but no commit-cost change.
     BACKFILL_BATCH_SIZE: 1000,
+    BACKFILL_SEQUENTIAL: false,
     // Climbed from 8 → 16 → 32 alongside `rpcthreads=64` on the
     // wallet daemon (see grc-wallet/entrypoint.sh). The 2:1 ratio
     // (concurrency × 2 ≈ rpcthreads) leaves room for the other RPC
