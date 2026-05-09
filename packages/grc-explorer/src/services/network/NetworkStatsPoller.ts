@@ -1,6 +1,6 @@
 import { ch } from '../../lib/ch';
 import { events } from '../../lib/emitter';
-import { rpc } from '../../lib/gridcoin';
+import { liveRpc } from '../../lib/gridcoin';
 import { log } from '../../lib/log';
 import { getCursor, redis } from '../../lib/redis';
 
@@ -52,10 +52,10 @@ export class NetworkStatsPoller {
     // Promise.allSettled rather than Promise.all: when one RPC call
     // is failing the remaining stats should still flow into the cache.
     const settled = await Promise.allSettled([
-      (rpc as unknown as { getBlockchainInfo: () => Promise<BlockchainInfo> }).getBlockchainInfo(),
-      (rpc as unknown as { getNetworkInfo: () => Promise<NetworkInfo> }).getNetworkInfo(),
-      (rpc as unknown as { getRawMemPool: () => Promise<string[]> }).getRawMemPool().then((m) => m.length),
-      (rpc as unknown as { getConnectionCount: () => Promise<number> }).getConnectionCount(),
+      (liveRpc as unknown as { getBlockchainInfo: () => Promise<BlockchainInfo> }).getBlockchainInfo(),
+      (liveRpc as unknown as { getNetworkInfo: () => Promise<NetworkInfo> }).getNetworkInfo(),
+      (liveRpc as unknown as { getRawMemPool: () => Promise<string[]> }).getRawMemPool().then((m) => m.length),
+      (liveRpc as unknown as { getConnectionCount: () => Promise<number> }).getConnectionCount(),
       // Difficulty as observed by the indexer (not the daemon's
       // "live" reading) — the two diverge during backfill, and
       // explorers conventionally show the historical value.

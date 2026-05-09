@@ -2,7 +2,7 @@ import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { ch } from '../lib/ch';
 import { ErrorModel } from '../lib/errors';
-import { rpc } from '../lib/gridcoin';
+import { liveRpc } from '../lib/gridcoin';
 import { halford2grc } from '../lib/halford';
 import { log } from '../lib/log';
 import { getCursor, redis } from '../lib/redis';
@@ -95,11 +95,11 @@ transactionsRouter.get('/:tx_id/raw', async (req: Request, res: Response) => {
       try { decoded = JSON.parse(cachedRows[0].raw_json); } catch { decoded = null; }
     }
     if (!decoded) {
-      decoded = await (rpc as unknown as {
+      decoded = await (liveRpc as unknown as {
         getRawTransaction: (id: string, verbose: boolean) => Promise<unknown>;
       }).getRawTransaction(txId, true);
     }
-    const hex = await (rpc as unknown as {
+    const hex = await (liveRpc as unknown as {
       getRawTransaction: (id: string, verbose: boolean) => Promise<string>;
     }).getRawTransaction(txId, false);
     rewriteAsmFields(decoded);
@@ -511,7 +511,7 @@ async function resolvePrevOutAttrs(
     if (!prev) {
       try {
         // eslint-disable-next-line no-await-in-loop
-        prev = await (rpc as unknown as {
+        prev = await (liveRpc as unknown as {
           getRawTransaction: (id: string, verbose: boolean) => Promise<RawTxLike>;
         }).getRawTransaction(ref.txid, true);
         cache.set(ref.txid, prev);

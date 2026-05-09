@@ -1,4 +1,4 @@
-import { rpc } from '../../lib/gridcoin';
+import { liveRpc } from '../../lib/gridcoin';
 import { events } from '../../lib/emitter';
 import { log } from '../../lib/log';
 import { getCursor, setCursor } from '../../lib/redis';
@@ -123,17 +123,17 @@ export class TipFollower {
   }
 
   private async getTipHeight(): Promise<number> {
-    const info = await (rpc as unknown as { getBlockchainInfo: () => Promise<{ blocks: number }> })
+    const info = await (liveRpc as unknown as { getBlockchainInfo: () => Promise<{ blocks: number }> })
       .getBlockchainInfo();
     return info.blocks;
   }
 
   private async getBlockHash(height: number): Promise<string> {
-    return (rpc as unknown as { getBlockHash: (h: number) => Promise<string> }).getBlockHash(height);
+    return (liveRpc as unknown as { getBlockHash: (h: number) => Promise<string> }).getBlockHash(height);
   }
 
   private async getBlock(hash: string): Promise<VerboseBlock> {
-    return (rpc as unknown as {
+    return (liveRpc as unknown as {
       getBlock: <T extends boolean>(h: string, txinfo: T) => Promise<unknown>;
     }).getBlock(hash, true) as Promise<VerboseBlock>;
   }

@@ -1,5 +1,5 @@
 import { config } from '../../config';
-import { rpc } from '../../lib/gridcoin';
+import { heavyRpc, liveRpc } from '../../lib/gridcoin';
 import { log } from '../../lib/log';
 import { events } from '../../lib/emitter';
 import { getCursor, isWipeInProgress, setCursor } from '../../lib/redis';
@@ -65,7 +65,7 @@ export class HistoricalBackfiller {
   }
 
   private async getTipHeight(): Promise<number> {
-    const info = await (rpc as unknown as { getBlockchainInfo: () => Promise<{ blocks: number }> })
+    const info = await (liveRpc as unknown as { getBlockchainInfo: () => Promise<{ blocks: number }> })
       .getBlockchainInfo();
     return info.blocks;
   }
@@ -232,7 +232,7 @@ export class HistoricalBackfiller {
       const fetchSpanCall = async (start: number, count: number) => {
         inFlight += 1;
         try {
-          const result = await (rpc as unknown as {
+          const result = await (heavyRpc as unknown as {
             getBlocksBatch: <T extends boolean>(
               start: number, n: number, txinfo: T,
             ) => Promise<{ blockCount: number; blocks: VerboseBlock[] }>;

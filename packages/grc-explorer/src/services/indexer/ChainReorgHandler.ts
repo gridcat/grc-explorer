@@ -1,7 +1,7 @@
 import { config } from '../../config';
 import { ch } from '../../lib/ch';
 import { events } from '../../lib/emitter';
-import { rpc } from '../../lib/gridcoin';
+import { liveRpc } from '../../lib/gridcoin';
 import { log } from '../../lib/log';
 import { getCursor, setCursor } from '../../lib/redis';
 
@@ -133,6 +133,6 @@ export class ChainReorgHandler {
   }
 
   private async getBlockHash(height: number): Promise<string> {
-    return (rpc as unknown as { getBlockHash: (h: number) => Promise<string> }).getBlockHash(height);
+    return (liveRpc as unknown as { getBlockHash: (h: number) => Promise<string> }).getBlockHash(height);
   }
 }

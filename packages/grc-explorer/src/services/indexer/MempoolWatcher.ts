@@ -1,6 +1,6 @@
 import { ch } from '../../lib/ch';
 import { events } from '../../lib/emitter';
-import { rpc } from '../../lib/gridcoin';
+import { liveRpc } from '../../lib/gridcoin';
 import { grc2halford, halford2grc, sumHalford } from '../../lib/halford';
 import { log } from '../../lib/log';
 import { nextSeq } from '../../lib/redis';
@@ -225,7 +225,7 @@ export class MempoolWatcher {
       // `confirmed_at` once the actual block lands in `transactions`.
       let confirmed = false;
       try {
-        const tx = await (rpc as unknown as {
+        const tx = await (liveRpc as unknown as {
           getRawTransaction: (id: string, verbose: boolean) => Promise<{ blockhash?: string }>;
         }).getRawTransaction(txId, true);
         confirmed = typeof tx?.blockhash === 'string';
@@ -337,11 +337,11 @@ export class MempoolWatcher {
   }
 
   private async getRawMempool(): Promise<string[]> {
-    return (rpc as unknown as { getRawMemPool: () => Promise<string[]> }).getRawMemPool();
+    return (liveRpc as unknown as { getRawMemPool: () => Promise<string[]> }).getRawMemPool();
   }
 
   private async getRawTransaction(txId: string): Promise<RawTxInfo> {
-    return (rpc as unknown as {
+    return (liveRpc as unknown as {
       getRawTransaction: (id: string, verbose: boolean) => Promise<RawTxInfo>;
     }).getRawTransaction(txId, true);
   }

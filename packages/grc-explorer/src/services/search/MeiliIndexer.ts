@@ -171,15 +171,27 @@ export class MeiliIndexer {
 
     for (const s of settings) {
       const id = meiliIndexId(s.name);
+      let createTaskUid: number | null = null;
       try {
         // eslint-disable-next-line no-await-in-loop
-        await meili.createIndex(id, { primaryKey: s.primaryKey });
+        const enqueued = await meili.createIndex(id, { primaryKey: s.primaryKey });
+        createTaskUid = enqueued.taskUid;
       } catch (err) {
         // Index already exists — fine. Log other errors but keep going.
         const message = err instanceof Error ? err.message : String(err);
         if (!/already exists/i.test(message)) {
           log.warn(`MeiliIndexer: createIndex(${id}) failed`, err);
         }
+      }
+      // Meilisearch's createIndex is asynchronous — `await` resolves when
+      // the task is enqueued, not when the index actually exists. Without
+      // this wait, the heal block below would 404 on every fresh boot
+      // because the index hasn't been created yet by the time we probe.
+      if (createTaskUid !== null) {
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await meili.tasks.waitForTask(createTaskUid);
+        } catch (_err) { /* let the heal probe surface real failures */ }
       }
       // Self-heal: indexes created before this code added `primaryKey: 'id'`
       // (or by a stray client) have `primaryKey: null`, and Meili then

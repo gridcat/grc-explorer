@@ -2,7 +2,7 @@ import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { ch } from '../lib/ch';
 import { ErrorModel } from '../lib/errors';
-import { rpc } from '../lib/gridcoin';
+import { liveRpc } from '../lib/gridcoin';
 import { halford2grc } from '../lib/halford';
 import { hiddenPollIds, isHiddenPoll } from '../lib/hiddenPolls';
 import { log } from '../lib/log';
@@ -244,7 +244,7 @@ pollsRouter.get('/votes/:tx_id/claim', async (req: Request, res: Response) => {
     return;
   }
   try {
-    const claim = await (rpc as unknown as { getVotingClaim: (id: string) => Promise<unknown> })
+    const claim = await (liveRpc as unknown as { getVotingClaim: (id: string) => Promise<unknown> })
       .getVotingClaim(txId);
     res.status(StatusCodes.OK).send({ data: claim, meta: { source: 'getvotingclaim' } });
     return;
@@ -262,7 +262,7 @@ pollsRouter.get('/votes/:tx_id/claim', async (req: Request, res: Response) => {
   }
 
   try {
-    const tx = await (rpc as unknown as {
+    const tx = await (liveRpc as unknown as {
       getRawTransaction: (
         id: string, verbose: number | boolean,
       ) => Promise<{

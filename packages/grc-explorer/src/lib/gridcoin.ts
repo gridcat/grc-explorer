@@ -25,9 +25,59 @@ async function withTimeout<T>(p: Promise<T>, method: string, ms = config.RPC_TIM
   });
 }
 
-// Circuit breaker for the Gridcoin RPC client. Wraps the per-call timeout
-// with a failure-rate gate so the explorer stops hammering a daemon
-// that's clearly in trouble, giving it room to recover.
+// FIFO semaphore. Heavy RPC traffic (the backfill `getblocksbatch`
+// pump) goes through one of these so its in-flight count is centrally
+// enforced regardless of how many callers happen to be issuing heavy
+// calls. Live traffic bypasses it entirely — small calls should never
+// queue behind a heavy batch at the dispatcher level.
+//
+// Invariant: `waiters[]` stays bounded only because every current
+// heavy-lane caller (HistoricalBackfiller.processRange) already self-
+// gates to the same `BACKFILL_CONCURRENCY` cap. The semaphore is the
+// dispatcher-level safety net for any future caller that forgets to.
+class Semaphore {
+  private available: number;
+
+  private waiters: Array<() => void> = [];
+
+  constructor(capacity: number) {
+    this.available = Math.max(0, capacity);
+  }
+
+  private acquire(): Promise<void> {
+    if (this.available > 0) {
+      this.available -= 1;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      this.waiters.push(resolve);
+    });
+  }
+
+  private release(): void {
+    const next = this.waiters.shift();
+    if (next) {
+      next();
+      return;
+    }
+    this.available += 1;
+  }
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    await this.acquire();
+    try {
+      return await fn();
+    } finally {
+      this.release();
+    }
+  }
+}
+
+// Circuit breaker for the Gridcoin RPC client. Wraps the per-call
+// timeout with a failure-rate gate so the explorer stops hammering a
+// daemon that's clearly in trouble, giving it room to recover. Each
+// proxy lane (live, heavy) owns its own breaker so a stalled backfill
+// doesn't take live mempool/tip observability down with it.
 //
 // States:
 //   closed    — normal. Failures increment; successes reset.
@@ -38,15 +88,19 @@ async function withTimeout<T>(p: Promise<T>, method: string, ms = config.RPC_TIM
 //
 // Disabled by RPC_BREAKER_THRESHOLD=0.
 type BreakerState = 'closed' | 'open' | 'half-open';
+type Lane = 'live' | 'heavy';
 
 class BreakerOpenError extends Error {
   public readonly code = 'RPC_BREAKER_OPEN';
 
-  constructor(method: string, openedForMs: number) {
+  public readonly lane: Lane;
+
+  constructor(lane: Lane, method: string, openedForMs: number) {
     super(
-      `Gridcoin RPC breaker is open after ${config.RPC_BREAKER_THRESHOLD} consecutive failures; `
+      `Gridcoin RPC breaker [${lane}] is open after ${config.RPC_BREAKER_THRESHOLD} consecutive failures; `
       + `rejecting ${method} (cooldown resumes in ~${Math.max(0, Math.ceil(openedForMs / 1000))}s)`,
     );
+    this.lane = lane;
   }
 }
 
@@ -57,6 +111,8 @@ class RpcBreaker {
 
   private openedAt = 0;
 
+  constructor(private readonly lane: Lane) {}
+
   public isDisabled(): boolean {
     return config.RPC_BREAKER_THRESHOLD <= 0;
   }
@@ -66,17 +122,17 @@ class RpcBreaker {
     if (this.state === 'open') {
       const elapsed = Date.now() - this.openedAt;
       if (elapsed < config.RPC_BREAKER_COOLDOWN_MS) {
-        throw new BreakerOpenError(method, config.RPC_BREAKER_COOLDOWN_MS - elapsed);
+        throw new BreakerOpenError(this.lane, method, config.RPC_BREAKER_COOLDOWN_MS - elapsed);
       }
       this.state = 'half-open';
-      log.info('Gridcoin RPC breaker transitioning from open → half-open (probing)');
+      log.info(`Gridcoin RPC breaker [${this.lane}] transitioning from open → half-open (probing)`);
     }
   }
 
   public recordSuccess(): void {
     if (this.isDisabled()) return;
     if (this.state !== 'closed') {
-      log.info(`Gridcoin RPC breaker transitioning from ${this.state} → closed`);
+      log.info(`Gridcoin RPC breaker [${this.lane}] transitioning from ${this.state} → closed`);
     }
     this.state = 'closed';
     this.consecutiveFailures = 0;
@@ -97,7 +153,7 @@ class RpcBreaker {
   private trip(): void {
     if (this.state !== 'open') {
       log.warn(
-        `Gridcoin RPC breaker tripping open after ${this.consecutiveFailures} failures; `
+        `Gridcoin RPC breaker [${this.lane}] tripping open after ${this.consecutiveFailures} failures; `
         + `cooldown ${config.RPC_BREAKER_COOLDOWN_MS}ms`,
       );
     }
@@ -106,7 +162,9 @@ class RpcBreaker {
   }
 }
 
-const breaker = new RpcBreaker();
+const liveBreaker = new RpcBreaker('live');
+const heavyBreaker = new RpcBreaker('heavy');
+const heavySemaphore = new Semaphore(config.BACKFILL_CONCURRENCY);
 
 const rawRpc = new GridcoinRPC({
   port: config.GRC_RPC_PORT,
@@ -115,44 +173,65 @@ const rawRpc = new GridcoinRPC({
   password: config.GRC_RPC_PASSWORD,
 });
 
-// Proxy every method call through the timeout + breaker layers. Callers
-// just `await rpc.getBlock(...)`; the resilience behaviour is invisible
-// except in the error types they might see (BreakerOpenError, "... timed
-// out after Nms").
-export const rpc = new Proxy(rawRpc, {
-  get(target, prop: string | symbol, receiver) {
-    const value = Reflect.get(target, prop, receiver);
-    if (typeof value !== 'function') return value;
-    return function wrapped(this: unknown, ...args: unknown[]) {
-      const method = String(prop);
-      try {
-        breaker.precheck(method);
-      } catch (e) {
-        return Promise.reject(e);
-      }
-      const result = value.apply(this === receiver ? target : this, args);
-      if (!result || typeof (result as Promise<unknown>).then !== 'function') {
-        return result;
-      }
-      return withTimeout(result as Promise<unknown>, method)
-        .then((ok) => {
-          breaker.recordSuccess();
-          return ok;
-        })
-        .catch((err) => {
-          breaker.recordFailure();
-          throw err;
-        });
-    };
-  },
-}) as typeof rawRpc;
+// Wrap every method on the underlying client with breaker + timeout
+// (and, for the heavy lane, a semaphore that bounds concurrent
+// in-flight calls). Callers just `await liveRpc.getBlock(...)` /
+// `await heavyRpc.getBlocksBatch(...)`; resilience is invisible
+// except in the error types they might see (BreakerOpenError, "...
+// timed out after Nms").
+function makeProxy(breaker: RpcBreaker, semaphore?: Semaphore): typeof rawRpc {
+  return new Proxy(rawRpc, {
+    get(target, prop: string | symbol, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== 'function') return value;
+      return function wrapped(...args: unknown[]) {
+        const method = String(prop);
+        try {
+          breaker.precheck(method);
+        } catch (e) {
+          return Promise.reject(e);
+        }
+        // Every gridcoin-rpc method funnels through RPCBase.call,
+        // which is async — the proxied invocation always returns a
+        // Promise. No non-Promise branch needed.
+        const issue = () => withTimeout(
+          value.apply(target, args) as Promise<unknown>,
+          method,
+        )
+          .then((ok) => {
+            breaker.recordSuccess();
+            return ok;
+          })
+          .catch((err) => {
+            breaker.recordFailure();
+            throw err;
+          });
+        return semaphore ? semaphore.run(issue) : issue();
+      };
+    },
+  }) as typeof rawRpc;
+}
+
+// `liveRpc` — small, frequent calls (mempool poll, tip height,
+// network stats, single-tx route fetches). No semaphore: live calls
+// must never queue behind in-flight backfill batches at the
+// dispatcher level. Their breaker only counts live failures.
+export const liveRpc = makeProxy(liveBreaker);
+
+// `heavyRpc` — long batched calls used by HistoricalBackfiller
+// (`getBlocksBatch`). Its semaphore enforces the concurrency cap
+// previously implicit in `processRange`'s `inFlight < concurrency`
+// math; failures are isolated in their own breaker so a stalled
+// backfill doesn't open a shared breaker that takes mempool / tip
+// observability down with it.
+export const heavyRpc = makeProxy(heavyBreaker, heavySemaphore);
 
 // Block until the wallet daemon answers a basic health check. Used at
 // boot so we don't crash-loop the container before the daemon's done
 // loading the blockchain.
 export async function connect(): Promise<boolean> {
   try {
-    await (rpc as unknown as { getBlockchainInfo: () => Promise<unknown> }).getBlockchainInfo();
+    await (liveRpc as unknown as { getBlockchainInfo: () => Promise<unknown> }).getBlockchainInfo();
     return true;
   } catch (_err) {
     log.warn('Gridcoin RPC connection error — retrying');
