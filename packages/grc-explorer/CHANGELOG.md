@@ -1,3 +1,10 @@
+# [grc-explorer-v1.0.4](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.0.3...grc-explorer-v1.0.4) (2026-05-09)
+
+
+### Bug Fixes
+
+* relax backfilling to make breathing space for stamp and mempool ([679ff26](https://github.com/gridcat/grc-explorer/commit/679ff26cf3b0f0a7e020ebb3580a401abc3c8eb5))
+
 # [grc-explorer-v1.0.3](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.0.2...grc-explorer-v1.0.3) (2026-05-08)
 
 
