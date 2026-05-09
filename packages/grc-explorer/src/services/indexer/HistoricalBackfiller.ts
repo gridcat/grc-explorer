@@ -3,6 +3,7 @@ import { heavyRpc, liveRpc } from '../../lib/gridcoin';
 import { log } from '../../lib/log';
 import { events } from '../../lib/emitter';
 import { getCursor, isWipeInProgress, setCursor } from '../../lib/redis';
+import { adaptiveLimits } from './AdaptiveLimits';
 // MeiliReindexJob skipped this chunk — search path ports in Phase 3.
 import { applyBlocks } from './BlockWriter';
 import { parseBlock, ParsedBlock } from './ContractParser';
@@ -97,10 +98,13 @@ export class HistoricalBackfiller {
     // `applyBlocks`, which puts the whole group inside one interactive
     // transaction. A single fsync per group instead of per block is
     // the dominant backfill speedup on Docker filesystems.
-    const concurrency = config.BACKFILL_CONCURRENCY;
-    // Daemon caps `getblocksbatch` at 1000; clamp the configured span
-    // to the same ceiling so a typo'd env var can't trip the daemon.
-    const fetchSpan = Math.max(1, Math.min(1000, config.BACKFILL_FETCH_SPAN));
+    // concurrency + fetchSpan come from `adaptiveLimits` per pump
+    // step rather than being captured once here. AIMD halves them on
+    // daemon stress and ramps them back on success — capturing them
+    // would freeze the run at whatever value happened to apply when
+    // processRange started, defeating the controller. Daemon caps
+    // `getblocksbatch` at 1000; the AIMD ceiling is config.BACKFILL_FETCH_SPAN
+    // which is itself bounded by sane defaults, so no clamp needed here.
     const txBatchSize = Math.max(1, config.BACKFILL_TX_BATCH_SIZE);
     const blocks = new Map<number, VerboseBlock>();
     const pending: ParsedBlock[] = [];
@@ -279,6 +283,12 @@ export class HistoricalBackfiller {
 
       const pump = () => {
         if (this.aborted || wipeAborted) return;
+        // Read AIMD's current limits per pump step so a stress event
+        // mid-run takes effect immediately on the next batch issued.
+        // Old in-flight calls drain naturally; we just stop spawning
+        // new ones once we hit the (possibly halved) ceiling.
+        const concurrency = adaptiveLimits.getConcurrency();
+        const fetchSpan = adaptiveLimits.getFetchSpan();
         while (inFlight < concurrency && nextToFetch <= to) {
           const start = nextToFetch;
           const remaining = to - start + 1;

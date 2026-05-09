@@ -2,6 +2,7 @@
 import { GridcoinRPC } from 'gridcoin-rpc';
 import { config } from '../config';
 import { log } from './log';
+import { adaptiveLimits } from '../services/indexer/AdaptiveLimits';
 
 const wait = (ms: number) => new Promise<void>((resolve) => {
   setTimeout(resolve, ms);
@@ -111,10 +112,27 @@ class RpcBreaker {
 
   private openedAt = 0;
 
-  constructor(private readonly lane: Lane) {}
+  constructor(public readonly lane: Lane) {}
 
   public isDisabled(): boolean {
     return config.RPC_BREAKER_THRESHOLD <= 0;
+  }
+
+  // True iff the breaker is currently in `open` state and still
+  // within its cooldown window. Lets one breaker gate calls on
+  // another lane's health (heavy refuses while live is open — a
+  // failing live lane is the daemon telling us it can't even
+  // answer cheap calls, so adding heavy on top would just stack
+  // work it can't drain).
+  public isOpen(): boolean {
+    if (this.isDisabled()) return false;
+    if (this.state !== 'open') return false;
+    return Date.now() - this.openedAt < config.RPC_BREAKER_COOLDOWN_MS;
+  }
+
+  public cooldownRemainingMs(): number {
+    if (!this.isOpen()) return 0;
+    return Math.max(0, config.RPC_BREAKER_COOLDOWN_MS - (Date.now() - this.openedAt));
   }
 
   public precheck(method: string): void {
@@ -179,7 +197,28 @@ const rawRpc = new GridcoinRPC({
 // `await heavyRpc.getBlocksBatch(...)`; resilience is invisible
 // except in the error types they might see (BreakerOpenError, "...
 // timed out after Nms").
-function makeProxy(breaker: RpcBreaker, semaphore?: Semaphore): typeof rawRpc {
+//
+// `dependsOn` lets one lane refuse work while another lane is
+// failing. The heavy lane passes `liveBreaker` here: if cheap calls
+// (mempool poll, tip height) are already timing out, the daemon is
+// stressed and stacking more `getblocksbatch` work on top would
+// just queue requests it can't drain.
+//
+// `feedsAdaptive` controls whether successes and failures on this
+// proxy feed the AdaptiveLimits AIMD controller. The heavy proxy
+// uses this directly (its successes ramp limits up, its failures
+// halve them). The live proxy also signals stress on failure so
+// that timeout cascades on cheap calls trigger the same drain
+// behaviour — but we don't ramp on live successes, since cheap
+// calls succeeding doesn't tell us whether heavy load is safe yet.
+type AdaptiveSignal = 'none' | 'stress-only' | 'both';
+
+function makeProxy(
+  breaker: RpcBreaker,
+  semaphore?: Semaphore,
+  dependsOn?: RpcBreaker,
+  adaptiveSignal: AdaptiveSignal = 'none',
+): typeof rawRpc {
   return new Proxy(rawRpc, {
     get(target, prop: string | symbol, receiver) {
       const value = Reflect.get(target, prop, receiver);
@@ -187,6 +226,25 @@ function makeProxy(breaker: RpcBreaker, semaphore?: Semaphore): typeof rawRpc {
       return function wrapped(...args: unknown[]) {
         const method = String(prop);
         try {
+          if (dependsOn && dependsOn.isOpen()) {
+            throw new BreakerOpenError(
+              breaker.lane,
+              method,
+              dependsOn.cooldownRemainingMs(),
+            );
+          }
+          // Heavy lane refuses while AIMD is in its post-stress
+          // quiet window — the daemon needs that gap to drain its
+          // queue. The error reuses BreakerOpenError so callers
+          // (schedule.ts, HistoricalBackfiller) handle it the same
+          // way they handle a tripped breaker.
+          if (adaptiveSignal === 'both' && adaptiveLimits.isQuiet()) {
+            throw new BreakerOpenError(
+              breaker.lane,
+              method,
+              adaptiveLimits.quietRemainingMs(),
+            );
+          }
           breaker.precheck(method);
         } catch (e) {
           return Promise.reject(e);
@@ -200,10 +258,14 @@ function makeProxy(breaker: RpcBreaker, semaphore?: Semaphore): typeof rawRpc {
         )
           .then((ok) => {
             breaker.recordSuccess();
+            if (adaptiveSignal === 'both') adaptiveLimits.onSuccess();
             return ok;
           })
           .catch((err) => {
             breaker.recordFailure();
+            if (adaptiveSignal !== 'none') {
+              adaptiveLimits.onStress(`${breaker.lane}:${method}`);
+            }
             throw err;
           });
         return semaphore ? semaphore.run(issue) : issue();
@@ -215,16 +277,28 @@ function makeProxy(breaker: RpcBreaker, semaphore?: Semaphore): typeof rawRpc {
 // `liveRpc` — small, frequent calls (mempool poll, tip height,
 // network stats, single-tx route fetches). No semaphore: live calls
 // must never queue behind in-flight backfill batches at the
-// dispatcher level. Their breaker only counts live failures.
-export const liveRpc = makeProxy(liveBreaker);
+// dispatcher level. Their breaker only counts live failures, but
+// live failures DO feed AdaptiveLimits as a stress signal — a
+// cheap call timing out is a strong "daemon is overloaded" signal.
+// Live successes do NOT ramp adaptive limits; cheap calls
+// succeeding tells us nothing about heavy capacity.
+export const liveRpc = makeProxy(liveBreaker, undefined, undefined, 'stress-only');
 
 // `heavyRpc` — long batched calls used by HistoricalBackfiller
-// (`getBlocksBatch`). Its semaphore enforces the concurrency cap
-// previously implicit in `processRange`'s `inFlight < concurrency`
-// math; failures are isolated in their own breaker so a stalled
-// backfill doesn't open a shared breaker that takes mempool / tip
-// observability down with it.
-export const heavyRpc = makeProxy(heavyBreaker, heavySemaphore);
+// (`getBlocksBatch`). Three layers of resilience stack here:
+//
+//   1. Heavy semaphore caps concurrent in-flight calls (safety net
+//      sized to the configured maximum).
+//   2. `dependsOn=liveBreaker` refuses heavy issuance while the
+//      live lane is in trouble — daemon can't even answer cheap
+//      calls, no point asking it for blocks.
+//   3. AdaptiveLimits AIMD: heavy successes ramp the effective
+//      concurrency + fetch span back up, heavy failures halve them
+//      and arm a quiet period during which heavy refuses outright.
+//      The backfiller pump reads `adaptiveLimits.getConcurrency()`
+//      and `getFetchSpan()` per pump step, so old in-flight calls
+//      drain naturally and new pump iterations honor the new limits.
+export const heavyRpc = makeProxy(heavyBreaker, heavySemaphore, liveBreaker, 'both');
 
 // Block until the wallet daemon answers a basic health check. Used at
 // boot so we don't crash-loop the container before the daemon's done

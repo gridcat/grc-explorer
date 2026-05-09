@@ -408,10 +408,14 @@ workflows:
               ignore: /.*/
             tags:
               only: /^grc-explorer-frontend-v.*/
-      - grc-explorer-frontend_build_image-testnet:
-          context: git-container-registry
-          filters:
-            branches:
-              ignore: /.*/
-            tags:
-              only: /^grc-explorer-frontend-v.*/
+      # Testnet image build disabled — testnet-explorer.gridcoin.club is
+      # not planned for deployment. The `grc-explorer-frontend_build_image-testnet`
+      # job definition above is kept in place so reviving testnet is a
+      # one-line uncomment here, but it doesn't run on tag pushes today.
+      # - grc-explorer-frontend_build_image-testnet:
+      #     context: git-container-registry
+      #     filters:
+      #       branches:
+      #         ignore: /.*/
+      #       tags:
+      #         only: /^grc-explorer-frontend-v.*/

@@ -53,7 +53,15 @@ interface Config {
   // blocks since last run". 1h is plenty.
   POLL_RESCAN_INTERVAL_MS: number;
   BACKFILL_BATCH_SIZE: number;
+  // Maximum (and starting) heavy-lane concurrency. Adaptive
+  // backpressure halves the *effective* concurrency under daemon
+  // stress and ramps it back toward this ceiling on sustained
+  // success — see `services/indexer/AdaptiveLimits.ts`.
   BACKFILL_CONCURRENCY: number;
+  // Floor for adaptive concurrency. At least one batch is always
+  // permitted under stress so backfill makes some forward progress
+  // even when the daemon is having a rough time.
+  BACKFILL_CONCURRENCY_MIN: number;
   // Cooldown applied after each completed `getblocksbatch` before the
   // next one is issued. Concurrency caps parallelism but not duty
   // cycle — with two batches always in flight the daemon never goes
@@ -62,12 +70,31 @@ interface Config {
   // forces explicit gaps the wallet's other callers can slip into.
   // Default 0 (no cooldown). Tune up when sharing the daemon.
   BACKFILL_BATCH_DELAY_MS: number;
-  // How many consecutive blocks to pull per `getblocksbatch` RPC.
-  // Each span is one round-trip + one daemon-side serialize, so bigger
-  // spans amortize RTT but inflate response payload. Daemon caps at
-  // 1000; we default to a conservative value that keeps payloads sane
-  // on dense PoS-era heights.
+  // Maximum (and starting) blocks per `getblocksbatch` RPC. Each
+  // span is one round-trip + one daemon-side serialize, so bigger
+  // spans amortize RTT but inflate response payload and the daemon's
+  // cs_main hold time per call. Adaptive backpressure halves this
+  // under stress and ramps back toward the ceiling on success.
   BACKFILL_FETCH_SPAN: number;
+  // Floor for adaptive fetch span. 1 = single block per call when
+  // the daemon is most stressed.
+  BACKFILL_FETCH_SPAN_MIN: number;
+  // Successful heavy batches required before adaptive limits bump
+  // either dimension by one step. Higher = more conservative ramp,
+  // less oscillation.
+  BACKFILL_ADAPTIVE_RAMP_THRESHOLD: number;
+  // Stress-signal debounce. A burst of failures inside this window
+  // counts as one halving event, not five — prevents AIMD from
+  // collapsing straight to the floor on a single stress incident.
+  BACKFILL_ADAPTIVE_STRESS_DEBOUNCE_MS: number;
+  // Quiet period after a stress event during which all heavy-lane
+  // calls are refused outright, giving the daemon's RPC queue room
+  // to drain whatever it's already working on. We can't abort the
+  // daemon's in-flight work from the client side; the only honest
+  // backpressure is "stop pestering it for a while". Longer than
+  // the breaker cooldown because daemon drain is the goal here,
+  // not just our local retry pause.
+  BACKFILL_ADAPTIVE_STRESS_QUIET_MS: number;
   // How many parsed blocks to fold into one MySQL transaction during
   // backfill. Larger values amortize commit/fsync overhead but lengthen
   // the time the API path waits if it tries to read while the batch
@@ -135,7 +162,12 @@ nconf
       'POLL_RESCAN_INTERVAL_MS',
       'BACKFILL_BATCH_SIZE',
       'BACKFILL_CONCURRENCY',
+      'BACKFILL_CONCURRENCY_MIN',
       'BACKFILL_BATCH_DELAY_MS',
+      'BACKFILL_FETCH_SPAN_MIN',
+      'BACKFILL_ADAPTIVE_RAMP_THRESHOLD',
+      'BACKFILL_ADAPTIVE_STRESS_DEBOUNCE_MS',
+      'BACKFILL_ADAPTIVE_STRESS_QUIET_MS',
       'BACKFILL_FETCH_SPAN',
       'BACKFILL_TX_BATCH_SIZE',
       'SAFE_CONFIRMATIONS',
@@ -219,7 +251,12 @@ nconf
     // halves the in-flight getblock pressure so heavy callers like
     // beaconreport can land between batches.
     BACKFILL_CONCURRENCY: 8,
+    BACKFILL_CONCURRENCY_MIN: 1,
     BACKFILL_BATCH_DELAY_MS: 0,
+    BACKFILL_FETCH_SPAN_MIN: 1,
+    BACKFILL_ADAPTIVE_RAMP_THRESHOLD: 10,
+    BACKFILL_ADAPTIVE_STRESS_DEBOUNCE_MS: 30_000,
+    BACKFILL_ADAPTIVE_STRESS_QUIET_MS: 60_000,
     // 25 blocks per `getblocksbatch` RPC. With BACKFILL_CONCURRENCY=8
     // that's 200 blocks pulled per 8-deep RPC pool depth — same daemon
     // pressure as the per-block fetcher used to apply, ~25× fewer RTTs.
