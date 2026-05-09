@@ -1,3 +1,10 @@
+# [grc-explorer-v1.0.5](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.0.4...grc-explorer-v1.0.5) (2026-05-09)
+
+
+### Bug Fixes
+
+* add breathhing space between backfills ([3bb34c3](https://github.com/gridcat/grc-explorer/commit/3bb34c3b3405f2ead43f4d2fbd0432d0552637a1))
+
 # [grc-explorer-v1.0.4](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.0.3...grc-explorer-v1.0.4) (2026-05-09)
 
 
