@@ -1,3 +1,10 @@
+# [grc-explorer-v1.1.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.1.0...grc-explorer-v1.1.1) (2026-05-09)
+
+
+### Bug Fixes
+
+* fix the stuck block issue (i hope) ([bd1b3ec](https://github.com/gridcat/grc-explorer/commit/bd1b3ec1abfd265b0a043a254d5acadcad35ada3))
+
 # [grc-explorer-v1.1.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.0.5...grc-explorer-v1.1.0) (2026-05-09)
 
 
