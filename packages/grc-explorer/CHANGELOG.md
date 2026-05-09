@@ -1,3 +1,10 @@
+# [grc-explorer-v1.1.2](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.1.1...grc-explorer-v1.1.2) (2026-05-09)
+
+
+### Bug Fixes
+
+* add boring sequential mode ([bc00d2f](https://github.com/gridcat/grc-explorer/commit/bc00d2fd8c89084a993760eca0927988ae6752cf))
+
 # [grc-explorer-v1.1.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.1.0...grc-explorer-v1.1.1) (2026-05-09)
 
 
