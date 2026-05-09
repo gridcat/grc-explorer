@@ -1,3 +1,10 @@
+# [grc-explorer-v1.1.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.0.5...grc-explorer-v1.1.0) (2026-05-09)
+
+
+### Features
+
+* adaptive backfill loader ([b374311](https://github.com/gridcat/grc-explorer/commit/b374311c1ebea6ce9b62a3a76f5f5e978b95c243))
+
 # [grc-explorer-v1.0.5](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.0.4...grc-explorer-v1.0.5) (2026-05-09)
 
 
