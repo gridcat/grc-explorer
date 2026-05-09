@@ -54,6 +54,14 @@ interface Config {
   POLL_RESCAN_INTERVAL_MS: number;
   BACKFILL_BATCH_SIZE: number;
   BACKFILL_CONCURRENCY: number;
+  // Cooldown applied after each completed `getblocksbatch` before the
+  // next one is issued. Concurrency caps parallelism but not duty
+  // cycle — with two batches always in flight the daemon never goes
+  // idle, so other clients of the shared wallet (notably stamp's
+  // `getbalance`) can't acquire `cs_main`. A non-zero delay here
+  // forces explicit gaps the wallet's other callers can slip into.
+  // Default 0 (no cooldown). Tune up when sharing the daemon.
+  BACKFILL_BATCH_DELAY_MS: number;
   // How many consecutive blocks to pull per `getblocksbatch` RPC.
   // Each span is one round-trip + one daemon-side serialize, so bigger
   // spans amortize RTT but inflate response payload. Daemon caps at
@@ -127,6 +135,7 @@ nconf
       'POLL_RESCAN_INTERVAL_MS',
       'BACKFILL_BATCH_SIZE',
       'BACKFILL_CONCURRENCY',
+      'BACKFILL_BATCH_DELAY_MS',
       'BACKFILL_FETCH_SPAN',
       'BACKFILL_TX_BATCH_SIZE',
       'SAFE_CONFIRMATIONS',
@@ -210,6 +219,7 @@ nconf
     // halves the in-flight getblock pressure so heavy callers like
     // beaconreport can land between batches.
     BACKFILL_CONCURRENCY: 8,
+    BACKFILL_BATCH_DELAY_MS: 0,
     // 25 blocks per `getblocksbatch` RPC. With BACKFILL_CONCURRENCY=8
     // that's 200 blocks pulled per 8-deep RPC pool depth — same daemon
     // pressure as the per-block fetcher used to apply, ~25× fewer RTTs.

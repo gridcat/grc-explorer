@@ -259,6 +259,17 @@ export class HistoricalBackfiller {
           inFlight -= 1;
         }
         await drain();
+        // Cooldown so the daemon's `cs_main` is released long enough
+        // between batches for the shared wallet's other clients
+        // (stamp's `getbalance`, daemon-side ConnectBlock for new
+        // p2p blocks) to acquire it. Without this, low concurrency
+        // alone doesn't help — pipelined batches keep the daemon
+        // continuously busy.
+        if (config.BACKFILL_BATCH_DELAY_MS > 0) {
+          await new Promise<void>((r) => {
+            setTimeout(r, config.BACKFILL_BATCH_DELAY_MS);
+          });
+        }
         // pump and fetchSpanCall form a mutually-recursive closure pair;
         // declare-then-define here is intentional and safe (TDZ has
         // resolved by the time the await above completes).
