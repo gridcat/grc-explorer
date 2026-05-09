@@ -1,3 +1,10 @@
+# [grc-explorer-frontend-v1.0.3](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.0.2...grc-explorer-frontend-v1.0.3) (2026-05-09)
+
+
+### Bug Fixes
+
+* resolve tracking env variable server side ([d91fad4](https://github.com/gridcat/grc-explorer/commit/d91fad4a04c9133051333b8f7ee5c4a44508e942))
+
 # [grc-explorer-frontend-v1.0.2](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.0.1...grc-explorer-frontend-v1.0.2) (2026-05-08)
 
 
