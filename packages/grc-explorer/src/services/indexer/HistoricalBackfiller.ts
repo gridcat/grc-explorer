@@ -205,6 +205,20 @@ export class HistoricalBackfiller {
               await flushPending();
             }
           }
+          // Eager-flush hatch: if there's no other RPC in flight and
+          // we still have parsed blocks waiting, commit them now even
+          // if `pending` hasn't reached `txBatchSize`. With adaptive
+          // limits at the floor (concurrency=1, span=1) the inner
+          // flush trigger never fires — we'd accumulate a single
+          // block per call and never reach 50 — so progress would
+          // stall indefinitely. With concurrency at the ceiling and
+          // calls overlapping, `inFlight` stays >0 between drains and
+          // the regular txBatchSize trigger amortizes commits as
+          // before. Pure win for stressed-mode operation, no cost in
+          // healthy-mode operation.
+          if (pending.length > 0 && inFlight === 0 && !this.aborted && !wipeAborted) {
+            await flushPending();
+          }
           // Resolve when either (a) we've fully finished the range or
           // (b) we've been aborted and the fetcher pipeline has emptied.
           // The aborted branch flushes whatever is already parsed so we
