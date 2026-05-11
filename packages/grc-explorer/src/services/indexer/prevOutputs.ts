@@ -1,6 +1,6 @@
 import { TupleParam } from '@clickhouse/client';
 import { ch } from '../../lib/ch';
-import { PrevOutputsLookup } from './ContractParser';
+import { ParsedTxOutputRow, PrevOutputsLookup } from './ContractParser';
 
 interface CacheEntry {
   address: string | null;
@@ -45,9 +45,24 @@ interface TxLite {
  * we're still inside the same indexer transaction. Without this
  * in-batch enrichment, those vins resolve to `null` value and the
  * fee for the spending tx is computed wrong (sometimes wildly so).
+ *
+ * `parsedPending` covers a subtler case: HistoricalBackfiller's drain
+ * loop can build a new lookup while a previously-parsed batch is
+ * still sitting in the `pending` buffer waiting on flush (when the
+ * earlier rawGroup ran shorter than txBatchSize and the eager-flush
+ * gate held it back). Without including those parsed-but-not-flushed
+ * outputs here, a vin in this rawGroup that spends one of them
+ * silently resolves to `null` — the tx_inputs row goes in with
+ * address=NULL and value=NULL, `bumpDelta` skips the debit, and the
+ * matching credit on the output side becomes a permanent overcount
+ * in `address_balance_history`. Empirically (pre-fix mainnet replay)
+ * this produced 14,436 leaked inputs summing to ~2.11 B GRC of
+ * phantom balance — a 6.6× inflation of total tracked balance vs
+ * money_supply. See WealthSnapshotJob notes for the audit.
  */
 export async function buildPrevOutputsLookupMulti(
   blocksTxs: Array<Array<TxLite>>,
+  parsedPending: ReadonlyArray<ParsedTxOutputRow> = [],
 ): Promise<PrevOutputsLookup> {
   const refs: Array<{ prev_tx: string; prev_vout: number }> = [];
   const seen = new Set<string>();
@@ -69,6 +84,13 @@ export async function buildPrevOutputsLookupMulti(
   // top-level `grc2halford` (string GRC with up to 8 decimals →
   // bigint halford) — copied here to avoid a circular import.
   const cache = new Map<string, CacheEntry>();
+  // Pre-seed from any already-parsed batches that haven't been
+  // flushed to CH yet. Drain-loop callers pass these in; if a vin
+  // here spends one of those outputs, we resolve from memory rather
+  // than firing a CH query that would miss.
+  for (const o of parsedPending) {
+    cache.set(`${o.txId}:${o.voutN}`, { address: o.address, value: o.value });
+  }
   for (const blockTxs of blocksTxs) {
     for (const tx of blockTxs) {
       const vouts = tx.vout ?? [];

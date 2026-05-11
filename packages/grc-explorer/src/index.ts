@@ -8,6 +8,7 @@ import { ChainReorgHandler } from './services/indexer/ChainReorgHandler';
 import { HistoricalBackfiller } from './services/indexer/HistoricalBackfiller';
 import { MempoolWatcher } from './services/indexer/MempoolWatcher';
 import { TipFollower } from './services/indexer/TipFollower';
+import { BoincStatsImportJob } from './services/jobs/BoincStatsImportJob';
 import { PollWeightAggregator } from './services/jobs/PollWeightAggregator';
 import { WealthSnapshotJob } from './services/jobs/WealthSnapshotJob';
 import { NetworkStatsPoller } from './services/network/NetworkStatsPoller';
@@ -65,6 +66,14 @@ async function bootIndexer(): Promise<void> {
   // tick so a backlog doesn't monopolise the scheduler.
   const pollWeights = new PollWeightAggregator();
   schedule(15 * 60_000, () => pollWeights.tick(), 'PollWeightAggregator');
+
+  // Off-chain BOINC user-stats import. Resolves CPIDs to display
+  // names by streaming each whitelisted project's `user.gz` export
+  // and upserting into `project_users`. Idempotent per ~20h via
+  // `project_user_imports.last_success_at`, so a 1h schedule means
+  // each project pulls once per day at most, retrying on failure.
+  const boinc = new BoincStatsImportJob();
+  schedule(60 * 60_000, () => boinc.tick(), 'BoincStatsImport');
 
   // Meili drainer — long-running consumer over the meili:queue Redis
   // stream that BlockWriter.runPostCommit feeds. Doesn't fit setInterval;

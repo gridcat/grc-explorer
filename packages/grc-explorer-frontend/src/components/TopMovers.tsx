@@ -8,7 +8,9 @@ import {
 } from 'react';
 import { api } from '../lib/api';
 import { useSSE } from '../hooks/useSSE';
+import { useCpidNames } from '../hooks/useCpidNames';
 import { atParam, useTimeMachine } from '../hooks/useTimeMachine';
+import { CpidLabel } from './CpidLabel';
 
 interface Entry {
   cpid: string;
@@ -119,23 +121,41 @@ export function TopMovers() {
             </Typography>
           </Box>
         ) : (
-          <Stack spacing={2} sx={{ mt: 1.5 }}>
-            <Section title="Climbers" entries={climbers} kind="climber" />
-            <Section title="Fallers" entries={fallers} kind="faller" />
-            <Section title="New in top 100" entries={newcomers} kind="new" />
-          </Stack>
+          <Sections climbers={climbers} fallers={fallers} newcomers={newcomers} />
         )}
       </CardContent>
     </Card>
   );
 }
 
+// Wrapper that does ONE batched name lookup for every CPID across
+// climbers + fallers + newcomers. Doing the lookup per <Section>
+// would split the same handful of CPIDs into three round trips
+// (although the in-memory cache would coalesce after the first
+// render, the initial paint still costs three fetches).
+function Sections({
+  climbers, fallers, newcomers,
+}: {
+  climbers: Entry[]; fallers: Entry[]; newcomers: Entry[];
+}) {
+  const allCpids = [...climbers, ...fallers, ...newcomers].map((e) => e.cpid);
+  const names = useCpidNames(allCpids);
+  return (
+    <Stack spacing={2} sx={{ mt: 1.5 }}>
+      <Section title="Climbers" entries={climbers} kind="climber" names={names} />
+      <Section title="Fallers" entries={fallers} kind="faller" names={names} />
+      <Section title="New in top 100" entries={newcomers} kind="new" names={names} />
+    </Stack>
+  );
+}
+
 function Section({
-  title, entries, kind,
+  title, entries, kind, names,
 }: {
   title: string;
   entries: Entry[];
   kind: 'climber' | 'faller' | 'new';
+  names: Map<string, string>;
 }) {
   if (entries.length === 0) return null;
   return (
@@ -169,11 +189,9 @@ function Section({
                 </Box>
                 <Link
                   href={`/cpids/${e.cpid}`}
-                  style={{ textDecoration: 'none', color: 'inherit', flex: 1 }}
+                  style={{ textDecoration: 'none', color: 'inherit', flex: 1, minWidth: 0 }}
                 >
-                  <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 12 }}>
-                    {e.cpid}
-                  </Typography>
+                  <CpidLabel cpid={e.cpid} name={names.get(e.cpid)} />
                 </Link>
                 <Typography
                   variant="caption"

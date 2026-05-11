@@ -13,6 +13,8 @@ import { api } from '../../lib/api';
 import { formatGrc, formatTime } from '../../lib/format';
 import { HashTrim } from '../../components/HashTrim';
 import { Crumbs } from '../../components/Crumbs';
+import { CpidLabel } from '../../components/CpidLabel';
+import { useCpidNames } from '../../hooks/useCpidNames';
 import { formatNumber, shortHash } from '../../lib/format';
 
 interface Tx {
@@ -126,6 +128,10 @@ export default function TxDetail({
     )));
   }, [raw]);
 
+  // Hook must run before the early-return below (rules of hooks).
+  const mrcCpidList: string[] = mrc?.cpid ? [mrc.cpid] : [];
+  const names = useCpidNames(mrcCpidList);
+
   if (!tx) return <Layout><Typography>Loading…</Typography></Layout>;
 
   // Confirmed txs live inside their containing block; mempool/unindexed
@@ -209,7 +215,11 @@ export default function TxDetail({
               <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
                 MRC request
               </Typography>
-              <DetailRow label="CPID" value={(<Link href={`/cpids/${mrc.cpid}`} style={{ color: 'inherit' }}>{mrc.cpid}</Link>)} mono />
+              <DetailRow label="CPID" value={(
+                <Link href={`/cpids/${mrc.cpid}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+                  <CpidLabel cpid={mrc.cpid} name={names.get(mrc.cpid)} />
+                </Link>
+              )} />
               {mrc.organization && <DetailRow label="Organization" value={mrc.organization} />}
               <DetailRow label="Client" value={mrc.clientVersion} />
               <DetailRow label="MRC body version" value={`v${mrc.version}`} />

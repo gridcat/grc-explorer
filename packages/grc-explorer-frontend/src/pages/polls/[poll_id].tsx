@@ -12,6 +12,7 @@ import { api } from '../../lib/api';
 import { formatTime } from '../../lib/format';
 import { Crumbs } from '../../components/Crumbs';
 import { HashTrim } from '../../components/HashTrim';
+import { NextMuiLink } from '../../components/NextMuiLink';
 import { safeUrl } from '../../lib/safeUrl';
 
 interface Poll {
@@ -325,9 +326,9 @@ export default function PollDetail({
                 >
                   Read more:{' '}
                   {safe ? (
-                    <a href={safe} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit' }}>
+                    <NextMuiLink href={safe} target="_blank" rel="noopener noreferrer" prose>
                       {poll.url}
-                    </a>
+                    </NextMuiLink>
                   ) : (
                     <Box
                       component="span"

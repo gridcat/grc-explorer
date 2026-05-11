@@ -8,7 +8,7 @@ import {
 import { api } from '../lib/api';
 import { useSSE } from '../hooks/useSSE';
 import { atParam, useTimeMachine } from '../hooks/useTimeMachine';
-import { formatDuration, formatTime } from '../lib/format';
+import { formatCompact, formatDuration, formatTime } from '../lib/format';
 
 export interface NetworkStats {
   /** Daemon chain tip. May be null on first paint when the indexer
@@ -375,18 +375,7 @@ function formatDifficulty(raw: string | undefined | null): string {
   if (raw === undefined || raw === null || raw === '') return '—';
   const n = Number(raw);
   if (!Number.isFinite(n) || n === 0) return '—';
-  // Gridcoin difficulty ranges from ~1e-2 (testnet) to billions (mainnet
-  // PoS). Pick the format that reads naturally at each magnitude.
-  if (n < 1) return n.toFixed(4); // 0.1827
-  if (n < 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 2 }); // 234.56
-  const units = ['K', 'M', 'G', 'T', 'P'];
-  let value = n;
-  let unitIdx = -1;
-  while (value >= 1000 && unitIdx < units.length - 1) {
-    value /= 1000;
-    unitIdx += 1;
-  }
-  return `${value.toFixed(2)} ${units[unitIdx]}`; // 1.23 M
+  return formatCompact(n, 2);
 }
 
 function Tile({ label, value }: { label: string; value: string | number }) {

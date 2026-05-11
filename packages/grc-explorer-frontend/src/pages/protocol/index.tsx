@@ -6,6 +6,7 @@ import type { GetServerSideProps } from 'next';
 import Head from 'next/head';
 import Link from 'next/link';
 import { Crumbs } from '../../components/Crumbs';
+import { NextMuiLink } from '../../components/NextMuiLink';
 import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
 import { formatTime } from '../../lib/format';
@@ -100,20 +101,20 @@ export default function ProtocolPage({ forks }: ProtocolPageProps) {
               activation block (so you can plug it into a difficulty
               or staker chart), and what the fork changed. Every entry
               is sourced from{' '}
-              <Link href="https://github.com/gridcoin-community/Gridcoin-Research/blob/development/src/chainparams.cpp" style={{ color: 'inherit' }}>
+              <NextMuiLink href="https://github.com/gridcoin-community/Gridcoin-Research/blob/development/src/chainparams.cpp" rel="external noopener" prose>
                 chainparams.cpp
-              </Link>
+              </NextMuiLink>
               {' '}or the matching consensus file in
               {' '}
-              <Link href="https://github.com/gridcoin-community/Gridcoin-Research" style={{ color: 'inherit' }}>
+              <NextMuiLink href="https://github.com/gridcoin-community/Gridcoin-Research" rel="external noopener" prose>
                 gridcoin-community/Gridcoin-Research
-              </Link>.
+              </NextMuiLink>.
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
               Looking for the visualisation? The{' '}
-              <Link href="/network/difficulty" style={{ color: 'inherit', fontWeight: 600 }}>
+              <NextMuiLink href="/network/difficulty" prose>
                 difficulty chart
-              </Link>
+              </NextMuiLink>
               {' '}renders every fork in this table as a vertical marker
               annotation; hover a line to see the same summary.
             </Typography>
@@ -171,9 +172,9 @@ export default function ProtocolPage({ forks }: ProtocolPageProps) {
               on its own. Both are still in the wallet today as
               hardcoded special-cases inside{' '}
               <code>GRC::GetNextTargetRequired</code> (
-              <Link href="https://github.com/gridcoin-community/Gridcoin-Research/blob/development/src/gridcoin/staking/difficulty.cpp" style={{ color: 'inherit' }}>
+              <NextMuiLink href="https://github.com/gridcoin-community/Gridcoin-Research/blob/development/src/gridcoin/staking/difficulty.cpp" rel="external noopener" prose>
                 src/gridcoin/staking/difficulty.cpp
-              </Link>
+              </NextMuiLink>
               ).
             </Typography>
             <Stack spacing={2}>
@@ -214,24 +215,24 @@ export default function ProtocolPage({ forks }: ProtocolPageProps) {
             <Typography variant="body2" color="text.secondary" component="div">
               <ul style={{ paddingLeft: '1.25rem', margin: 0 }}>
                 <li>
-                  <Link href="/network/difficulty" style={{ color: 'inherit' }}>
+                  <NextMuiLink href="/network/difficulty" prose>
                     Difficulty history chart
-                  </Link>{' '}— every fork in this table as a vertical marker.
+                  </NextMuiLink>{' '}— every fork in this table as a vertical marker.
                 </li>
                 <li>
-                  <Link href="/protocol/registry" style={{ color: 'inherit' }}>
+                  <NextMuiLink href="/protocol/registry" prose>
                     Protocol registry
-                  </Link>{' '}— time-travel viewer for on-chain protocol-parameter
+                  </NextMuiLink>{' '}— time-travel viewer for on-chain protocol-parameter
                   entries (V13+ knobs the chain itself can adjust).
                 </li>
                 <li>
-                  <a
+                  <NextMuiLink
                     href="https://github.com/gridcoin-community/Gridcoin-Research/blob/development/src/chainparams.cpp"
-                    rel="noopener noreferrer"
-                    style={{ color: 'inherit' }}
+                    rel="external noopener"
+                    prose
                   >
                     chainparams.cpp
-                  </a>{' '}— authoritative C++ definitions for every height in this table.
+                  </NextMuiLink>{' '}— authoritative C++ definitions for every height in this table.
                 </li>
               </ul>
             </Typography>

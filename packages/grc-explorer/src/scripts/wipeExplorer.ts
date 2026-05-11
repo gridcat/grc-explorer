@@ -10,6 +10,12 @@
 //                               we observed live and can never reconstruct
 //                               from chain alone. `--include-mempool` opts
 //                               into the historical DROP DATABASE behaviour.
+//                               BOINC name-mirror tables (`project_users`,
+//                               `project_user_imports`) and the
+//                               `cpid_names` Meili index are preserved by
+//                               default for the same reason — re-fetching
+//                               takes ~24h across the whitelist.
+//                               `--include-boinc` opts into wiping them.
 //
 //   PARTIAL  (--from-height N) — surgical rewind: deletes every CH row with
 //                               height >= N (across all chain tables and
@@ -30,9 +36,11 @@
 // it at the end since the prefixed namespace survives.
 //
 // Usage:
-//   docker exec grc_explorer npm run wipe                  # full wipe (preserves mempool)
+//   docker exec grc_explorer npm run wipe                  # full wipe (preserves mempool + boinc)
 //   docker exec grc_explorer npm run wipe -- --include-mempool
+//   docker exec grc_explorer npm run wipe -- --include-boinc
 //   docker exec grc_explorer npm run wipe -- --from-height 1234567
+//   docker exec grc_explorer npm run wipe -- --help
 //   # or, on the host with deps installed:
 //   npm run wipe
 //   npm run wipe -- --from-height 1234567
@@ -48,10 +56,19 @@ import { rebuildWallets } from './rebuildWallets';
 const CH_URL = config.CLICKHOUSE_URL.replace(/\/$/, '');
 const CH_DB = config.CLICKHOUSE_DATABASE;
 
-const ALL_MEILI_INDEXES: MeiliIndexName[] = [
+// Chain-derived Meili indexes — always wiped on a full reset.
+const CHAIN_MEILI_INDEXES: MeiliIndexName[] = [
   'blocks', 'transactions', 'addresses', 'claims',
   'superblocks', 'polls', 'beacons', 'messages',
 ];
+
+// Off-chain BOINC enrichment. Opt-in via --include-boinc because
+// rebuilding takes a 24h cadence across the project whitelist.
+const BOINC_MEILI_INDEXES: MeiliIndexName[] = ['cpid_names'];
+
+// CH tables that mirror off-chain BOINC user stats. Same opt-in
+// semantics as the Meili index above.
+const BOINC_CH_TABLES = ['project_users', 'project_user_imports'];
 
 // Block-height-bearing CH tables. Order matters for `poll_options`
 // (which has no height column of its own and must be cascaded via a
@@ -271,16 +288,31 @@ const SYNC_MUTATION = { mutations_sync: '2' };
 // never be reconstructed from chain alone — losing them is permanent.
 // `_migrations` stays so we don't replay every DDL on the next boot.
 // `--include-mempool` overrides this set and falls back to DROP DATABASE.
-const PRESERVED_TABLES = new Set([
-  'mempool_txs',
-  'mempool_snapshots',
-  'mrc_requests',
-  '_migrations',
-]);
+// Preserved set is computed per-invocation from the opt-in flags.
+// `_migrations` is always preserved so the next boot doesn't replay
+// every DDL. Mempool + BOINC tables are preserved unless their
+// matching --include-* flag was passed.
+function preservedTables(includeMempool: boolean, includeBoinc: boolean): Set<string> {
+  const set = new Set(['_migrations']);
+  if (!includeMempool) {
+    set.add('mempool_txs');
+    set.add('mempool_snapshots');
+    set.add('mrc_requests');
+  }
+  if (!includeBoinc) {
+    for (const t of BOINC_CH_TABLES) set.add(t);
+  }
+  return set;
+}
 
-async function wipeClickhouseFull(includeMempool: boolean): Promise<void> {
-  if (includeMempool) {
-    console.log(`→ CH: DROP DATABASE IF EXISTS ${CH_DB} (--include-mempool: full nuke)`);
+async function wipeClickhouseFull(includeMempool: boolean, includeBoinc: boolean): Promise<void> {
+  const preserved = preservedTables(includeMempool, includeBoinc);
+  // DROP DATABASE only when there's nothing left to preserve besides
+  // `_migrations`. With anything else preserved we fall back to the
+  // per-table TRUNCATE path so the opted-in carve-outs survive.
+  const shouldNuke = preserved.size === 1 && preserved.has('_migrations');
+  if (shouldNuke) {
+    console.log(`→ CH: DROP DATABASE IF EXISTS ${CH_DB} (no tables preserved — full nuke)`);
     await chPost(`DROP DATABASE IF EXISTS ${CH_DB}`, { withDb: false });
     console.log('→ CH: re-running migrations…');
     // Defer to migrate.mjs by spawning it through node — no transitive
@@ -316,7 +348,7 @@ async function wipeClickhouseFull(includeMempool: boolean): Promise<void> {
   //      MV-accumulated state (e.g. difficulty_daily, fee_quantiles_1h)
   //      doesn't survive a wipe and then double-count once the indexer
   //      replays from genesis.
-  console.log(`→ CH: TRUNCATE every chain-derived table (preserving ${[...PRESERVED_TABLES].join(', ')})`);
+  console.log(`→ CH: TRUNCATE every chain-derived table (preserving ${[...preserved].join(', ')})`);
   const tables = await chQueryJson<{ name: string; engine: string }>(
     `SELECT name, engine FROM system.tables
      WHERE database = '${CH_DB}'
@@ -326,7 +358,7 @@ async function wipeClickhouseFull(includeMempool: boolean): Promise<void> {
   let truncated = 0;
   let skippedPreserved = 0;
   for (const t of tables) {
-    if (PRESERVED_TABLES.has(t.name)) {
+    if (preserved.has(t.name)) {
       skippedPreserved += 1;
       continue;
     }
@@ -358,9 +390,12 @@ async function wipeRedisFull(): Promise<void> {
   console.log(`  ${removed} key(s) deleted`);
 }
 
-async function wipeMeiliFull(): Promise<void> {
+async function wipeMeiliFull(includeBoinc: boolean): Promise<void> {
   console.log(`→ Meili: DELETE indexes ${config.MEILI_INDEX_PREFIX}_*`);
-  for (const name of ALL_MEILI_INDEXES) {
+  const targets = includeBoinc
+    ? [...CHAIN_MEILI_INDEXES, ...BOINC_MEILI_INDEXES]
+    : CHAIN_MEILI_INDEXES;
+  for (const name of targets) {
     const id = `${config.MEILI_INDEX_PREFIX}_${name}`;
     try {
       // eslint-disable-next-line no-await-in-loop
@@ -560,14 +595,54 @@ async function waitForIndexerQuiesce(
 interface WipeArgs {
   fromHeight: number | null;
   includeMempool: boolean;
+  includeBoinc: boolean;
+  help: boolean;
+}
+
+function printHelp(): void {
+  console.log(`Usage: npm run wipe -- [options]
+
+Wipes explorer state for the configured network (NETWORK=${config.NETWORK}).
+
+Modes:
+  (default)             Full wipe — TRUNCATE every chain-derived CH table,
+                        drop Meili chain indexes, clear the prefixed Redis
+                        namespace. Schema stays; replay walks from genesis.
+  --from-height N       Partial wipe — rewind to block N-1. Deletes CH rows
+  --from N              with height >= N, prunes matching Meili docs, replays
+                        Redis wallet projection from the survivors, resets
+                        the cursor. Useful for surgical reorg recovery.
+
+Opt-in carve-outs (preserved by default):
+  --include-mempool     Also drop mempool_txs / mempool_snapshots /
+                        mrc_requests. Implies DROP DATABASE when nothing
+                        else is preserved (BOINC tables and _migrations).
+  --include-boinc       Also drop project_users / project_user_imports
+                        and the cpid_names Meili index. Re-fetching takes
+                        a ~24h cycle across the project whitelist.
+
+Other:
+  -h, --help            Show this message and exit.
+
+Examples:
+  npm run wipe
+  npm run wipe -- --include-mempool
+  npm run wipe -- --include-boinc
+  npm run wipe -- --include-mempool --include-boinc
+  npm run wipe -- --from-height 1234567
+`);
 }
 
 function parseArgs(argv: string[]): WipeArgs {
   let fromHeight: number | null = null;
   let includeMempool = false;
+  let includeBoinc = false;
+  let help = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === '--from-height' || arg === '--from') {
+    if (arg === '--help' || arg === '-h') {
+      help = true;
+    } else if (arg === '--from-height' || arg === '--from') {
       const value = argv[i + 1];
       if (value === undefined) throw new Error(`${arg} requires a numeric block height`);
       const n = Number(value);
@@ -585,17 +660,32 @@ function parseArgs(argv: string[]): WipeArgs {
       fromHeight = n;
     } else if (arg === '--include-mempool') {
       includeMempool = true;
+    } else if (arg === '--include-boinc') {
+      includeBoinc = true;
+    } else {
+      throw new Error(`Unknown argument: ${arg} (try --help)`);
     }
   }
-  return { fromHeight, includeMempool };
+  return {
+    fromHeight, includeMempool, includeBoinc, help,
+  };
 }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
+  if (args.help) {
+    printHelp();
+    return;
+  }
+
   if (args.fromHeight === null) {
-    const note = args.includeMempool ? ' (including mempool — full nuke)' : ' (preserving mempool)';
-    console.log(`Wiping explorer state for network=${config.NETWORK}${note}`);
+    const preservedNotes: string[] = [];
+    if (args.includeMempool) preservedNotes.push('mempool dropped');
+    else preservedNotes.push('mempool preserved');
+    if (args.includeBoinc) preservedNotes.push('boinc dropped');
+    else preservedNotes.push('boinc preserved');
+    console.log(`Wiping explorer state for network=${config.NETWORK} (${preservedNotes.join(', ')})`);
   } else {
     console.log(`Partial wipe (from height ${args.fromHeight}) for network=${config.NETWORK}`);
   }
@@ -616,9 +706,9 @@ async function main(): Promise<void> {
   console.log('');
 
   if (args.fromHeight === null) {
-    await wipeClickhouseFull(args.includeMempool);
+    await wipeClickhouseFull(args.includeMempool, args.includeBoinc);
     await wipeRedisFull();
-    await wipeMeiliFull();
+    await wipeMeiliFull(args.includeBoinc);
   } else {
     // Order: Meili IDs come from CH, so collect+delete them BEFORE we
     // wipe CH. Then CH base tables. Then Redis rewind (which reads the

@@ -1,0 +1,4 @@
+{
+  "_comment": "BOINC CPIDs whose owners have asked us not to mirror their project usernames. Append entries one per line to keep diffs reviewable. See /disclaimer for the opt-out process (email gridcat@gridcoin.club).",
+  "cpids": []
+}

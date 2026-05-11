@@ -10,6 +10,8 @@ import { api } from '../../lib/api';
 import { formatNumber, formatTime } from '../../lib/format';
 import { HashTrim } from '../../components/HashTrim';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
+import { CpidLabel } from '../../components/CpidLabel';
+import { useCpidNames } from '../../hooks/useCpidNames';
 
 interface Superblock {
   height: number;
@@ -56,6 +58,8 @@ export default function SuperblockDetail({
       setActiveBeaconCount(r.data?.activeBeaconCount ?? null);
     }).catch(() => { /* ignore */ });
   }, [height, sb]);
+
+  const names = useCpidNames(magnitudes.map((m) => m.cpid));
 
   if (!sb) return <Layout><Typography>Loading…</Typography></Layout>;
 
@@ -158,8 +162,10 @@ export default function SuperblockDetail({
               {magnitudes.map((m, i) => (
                 <TableRow key={m.cpid} hover>
                   <TableCell sx={{ color: 'text.secondary' }}>{i + 1}</TableCell>
-                  <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>
-                    <Link href={`/cpids/${m.cpid}`} style={{ color: 'inherit' }}>{m.cpid}</Link>
+                  <TableCell>
+                    <Link href={`/cpids/${m.cpid}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+                      <CpidLabel cpid={m.cpid} name={names.get(m.cpid)} />
+                    </Link>
                   </TableCell>
                   <TableCell align="right">{m.magnitude.toFixed(2)}</TableCell>
                   <TableCell align="right" sx={{ color: 'text.secondary' }}>

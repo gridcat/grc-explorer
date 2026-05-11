@@ -18,11 +18,20 @@ import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 
 interface CpidSummary {
   cpid: string;
+  /** Preferred BOINC display name (highest-credit project that
+   *  publishes one); null when nothing is known or the user opted
+   *  out via the denylist. */
+  displayName: string | null;
   currentMagnitude: number;
   blocksStaked: number;
   beaconCount: number;
   firstClaimAt: number | null;
   lastClaimAt: number | null;
+}
+interface CpidNameEntry {
+  projectName: string;
+  name: string;
+  totalCredit: number;
 }
 interface ClaimEntry {
   blockHeight: number;
@@ -51,10 +60,11 @@ interface CpidDetailProps {
   initialMagnitudes: MagPoint[];
   initialBeacons: Beacon[];
   initialMrcs: MrcEntry[];
+  initialNames: CpidNameEntry[];
 }
 
 export default function CpidDetail({
-  initialSummary, initialClaims, initialMagnitudes, initialBeacons, initialMrcs,
+  initialSummary, initialClaims, initialMagnitudes, initialBeacons, initialMrcs, initialNames,
 }: CpidDetailProps) {
   const theme = useTheme();
   const router = useRouter();
@@ -64,6 +74,7 @@ export default function CpidDetail({
   const [magnitudes, setMagnitudes] = useState<MagPoint[]>(initialMagnitudes);
   const [beacons, setBeacons] = useState<Beacon[]>(initialBeacons);
   const [mrcs, setMrcs] = useState<MrcEntry[]>(initialMrcs);
+  const [names, setNames] = useState<CpidNameEntry[]>(initialNames);
 
   useEffect(() => {
     if (!cpid) return;
@@ -74,6 +85,7 @@ export default function CpidDetail({
       setMagnitudes(r.data?.magnitudes ?? []);
       setBeacons(r.data?.beacons ?? []);
       setMrcs(r.data?.mrcs ?? []);
+      setNames(r.data?.names ?? []);
     }).catch(() => { /* ignore */ });
   }, [cpid, summary]);
 
@@ -88,11 +100,37 @@ export default function CpidDetail({
           { label: shortHash(summary.cpid, 8, 6) },
         ]}
         />
-        <Stack direction="row" spacing={2} sx={{ alignItems: 'baseline' }}>
-          <Typography variant="h5" sx={{ fontWeight: 700, fontFamily: 'monospace' }}>
-            CPID {summary.cpid}
-          </Typography>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ alignItems: { sm: 'baseline' } }}>
+          {summary.displayName ? (
+            <>
+              <Typography variant="h5" sx={{ fontWeight: 700 }}>
+                {summary.displayName}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
+                CPID {summary.cpid}
+              </Typography>
+            </>
+          ) : (
+            <Typography variant="h5" sx={{ fontWeight: 700, fontFamily: 'monospace' }}>
+              CPID {summary.cpid}
+            </Typography>
+          )}
         </Stack>
+        {names.length > 1 && (
+          <Typography variant="body2" color="text.secondary">
+            Also known as:{' '}
+            {names.slice(1, 6).map((n, i) => (
+              <span key={`${n.projectName}:${n.name}`}>
+                {i > 0 && ', '}
+                <Link href={`/projects/${encodeURIComponent(n.projectName)}`} style={{ color: 'inherit' }}>
+                  {n.name}
+                </Link>
+                <span style={{ opacity: 0.6 }}>{` (${n.projectName})`}</span>
+              </span>
+            ))}
+            {names.length > 6 ? `, and ${names.length - 6} more` : null}
+          </Typography>
+        )}
 
         <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: '1fr', md: 'repeat(4, 1fr)' } }}>
           <Stat label="Current magnitude" value={summary.currentMagnitude.toFixed(2)} />
@@ -246,6 +284,7 @@ export const getServerSideProps: GetServerSideProps<CpidDetailProps> = async (ct
         initialMagnitudes: r.data?.magnitudes ?? [],
         initialBeacons: r.data?.beacons ?? [],
         initialMrcs: r.data?.mrcs ?? [],
+        initialNames: r.data?.names ?? [],
       },
     };
   } catch {

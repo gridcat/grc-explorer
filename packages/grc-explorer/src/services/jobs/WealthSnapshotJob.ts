@@ -1,161 +1,323 @@
 import { ch } from '../../lib/ch';
 import { getTipAnchor } from '../../lib/indexerTip';
 import { log } from '../../lib/log';
-import { redis } from '../../lib/redis';
 
-const BY_BALANCE = 'wallets:by_balance';
-const BY_LAST_SEEN = 'wallets:by_last_seen';
-
-// Daily wealth snapshot. One row per ~24 h interval into the
+// Daily wealth snapshot. One row per UTC-day bucket into the
 // `wealth_snapshots` CH table. The dashboard's wealth-distribution
 // panel + Lorenz / top-N share series read from there.
 //
-// Anchored on indexer tip-time, NOT wall-clock — during deep backfill
-// chain-time is years behind real-time, and bucketing on wall-clock
-// would skew every snapshot to "now" while the indexer is actually
-// reasoning about 2017. The bucket_ts we store IS the chain-time we
-// snapshotted from.
+// Each tick:
+//   1. Finds the indexer tip's UTC-day bucket and any missing buckets
+//      between the last-written one (or chain-genesis day) and that.
+//   2. For each missing bucket, reads `address_balance_history` AT the
+//      bucket's chain height to reconstruct per-address balances at
+//      that instant, then derives gini, top-N concentration shares,
+//      active/new/hodler counts.
+//   3. Inserts everything in one batch and stops when either the queue
+//      drains or we hit MAX_BACKFILL_PER_TICK (so a fresh genesis-to-tip
+//      run doesn't camp on CH for an hour straight).
 //
-// Wallet projection lives in Redis (post the CQRS refactor); this job
-// reads ZSCORE batches off `wallets:by_balance` rather than CH MVs.
+// Why CH and not the Redis wallet ZSET: the ZSET reflects "now" only,
+// so it can't answer historical queries. address_balance_history is
+// height-keyed (sum(delta) over rows with valid_from_height <= H gives
+// balance at H) and is rewritable safely on reorg — exactly what we
+// need for "what did the distribution look like on 2018-04-17". The
+// trade-off is per-bucket scan cost; ordering by (address, valid_from_height)
+// and the bounded address universe (~50k Gridcoin holders) keeps the
+// scan well under a second on a healthy CH.
+//
+// Idempotency: ReplacingMergeTree(_seq) on `wealth_snapshots` collapses
+// duplicate bucket rows naturally, so concurrent re-writes (replays,
+// reorgs) heal to the latest version without manual cleanup.
+
+// Cap one tick to ~100 buckets. With ~4000 chain-days to backfill on
+// a fresh genesis-to-tip run and one tick per hour, that finishes in
+// under two days while keeping individual ticks under a minute of CH
+// time. Per-bucket cost is one large arrayReverseSort + a handful of
+// parallel counts, dominated by the ~50k-element balance scan.
+const MAX_BACKFILL_PER_TICK = 100;
+
+// Skip buckets older than the first chain block (no addresses, no
+// balances — the math would just emit zeros).
+const CHAIN_GENESIS_DAY = (() => {
+  const GRIDCOIN_GENESIS_TS = 1413033777; // 2014-10-11 14:42:57 UTC
+  return Math.floor(GRIDCOIN_GENESIS_TS / 86_400) * 86_400;
+})();
+
+interface SnapshotRow {
+  bucketTs: number;
+  totalSupply: string;
+  addressesWithBalance: number;
+  gini: number;
+  top1pctShare: number;
+  top10pctShare: number;
+  top100Share: number;
+  active24h: number;
+  new24h: number;
+  hodler30d: number;
+  hodler180d: number;
+}
+
 export class WealthSnapshotJob {
   async tick(): Promise<void> {
     try {
       const anchor = await getTipAnchor();
-      const bucketTs = Math.floor(anchor / 86400) * 86400;
+      if (!Number.isFinite(anchor) || anchor <= 0) return;
+      const currentBucket = Math.floor(anchor / 86_400) * 86_400;
 
-      const existing = await ch.query({
-        query: 'SELECT count() AS c FROM wealth_snapshots WHERE bucket_ts = toDateTime({bt: UInt32})',
-        query_params: { bt: bucketTs },
-        format: 'JSONEachRow',
-      });
-      const count = Number((await existing.json<{ c: string | number }>())[0]?.c ?? 0);
-      if (count > 0) return;
+      const existing = await this.writtenBuckets();
 
-      // Total supply from the latest indexed block.
-      const supplyResult = await ch.query({
-        query: `
-          SELECT toString(max(money_supply)) AS supply
-          FROM blocks FINAL
-          WHERE time <= toDateTime({at: UInt32})
-        `,
-        query_params: { at: anchor },
-        format: 'JSONEachRow',
-      });
-      const totalSupply = BigInt((await supplyResult.json<{ supply: string | null }>())[0]?.supply ?? '0');
-
-      // Pull every wallet's score from the by_balance ZSET. WITHSCORES
-      // gives [member, score, member, score, …]. Score is the balance
-      // in halford as a JS Number (f64); precise enough for ranking
-      // and good enough for Gini at the dashboard's display fidelity.
-      const flat = await redis.zrevrange(BY_BALANCE, 0, -1, 'WITHSCORES');
-      const balances: number[] = [];
-      const addresses: string[] = [];
-      for (let i = 0; i < flat.length; i += 2) {
-        const score = Number(flat[i + 1]);
-        if (!Number.isFinite(score) || score <= 0) continue;
-        addresses.push(flat[i]);
-        balances.push(score);
-      }
-      const totalBal = balances.reduce((acc, b) => acc + b, 0);
-      const addressesWithBalance = balances.length;
-
-      const topShare = (n: number): number => {
-        if (totalBal === 0 || balances.length === 0) return 0;
-        const slice = balances.slice(0, Math.min(n, balances.length));
-        return slice.reduce((acc, b) => acc + b, 0) / totalBal;
+      // Build the backfill batch in two passes so the chart's right
+      // edge populates quickly:
+      //   1) Front-load the *current* bucket and the previous few days
+      //      — what the dashboard renders by default.
+      //   2) Forward-fill from chain genesis so the historical series
+      //      fills in chronologically on subsequent ticks.
+      // ReplacingMergeTree isn't configured for wealth_snapshots, so
+      // we strictly avoid duplicate writes by checking against
+      // `existing` before queuing each candidate.
+      const queued = new Set<number>();
+      const missing: number[] = [];
+      const queue = (bt: number): boolean => {
+        if (bt < CHAIN_GENESIS_DAY || bt > currentBucket) return false;
+        if (existing.has(bt) || queued.has(bt)) return false;
+        queued.add(bt);
+        missing.push(bt);
+        return missing.length < MAX_BACKFILL_PER_TICK;
       };
-      const top1pctShare = topShare(Math.max(1, Math.ceil(addressesWithBalance / 100)));
-      const top10pctShare = topShare(Math.max(1, Math.ceil(addressesWithBalance / 10)));
-      const top100Share = topShare(100);
-
-      // Gini from the sorted-descending balance array. Standard formula:
-      //   gini = (2 * Σ(rank_asc * x_i) − (n+1) * Σx_i) / (n * Σx_i)
-      // We have descending order; converting rank requires flipping i.
-      let gini = 0;
-      if (addressesWithBalance > 0 && totalBal > 0) {
-        let weightedSum = 0;
-        for (let i = 0; i < balances.length; i += 1) {
-          weightedSum += (i + 1) * balances[i];
-        }
-        gini = (2 * weightedSum - (addressesWithBalance + 1) * totalBal)
-          / (addressesWithBalance * totalBal);
-        gini = -gini; // flip sign because of descending sort
+      for (let i = 0; i < 7; i += 1) {
+        if (!queue(currentBucket - i * 86_400)) break;
       }
+      for (
+        let bt = CHAIN_GENESIS_DAY;
+        bt <= currentBucket && missing.length < MAX_BACKFILL_PER_TICK;
+        bt += 86_400
+      ) {
+        queue(bt);
+      }
+      if (missing.length === 0) return; // up to date
 
-      // Cutoff heights for active / hodler windows.
-      const cutoffSecondsMap = {
-        '24h': 86_400,
-        '30d': 30 * 86_400,
-        '180d': 180 * 86_400,
-      } as const;
-      const cutoffHeights: Record<string, number> = {};
-      for (const [key, secs] of Object.entries(cutoffSecondsMap)) {
+      missing.sort((a, b) => a - b);
+
+      const written: SnapshotRow[] = [];
+      for (const bucketTs of missing) {
         // eslint-disable-next-line no-await-in-loop
-        const r = await ch.query({
-          query: `
-            SELECT max(height) AS h FROM blocks FINAL
-            WHERE time <= toDateTime({cutoff: UInt32})
-          `,
-          query_params: { cutoff: anchor - secs },
-          format: 'JSONEachRow',
-        });
-        cutoffHeights[key] = Number((await r.json<{ h: number | null }>())[0]?.h ?? 0);
+        const row = await this.computeSnapshot(bucketTs);
+        if (row !== null) written.push(row);
       }
 
-      // active_24h = wallets with last_seen_block in the last 24h. ZSET
-      // wallets:by_last_seen is scored by block_height — ZCOUNT in
-      // [cutoff_24h, +inf] gives the count directly.
-      const active24h = await redis.zcount(BY_LAST_SEEN, cutoffHeights['24h'], '+inf');
-      // hodler_30d / hodler_180d = wallets with balance > 0 whose
-      // last_seen_block is at-or-below the cutoff (haven't moved
-      // recently). We can't ZCOUNT on by_last_seen directly because
-      // we also need balance > 0; intersect with the wallets-by-balance
-      // set in JS, since the count is small and bounded.
-      const lastSeenAddrs30d = await redis.zrangebyscore(BY_LAST_SEEN, '-inf', cutoffHeights['30d']);
-      const lastSeenAddrs180d = await redis.zrangebyscore(BY_LAST_SEEN, '-inf', cutoffHeights['180d']);
-      const richSet = new Set(addresses);
-      const hodler30d = lastSeenAddrs30d.filter((a) => richSet.has(a)).length;
-      const hodler180d = lastSeenAddrs180d.filter((a) => richSet.has(a)).length;
-
-      // new_24h = addresses whose first_seen_block came in the last
-      // 24h. CH event log has every (address, valid_from_height); we
-      // filter for "this is the FIRST appearance" via min().
-      const newResult = await ch.query({
-        query: `
-          SELECT count() AS c FROM (
-            SELECT address, min(valid_from_height) AS first_seen
-            FROM address_balance_history FINAL
-            WHERE address != ''
-            GROUP BY address
-            HAVING first_seen >= {cutoff: UInt32}
-          )
-        `,
-        query_params: { cutoff: cutoffHeights['24h'] },
-        format: 'JSONEachRow',
-      });
-      const new24h = Number((await newResult.json<{ c: string | number }>())[0]?.c ?? 0);
-
-      await ch.insert({
-        table: 'wealth_snapshots',
-        format: 'JSONEachRow',
-        values: [{
-          bucket_ts: bucketTs,
-          total_supply: totalSupply.toString(),
-          addresses_with_balance: addressesWithBalance,
-          gini: gini.toFixed(8),
-          top1pct_share: top1pctShare.toFixed(8),
-          top10pct_share: top10pctShare.toFixed(8),
-          top100_share: top100Share.toFixed(8),
-          active_24h: active24h,
-          new_24h: new24h,
-          hodler_30d: hodler30d,
-          hodler_180d: hodler180d,
-        }],
-      });
-      log.info(`WealthSnapshot: wrote bucket ${bucketTs} (gini=${gini.toFixed(4)}, addresses=${addressesWithBalance})`);
+      if (written.length > 0) {
+        await ch.insert({
+          table: 'wealth_snapshots',
+          format: 'JSONEachRow',
+          values: written.map((r) => ({
+            bucket_ts: r.bucketTs,
+            total_supply: r.totalSupply,
+            addresses_with_balance: r.addressesWithBalance,
+            gini: r.gini.toFixed(8),
+            top1pct_share: r.top1pctShare.toFixed(8),
+            top10pct_share: r.top10pctShare.toFixed(8),
+            top100_share: r.top100Share.toFixed(8),
+            active_24h: r.active24h,
+            new_24h: r.new24h,
+            hodler_30d: r.hodler30d,
+            hodler_180d: r.hodler180d,
+          })),
+        });
+        log.info(`WealthSnapshot: wrote ${written.length} bucket(s); first=${written[0].bucketTs}, last=${written[written.length - 1].bucketTs}`);
+      }
     } catch (err) {
       log.warn('WealthSnapshotJob.tick failed', err);
     }
+  }
+
+  private async writtenBuckets(): Promise<Set<number>> {
+    const r = await ch.query({
+      query: 'SELECT DISTINCT toUnixTimestamp(bucket_ts) AS bt FROM wealth_snapshots',
+      format: 'JSONEachRow',
+    });
+    const rows = await r.json<{ bt: number }>();
+    const set = new Set<number>();
+    for (const row of rows) {
+      if (typeof row.bt === 'number' && row.bt > 0) set.add(row.bt);
+    }
+    return set;
+  }
+
+  private async heightAtTime(ts: number): Promise<number | null> {
+    const r = await ch.query({
+      query: `
+        SELECT max(height) AS h FROM blocks FINAL
+        WHERE time <= toDateTime({at: UInt32})
+      `,
+      query_params: { at: ts },
+      format: 'JSONEachRow',
+    });
+    const row = (await r.json<{ h: number | null }>())[0];
+    return row?.h ?? null;
+  }
+
+  // Build one wealth_snapshots row for `bucketTs`. Returns null when
+  // the chain hadn't reached this UTC day yet (block-time gap) or no
+  // address state is reconstructable from history.
+  private async computeSnapshot(bucketTs: number): Promise<SnapshotRow | null> {
+    const heightAtBucket = await this.heightAtTime(bucketTs);
+    if (heightAtBucket === null || heightAtBucket === 0) return null;
+
+    // Total supply at this height. money_supply is a running counter
+    // maintained by BlockWriter, so the max() over blocks at-or-before
+    // the cutoff equals the supply at that height.
+    const supplyResult = await ch.query({
+      query: `
+        SELECT toString(max(money_supply)) AS supply
+        FROM blocks FINAL
+        WHERE height <= {h: UInt32}
+      `,
+      query_params: { h: heightAtBucket },
+      format: 'JSONEachRow',
+    });
+    const totalSupply = BigInt(
+      (await supplyResult.json<{ supply: string | null }>())[0]?.supply ?? '0',
+    );
+
+    // Reconstruct positive-balance set at this height. We pull the
+    // sorted-descending balance array back to JS so we can compute
+    // gini and top-N shares without a second CH pass. The array is
+    // bounded by the number of distinct holders (~50k on mainnet),
+    // which is comfortably small for one round trip.
+    //
+    // Float64 truncation: a halford-precision balance fits in ~53 bits
+    // of mantissa as long as it's under ~9e15 (90 million GRC). The
+    // top mainnet wallet sits around a few million GRC — three orders
+    // of magnitude clear. We accept the precision loss for the
+    // ordering / sum / share calculations that only need ratios; the
+    // result is identical to the prior Redis ZSET path which also
+    // stored scores as f64.
+    const balancesResult = await ch.query({
+      query: `
+        SELECT arrayReverseSort(groupArray(toFloat64(balance))) AS sorted
+        FROM (
+          SELECT address, sum(delta) AS balance
+          FROM address_balance_history FINAL
+          WHERE valid_from_height <= {h: UInt32} AND address != ''
+          GROUP BY address
+          HAVING balance > 0
+        )
+      `,
+      query_params: { h: heightAtBucket },
+      format: 'JSONEachRow',
+    });
+    const sortedRow = (await balancesResult.json<{ sorted: number[] }>())[0];
+    const balances: number[] = Array.isArray(sortedRow?.sorted) ? sortedRow.sorted : [];
+    const n = balances.length;
+    const totalBal = balances.reduce((acc, b) => acc + b, 0);
+
+    const topShare = (count: number): number => {
+      if (totalBal === 0 || n === 0) return 0;
+      const slice = balances.slice(0, Math.min(count, n));
+      return slice.reduce((acc, b) => acc + b, 0) / totalBal;
+    };
+    const top1pctShare = topShare(Math.max(1, Math.ceil(n / 100)));
+    const top10pctShare = topShare(Math.max(1, Math.ceil(n / 10)));
+    const top100Share = topShare(100);
+
+    // Standard gini from a descending-sorted array. The formula
+    //   gini = (2 * Σ(rank_asc * x_i) − (n+1) * Σx_i) / (n * Σx_i)
+    // wants ascending ranks; flipping the sign converts our descending
+    // sort cheaper than re-iterating.
+    let gini = 0;
+    if (n > 0 && totalBal > 0) {
+      let weightedSum = 0;
+      for (let i = 0; i < n; i += 1) {
+        weightedSum += (i + 1) * balances[i];
+      }
+      gini = -(2 * weightedSum - (n + 1) * totalBal) / (n * totalBal);
+    }
+
+    // Cutoff heights for active / hodler windows, anchored on the
+    // BUCKET time (not wall-clock). Issuing the three lookups + the
+    // three derived counts in parallel keeps each bucket under one
+    // round-trip worth of latency.
+    const [active24h, new24h, hodler30d, hodler180d] = await Promise.all([
+      this.activeCount(heightAtBucket, bucketTs - 86_400),
+      this.newAddressCount(heightAtBucket, bucketTs - 86_400),
+      this.hodlerCount(heightAtBucket, bucketTs - 30 * 86_400),
+      this.hodlerCount(heightAtBucket, bucketTs - 180 * 86_400),
+    ]);
+
+    return {
+      bucketTs,
+      totalSupply: totalSupply.toString(),
+      addressesWithBalance: n,
+      gini,
+      top1pctShare,
+      top10pctShare,
+      top100Share,
+      active24h,
+      new24h,
+      hodler30d,
+      hodler180d,
+    };
+  }
+
+  private async activeCount(heightAtBucket: number, cutoffTs: number): Promise<number> {
+    const cutoffHeight = await this.heightAtTime(cutoffTs);
+    if (cutoffHeight === null) return 0;
+    const r = await ch.query({
+      query: `
+        SELECT count(DISTINCT address) AS c
+        FROM address_balance_history
+        WHERE valid_from_height > {lo: UInt32}
+          AND valid_from_height <= {hi: UInt32}
+          AND address != ''
+      `,
+      query_params: { lo: cutoffHeight, hi: heightAtBucket },
+      format: 'JSONEachRow',
+    });
+    return Number((await r.json<{ c: number | string }>())[0]?.c ?? 0);
+  }
+
+  private async newAddressCount(heightAtBucket: number, cutoffTs: number): Promise<number> {
+    const cutoffHeight = await this.heightAtTime(cutoffTs);
+    if (cutoffHeight === null) return 0;
+    const r = await ch.query({
+      query: `
+        SELECT count() AS c FROM (
+          SELECT address, min(valid_from_height) AS first_seen
+          FROM address_balance_history FINAL
+          WHERE address != '' AND valid_from_height <= {hi: UInt32}
+          GROUP BY address
+          HAVING first_seen > {lo: UInt32}
+        )
+      `,
+      query_params: { lo: cutoffHeight, hi: heightAtBucket },
+      format: 'JSONEachRow',
+    });
+    return Number((await r.json<{ c: number | string }>())[0]?.c ?? 0);
+  }
+
+  private async hodlerCount(heightAtBucket: number, cutoffTs: number): Promise<number> {
+    const cutoffHeight = await this.heightAtTime(cutoffTs);
+    if (cutoffHeight === null) return 0;
+    // Hodler = currently positive balance AND last balance-changing
+    // event at-or-before the cutoff. `max(valid_from_height)` picks
+    // the address's most recent state change.
+    const r = await ch.query({
+      query: `
+        SELECT count() AS c FROM (
+          SELECT
+            address,
+            sum(delta)             AS balance,
+            max(valid_from_height) AS last_seen
+          FROM address_balance_history FINAL
+          WHERE address != '' AND valid_from_height <= {hi: UInt32}
+          GROUP BY address
+          HAVING balance > 0 AND last_seen <= {lo: UInt32}
+        )
+      `,
+      query_params: { lo: cutoffHeight, hi: heightAtBucket },
+      format: 'JSONEachRow',
+    });
+    return Number((await r.json<{ c: number | string }>())[0]?.c ?? 0);
   }
 }

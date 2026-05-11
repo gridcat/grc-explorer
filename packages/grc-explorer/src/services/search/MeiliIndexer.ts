@@ -167,6 +167,16 @@ export class MeiliIndexer {
       {
         name: 'messages', primaryKey: 'id', searchable: ['message', 'sender_address'], filterable: [], sortable: ['time', 'block_height'],
       },
+      // BOINC project usernames → CPID. Search-by-name resolves an
+      // alias the user typed in the search bar back to the canonical
+      // CPID detail page. `name` first in searchableAttributes so a
+      // matching name outranks an incidental CPID-substring match;
+      // `total_credit` sortable so the per-project list on the CPID
+      // page can pick the highest-credit project's name as the
+      // canonical display.
+      {
+        name: 'cpid_names', primaryKey: 'id', searchable: ['name', 'cpid'], filterable: ['cpid', 'project_name'], sortable: ['total_credit'],
+      },
     ];
 
     for (const s of settings) {

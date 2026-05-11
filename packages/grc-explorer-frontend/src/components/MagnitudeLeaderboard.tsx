@@ -9,7 +9,9 @@ import {
 import Link from 'next/link';
 import { api } from '../lib/api';
 import { useSSE } from '../hooks/useSSE';
+import { useCpidNames } from '../hooks/useCpidNames';
 import { atParam, useTimeMachine } from '../hooks/useTimeMachine';
+import { CpidLabel } from './CpidLabel';
 
 interface Entry {
   cpid: string;
@@ -91,6 +93,8 @@ export function MagnitudeLeaderboard() {
     return () => clearInterval(id);
   }, [refresh, tm.isReplay]);
 
+  const names = useCpidNames(rows.map((r) => r.cpid));
+
   return (
     <Card variant="outlined">
       <CardContent>
@@ -130,10 +134,8 @@ export function MagnitudeLeaderboard() {
                     <Box sx={{ width: 56 }}>
                       <RankDelta entry={d} />
                     </Box>
-                    <Link href={`/cpids/${r.cpid}`} style={{ textDecoration: 'none', color: 'inherit', flex: 1 }}>
-                      <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 12 }}>
-                        {r.cpid}
-                      </Typography>
+                    <Link href={`/cpids/${r.cpid}`} style={{ textDecoration: 'none', color: 'inherit', flex: 1, minWidth: 0 }}>
+                      <CpidLabel cpid={r.cpid} name={names.get(r.cpid)} />
                     </Link>
                     <Box sx={{ flex: 1, minWidth: 80 }}>
                       <Sparkline points={r.history} stroke={theme.palette.primary.main} />

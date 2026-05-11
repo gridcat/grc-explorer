@@ -110,6 +110,8 @@
     "ch:migrate": "node clickhouse/migrate.mjs",
     "wipe": "node dist/scripts/wipeExplorer.js",
     "wipe:source": "ts-node --compiler-options '{\"resolveJsonModule\":true}' src/scripts/wipeExplorer.ts",
+    "boinc:fetch": "node dist/scripts/fetchBoincNames.js",
+    "boinc:fetch:source": "ts-node --compiler-options '{\"resolveJsonModule\":true}' src/scripts/fetchBoincNames.ts",
     "semantic-release": "semantic-release -e semantic-release-monorepo",
     "prestart": "node clickhouse/migrate.mjs",
     "start": "node dist/index.js",

@@ -261,8 +261,17 @@ export class HistoricalBackfiller {
               if (nextToWrite > to) break;
             }
             if (rawGroup.length === 0) break;
+            // Pass `pending`'s outputs into the lookup so a vin in
+            // this rawGroup can resolve against a previous group
+            // that's been parsed but not yet flushed to CH. The
+            // alternative — force-flush before every new lookup —
+            // would lose the txBatchSize batching benefit.
+            const parsedPendingOutputs = pending.flatMap((p) => p.txOutputs);
             // eslint-disable-next-line no-await-in-loop
-            const lookup = await buildPrevOutputsLookupMulti(rawGroup.map((b) => b.tx));
+            const lookup = await buildPrevOutputsLookupMulti(
+              rawGroup.map((b) => b.tx),
+              parsedPendingOutputs,
+            );
             for (const block of rawGroup) {
               pending.push(parseBlock(block, lookup));
             }

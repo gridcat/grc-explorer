@@ -15,7 +15,12 @@ export type MeiliIndexName =
   | 'superblocks'
   | 'polls'
   | 'beacons'
-  | 'messages';
+  | 'messages'
+  // Off-chain enrichment: maps BOINC project usernames to the
+  // matching on-chain CPID so the global search box resolves a name
+  // like "Alice" back to her CPID detail page. Populated by
+  // BoincStatsImportJob; one document per (cpid, project_name) pair.
+  | 'cpid_names';
 
 export function meiliIndexId(name: MeiliIndexName): string {
   return `${config.MEILI_INDEX_PREFIX}_${name}`;

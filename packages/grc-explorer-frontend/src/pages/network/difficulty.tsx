@@ -15,6 +15,7 @@ import {
 } from '../../components/charts/SvgChart';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { api } from '../../lib/api';
+import { formatCompact } from '../../lib/format';
 
 interface Point {
   ts: number;
@@ -69,10 +70,9 @@ const DISPLAY_DIFFICULTY_CEIL = 1_000_000;
 
 function formatDifficulty(v: number): string {
   if (!Number.isFinite(v) || v <= 0) return '—';
-  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(2)}M`;
-  if (v >= 1_000) return `${(v / 1_000).toFixed(2)}k`;
-  if (v >= 1) return v.toFixed(2);
-  return v.toPrecision(2);
+  // Defers to the shared formatter so the pre-2015 chaos era's 10^64
+  // peaks render as "1.3e+64" instead of "1.29...e+58M".
+  return formatCompact(v, 2);
 }
 
 // Hoisted so the X-axis tick formatter can reuse it against
@@ -140,6 +140,21 @@ export default function DifficultyHistory({ points, forks }: DifficultyHistoryPr
       days: points.length,
     };
   }, [points]);
+
+  // Bucket forks by UTC calendar year so the year detail chart and
+  // the per-year tiles can each grab just their slice in O(1) without
+  // re-scanning the full fork list on every render.
+  const forksByYear = useMemo(() => {
+    const m = new Map<number, ForkMarker[]>();
+    for (const f of forks) {
+      if (f.timestamp === null) continue;
+      const y = new Date(f.timestamp * 1000).getUTCFullYear();
+      const arr = m.get(y);
+      if (arr) arr.push(f);
+      else m.set(y, [f]);
+    }
+    return m;
+  }, [forks]);
 
   const yearStats = useMemo(() => {
     if (selectedPoints.length === 0) return null;
@@ -260,12 +275,19 @@ export default function DifficultyHistory({ points, forks }: DifficultyHistoryPr
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
               {selectedYear !== null
-                ? 'Linear Y axis. The shaded ribbon is the daily min↔max range; the line is the daily average. Hover for exact values.'
+                ? 'Linear Y axis. The shaded ribbon is the daily min↔max range; the line is the daily average. Dashed verticals mark canonical chain forks in this year (amber = Halford patches, grey = version-bump consensus forks); hover any marker for its activation summary.'
                 : 'Log-scale Y axis, capped at 1M difficulty (the protocol\'s own pathological threshold, see R Halford\'s 2015-01-14 patch). Daily averages above the cap from the pre-patch chaos era are clamped to the top edge and marked with a hatched strip. Dashed verticals mark the canonical chain forks (amber = Halford patches, grey = version-bump consensus forks); hover any marker for its activation summary.'}
             </Typography>
             {selectedYear !== null && selectedPoints.length >= 2 ? (
               <ChartFrameProvider height={380}>
-                {(frame) => <YearDetailChart frame={frame} points={selectedPoints} year={selectedYear} />}
+                {(frame) => (
+                  <YearDetailChart
+                    frame={frame}
+                    points={selectedPoints}
+                    year={selectedYear}
+                    forks={forksByYear.get(selectedYear) ?? []}
+                  />
+                )}
               </ChartFrameProvider>
             ) : null}
             {selectedYear === null && points.length >= 2 ? (
@@ -302,6 +324,7 @@ export default function DifficultyHistory({ points, forks }: DifficultyHistoryPr
                   <YearTile
                     year={g.year}
                     points={g.points}
+                    forks={forksByYear.get(g.year) ?? []}
                     selected={g.year === selectedYear}
                     onSelect={() => setYear(g.year === selectedYear ? null : g.year)}
                   />
@@ -547,10 +570,11 @@ function WholeChainChart({
 }
 
 function YearTile({
-  year, points, selected, onSelect,
+  year, points, forks, selected, onSelect,
 }: {
   year: number;
   points: Point[];
+  forks: ForkMarker[];
   selected: boolean;
   onSelect: () => void;
 }) {
@@ -590,7 +614,7 @@ function YearTile({
               top: 6, right: 6, bottom: 18, left: 36,
             }}
           >
-            {(frame) => <YearChart frame={frame} points={points} />}
+            {(frame) => <YearChart frame={frame} points={points} forks={forks} />}
           </ChartFrameProvider>
         </CardContent>
       </CardActionArea>
@@ -598,7 +622,7 @@ function YearTile({
   );
 }
 
-function YearChart({ frame, points }: { frame: ChartFrame; points: Point[] }) {
+function YearChart({ frame, points, forks }: { frame: ChartFrame; points: Point[]; forks: ForkMarker[] }) {
   const theme = useTheme();
   const layout = useMemo(() => {
     if (points.length === 0 || frame.innerWidth <= 0) return null;
@@ -688,15 +712,44 @@ function YearChart({ frame, points }: { frame: ChartFrame; points: Point[] }) {
             />
           </>
         )}
+        {/* Fork markers without labels — the tile is 120px tall and
+            text would obscure the sparkline. Same colour key as the
+            whole-chain / year-detail charts so users can tell patch
+            (warning) from consensus fork (muted) at a glance, and
+            the hover-title carries the full summary for users who
+            want it without clicking into the year. */}
+        {forks.map((fork) => {
+          if (fork.timestamp === null) return null;
+          if (fork.timestamp < layout.yearStart || fork.timestamp > layout.yearEnd) return null;
+          const x = layout.xScale(fork.timestamp);
+          const isPatch = fork.category === 'patch';
+          const strokeColor = isPatch
+            ? theme.palette.warning.main
+            : theme.palette.text.secondary;
+          return (
+            <line
+              key={`fork-${fork.key}`}
+              x1={x}
+              x2={x}
+              y1={0}
+              y2={frame.innerHeight}
+              stroke={strokeColor}
+              strokeDasharray={isPatch ? '3 2' : '2 3'}
+              opacity={isPatch ? 0.5 : 0.35}
+            >
+              <title>{`${fork.chart_label} — ${fork.summary}`}</title>
+            </line>
+          );
+        })}
       </g>
     </svg>
   );
 }
 
 function YearDetailChart({
-  frame, points, year,
+  frame, points, year, forks,
 }: {
-  frame: ChartFrame; points: Point[]; year: number;
+  frame: ChartFrame; points: Point[]; year: number; forks: ForkMarker[];
 }) {
   const theme = useTheme();
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -818,6 +871,51 @@ function YearDetailChart({
               />
             </>
           )}
+          {/* Fork markers — same colour key as the whole-chain
+              chart (warning palette for Halford patches, muted for
+              consensus forks) so they read consistently when the
+              user drills from chain-wide into one year. Drawn before
+              the hover overlay so the hover line paints on top. */}
+          {forks.map((fork, idx) => {
+            if (fork.timestamp === null) return null;
+            if (fork.timestamp < layout.yearStart || fork.timestamp > layout.yearEnd) return null;
+            const x = layout.xScale(fork.timestamp);
+            const isPatch = fork.category === 'patch';
+            const strokeColor = isPatch
+              ? theme.palette.warning.main
+              : theme.palette.text.secondary;
+            const lineOpacity = isPatch ? 0.55 : 0.4;
+            const labelOpacity = isPatch ? 0.85 : 0.65;
+            // Stagger labels by index parity so consecutive forks
+            // (e.g. V13 and V14, a few days apart on mainnet) don't
+            // paint on top of each other.
+            const labelY = idx % 2 === 0 ? frame.innerHeight - 6 : frame.innerHeight - 18;
+            return (
+              <g key={`fork-${fork.key}`}>
+                <line
+                  x1={x}
+                  x2={x}
+                  y1={0}
+                  y2={frame.innerHeight}
+                  stroke={strokeColor}
+                  strokeDasharray={isPatch ? '4 3' : '2 4'}
+                  opacity={lineOpacity}
+                >
+                  <title>{fork.summary}</title>
+                </line>
+                <text
+                  x={x + 4}
+                  y={labelY}
+                  fontSize={10}
+                  fill={strokeColor}
+                  opacity={labelOpacity}
+                >
+                  {fork.chart_label}
+                  <title>{fork.summary}</title>
+                </text>
+              </g>
+            );
+          })}
           {hover && (
             <>
               <line

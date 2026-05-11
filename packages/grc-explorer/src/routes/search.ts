@@ -13,7 +13,7 @@ export const searchRouter = Router();
 
 const ALL_INDICES: MeiliIndexName[] = [
   'blocks', 'transactions', 'addresses', 'claims',
-  'superblocks', 'polls', 'beacons', 'messages',
+  'superblocks', 'polls', 'beacons', 'messages', 'cpid_names',
 ];
 
 interface SearchHit { index: MeiliIndexName; hits: Record<string, unknown>[]; estimatedTotalHits?: number }

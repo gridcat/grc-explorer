@@ -18,15 +18,36 @@ export function formatGrc(s: string | number | null | undefined): string {
 }
 
 /**
- * Compact GRC formatter for charts/axes — `1.2M`, `3.4K`, `567` — where
+ * Compact SI-prefix formatter capped at trillions. Beyond 1e15 we fall
+ * back to a clean 2-significant-digit exponential ("1.0e+64", "1.7e-9")
+ * rather than letting `toFixed` emit a 15-digit mantissa welded to a
+ * unit suffix ("1.291165483285982e+58M"). The pre-2015 Gridcoin chaos
+ * era hits 10^64 difficulty before R Halford's retarget cap kicked in,
+ * so every shared formatter has to be honest about that range instead
+ * of pretending it fits a millions/billions narrative.
+ */
+export function formatCompact(v: number, decimals = 2): string {
+  if (!Number.isFinite(v)) return '—';
+  if (v === 0) return '0';
+  const abs = Math.abs(v);
+  const sign = v < 0 ? '-' : '';
+  if (abs >= 1e15 || abs < 1e-3) return `${sign}${abs.toExponential(1)}`;
+  if (abs >= 1e12) return `${sign}${(abs / 1e12).toFixed(decimals)}T`;
+  if (abs >= 1e9) return `${sign}${(abs / 1e9).toFixed(decimals)}B`;
+  if (abs >= 1e6) return `${sign}${(abs / 1e6).toFixed(decimals)}M`;
+  if (abs >= 1e4) return `${sign}${(abs / 1e3).toFixed(1)}k`;
+  if (abs >= 1) return `${sign}${abs.toLocaleString(NUM_LOCALE, { maximumFractionDigits: decimals })}`;
+  return `${sign}${abs.toPrecision(2)}`;
+}
+
+/**
+ * Compact GRC formatter for charts/axes — `1.2M`, `3.4k`, `567` — where
  * thousands-separated full-precision noise hurts readability. Used by the
  * dashboard's SVG charts (Y-axis ticks, tooltips, address sparkline).
  */
 export function formatGrcCompact(n: number): string {
   if (!Number.isFinite(n) || n === 0) return '0';
-  if (n >= 1_000_000) return `${(n / 1_000_000).toLocaleString(NUM_LOCALE, { maximumFractionDigits: 2 })} M`;
-  if (n >= 1_000) return `${(n / 1_000).toLocaleString(NUM_LOCALE, { maximumFractionDigits: 2 })} K`;
-  return n.toLocaleString(NUM_LOCALE, { maximumFractionDigits: 2 });
+  return formatCompact(n, 2);
 }
 
 /**

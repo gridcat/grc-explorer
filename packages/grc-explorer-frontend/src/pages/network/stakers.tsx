@@ -15,6 +15,7 @@ import {
 } from '../../components/charts/SvgChart';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { api } from '../../lib/api';
+import { formatCompact } from '../../lib/format';
 
 interface Point {
   ts: number;
@@ -39,28 +40,6 @@ function halfordToGrc(s: string | number): number {
   const n = typeof s === 'number' ? s : Number(s);
   if (!Number.isFinite(n)) return 0;
   return n / HALFORD_PER_GRC;
-}
-
-// Compact SI-prefix formatter capped at trillions. Beyond 1e15 we fall
-// back to a clean 2-significant-digit exponential ("1.04e+18") rather
-// than letting toFixed emit a 15-digit mantissa welded to a unit suffix
-// ("1.036342615170709e+78M"). Honest about extreme values without
-// pretending they fit a thousands/millions/billions narrative.
-function formatCompact(v: number, decimals = 2): string {
-  if (!Number.isFinite(v)) return '—';
-  if (v === 0) return '0';
-  const abs = Math.abs(v);
-  const sign = v < 0 ? '-' : '';
-  if (abs >= 1e15 || (abs > 0 && abs < 1e-3)) {
-    // Two-significant-digit exponential: "1.0e+84", "1.7e-9".
-    return `${sign}${abs.toExponential(1)}`;
-  }
-  if (abs >= 1e12) return `${sign}${(abs / 1e12).toFixed(decimals)}T`;
-  if (abs >= 1e9) return `${sign}${(abs / 1e9).toFixed(decimals)}B`;
-  if (abs >= 1e6) return `${sign}${(abs / 1e6).toFixed(decimals)}M`;
-  if (abs >= 1e4) return `${sign}${(abs / 1e3).toFixed(1)}k`;
-  if (abs >= 1) return `${sign}${Math.round(abs).toLocaleString()}`;
-  return `${sign}${abs.toFixed(decimals)}`;
 }
 
 function formatCount(v: number): string {

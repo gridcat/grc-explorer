@@ -9,7 +9,9 @@ import {
 import { api } from '../lib/api';
 import { formatGrc } from '../lib/format';
 import { useSSE } from '../hooks/useSSE';
+import { useCpidNames } from '../hooks/useCpidNames';
 import { atParam, useTimeMachine } from '../hooks/useTimeMachine';
+import { CpidLabel } from './CpidLabel';
 import { HashTrim } from './HashTrim';
 import { TimeAgo } from './TimeAgo';
 
@@ -179,6 +181,14 @@ export function LiveBlockTicker() {
     }
   });
 
+  // Resolve display names for every PoS staker currently in view.
+  // The hook caches across renders so SSE-driven block arrivals only
+  // fetch the *new* CPID, not the whole window each time.
+  const stakerCpids = blocks
+    .map((b) => b.staker_cpid)
+    .filter((c): c is string => typeof c === 'string' && c.length > 0);
+  const names = useCpidNames(stakerCpids);
+
   return (
     <Card variant="outlined">
       <CardContent sx={{ p: 0, ':last-child': { pb: 0 } }}>
@@ -272,14 +282,14 @@ export function LiveBlockTicker() {
                       : <Chip label="PoW" size="small" variant="outlined" />}
                   </Stack>
                 </TableCell>
-                <TableCell sx={{ fontSize: 12 }}>
+                <TableCell sx={{ fontSize: 12, maxWidth: 220 }}>
                   {b.staker_cpid ? (
                     <Link
                       href={`/cpids/${b.staker_cpid}`}
-                      style={{ color: 'inherit', textDecoration: 'none', fontFamily: 'monospace' }}
+                      style={{ color: 'inherit', textDecoration: 'none', display: 'block', minWidth: 0 }}
                       onClick={(e) => e.stopPropagation()}
                     >
-                      {b.staker_cpid}
+                      <CpidLabel cpid={b.staker_cpid} name={names.get(b.staker_cpid)} />
                     </Link>
                   ) : (
                     <Box sx={{ color: 'text.disabled', fontStyle: 'italic' }}>investor</Box>

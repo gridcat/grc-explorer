@@ -15,6 +15,60 @@ registerParamValidators(cpidsRouter);
 // Static routes must be declared before any parameterised `/:cpid`
 // handler, otherwise Express matches `/:cpid` first and a request to
 // `/cpids/leaderboard` gets routed as the CPID "leaderboard".
+
+// Batch CPID-to-displayName resolver. Used by the home page
+// leaderboards and the LiveBlockTicker so we can fetch names for a
+// dozen+ CPIDs in one round trip instead of N. Input is a
+// comma-separated list of 32-char hex CPIDs; output is a
+// `{ <cpid>: <name> }` map with entries only for CPIDs that have a
+// non-empty published name. Caller treats missing keys as "anonymous
+// or unknown" and falls back to the truncated CPID hash.
+cpidsRouter.get('/names', async (req: Request, res: Response) => {
+  const raw = String(req.query.cpids ?? '');
+  // Allowlist 32-char lowercase hex only; cap the unique set at 200
+  // so a malicious caller can't pass a 100k-CPID list and turn the
+  // route into a CH-grinder.
+  const requested = raw
+    .toLowerCase()
+    .split(',')
+    .filter((s) => /^[0-9a-f]{32}$/.test(s));
+  const unique = Array.from(new Set(requested)).slice(0, 200);
+  const names: Record<string, string> = {};
+  if (unique.length > 0) {
+    try {
+      // argMax(name, total_credit) — pick the BOINC project where the
+      // user has the most credit as the canonical display name. Most
+      // users have their primary project as the highest-credit one
+      // and that's where their preferred name lives. Empty names
+      // (anonymous BOINC profiles) are filtered server-side so the
+      // map only carries displayable strings.
+      const result = await ch.query({
+        query: `
+          SELECT cpid, argMax(name, total_credit) AS name
+          FROM project_users FINAL
+          WHERE cpid IN ({cpids: Array(String)}) AND name != ''
+          GROUP BY cpid
+        `,
+        query_params: { cpids: unique },
+        format: 'JSONEachRow',
+      });
+      const rows = await result.json<{ cpid: string; name: string }>();
+      for (const r of rows) if (r.name) names[r.cpid] = r.name;
+    } catch (_err) {
+      // Table absent (pre-migration-0015) or transient CH error —
+      // empty response is a safe degradation; the UI just falls back
+      // to truncated CPID hashes.
+    }
+  }
+  res.status(StatusCodes.OK).send(withMeta({
+    data: {
+      type: 'cpid_names_batch',
+      id: `batch:${unique.length}`,
+      attributes: { names },
+    },
+  }));
+});
+
 cpidsRouter.get('/leaderboard', async (req: Request, res: Response) => {
   const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? '20'), 10) || 20, 1), 100);
   const at = parseAt(req);
@@ -126,7 +180,7 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
   const params: Record<string, unknown> = { cpid };
   if (hasAtFilter) params.h = atHeight;
 
-  const [claimResult, magResult, beaconResult, blockCountResult, mrcResult] = await Promise.all([
+  const [claimResult, magResult, beaconResult, blockCountResult, mrcResult, namesResult] = await Promise.all([
     ch.query({
       query: `
         SELECT block_height, organization,
@@ -185,6 +239,20 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
       query_params: params,
       format: 'JSONEachRow',
     }),
+    // Off-chain BOINC display names for this CPID, one per project
+    // that's published a user.gz containing it. The route stays
+    // resilient if the table is absent (fresh deploy pre-migration
+    // 0015): empty array, the rest of the response still renders.
+    ch.query({
+      query: `
+        SELECT project_name, name, total_credit
+        FROM project_users FINAL
+        WHERE cpid = {cpid: String} AND name != ''
+        ORDER BY total_credit DESC
+      `,
+      query_params: { cpid },
+      format: 'JSONEachRow',
+    }).catch(() => null),
   ]);
   const claims = await claimResult.json<{
     block_height: number; organization: string; block_subsidy: string;
@@ -201,6 +269,13 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
     first_seen: number; block_height: number | null; block_time: number | null;
     is_evicted: boolean;
   }>();
+  const names = namesResult
+    ? await namesResult.json<{ project_name: string; name: string; total_credit: number }>()
+    : [];
+  // Pick the highest-total-credit non-empty name as the canonical
+  // display. The full per-project list ships under `names` for the
+  // CPID page's "also known as" section.
+  const displayName = names[0]?.name ?? null;
 
   res.status(StatusCodes.OK).send(withMeta({
     data: {
@@ -208,6 +283,7 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
       id: cpid,
       attributes: {
         cpid,
+        displayName,
         currentMagnitude: magnitudes[0]?.magnitude ?? 0,
         blocksStaked,
         beaconCount: beacons.length,
@@ -215,6 +291,11 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
         lastClaimAt: claims.length > 0 ? claims[0].block_height : null,
       },
     },
+    names: names.map((n) => ({
+      projectName: n.project_name,
+      name: n.name,
+      totalCredit: n.total_credit,
+    })),
     claims: claims.map((c) => ({
       blockHeight: c.block_height,
       organization: c.organization,

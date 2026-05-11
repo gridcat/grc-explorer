@@ -8,10 +8,14 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
-import { formatGrc, formatNumber, formatTime } from '../../lib/format';
+import {
+  formatCompact, formatGrc, formatNumber, formatTime,
+} from '../../lib/format';
 import { track } from '../../lib/track';
 import { HashTrim } from '../../components/HashTrim';
 import { Crumbs } from '../../components/Crumbs';
+import { CpidLabel } from '../../components/CpidLabel';
+import { useCpidNames } from '../../hooks/useCpidNames';
 
 export interface Block {
   height: number;
@@ -129,6 +133,16 @@ export function BlockDetail({
     }).catch(() => { /* ignore */ });
   }, [height, block]);
 
+  // Batched display-name lookup for every CPID on this page — the
+  // staker plus every MRC recipient. Called BEFORE the early-return
+  // for `!block` so the hook always runs in the same order (rules of
+  // hooks). The hook caches across components so the next block view
+  // inherits already-resolved names.
+  const cpidList: string[] = [];
+  if (block?.stakerCpid) cpidList.push(block.stakerCpid);
+  for (const m of mrcs) cpidList.push(m.cpid);
+  const names = useCpidNames(cpidList);
+
   if (!block) return <Layout><Typography>Loading…</Typography></Layout>;
 
   // Edge handling: hide "← Prev" at the genesis block and "Next →" once
@@ -195,7 +209,7 @@ export function BlockDetail({
               label="Block version"
               value={`${block.version} · ${blockEraLabel(block.version)}`}
             />
-            <DetailRow label="Difficulty" value={block.difficulty} />
+            <DetailRow label="Difficulty" value={formatCompact(Number(block.difficulty), 2)} />
             <DetailRow label="Size" value={`${formatNumber(block.size)} bytes`} />
             <DetailRow label="Transactions" value={String(block.txCount)} />
             <DetailRow label="Mint (this block)" value={`${formatGrc(block.mint)} GRC`} />
@@ -207,8 +221,10 @@ export function BlockDetail({
             )}
             {block.stakerCpid && (
               <DetailRow label="Researcher CPID" value={(
-                <Link href={`/cpids/${block.stakerCpid}`} style={{ color: 'inherit' }}>{block.stakerCpid}</Link>
-              )} mono />
+                <Link href={`/cpids/${block.stakerCpid}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+                  <CpidLabel cpid={block.stakerCpid} name={names.get(block.stakerCpid)} />
+                </Link>
+              )} />
             )}
           </CardContent>
         </Card>
@@ -257,8 +273,10 @@ export function BlockDetail({
               <TableBody>
                 {mrcs.map((m) => (
                   <TableRow key={m.cpid} hover>
-                    <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>
-                      <Link href={`/cpids/${m.cpid}`} style={{ color: 'inherit' }}>{m.cpid}</Link>
+                    <TableCell>
+                      <Link href={`/cpids/${m.cpid}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+                        <CpidLabel cpid={m.cpid} name={names.get(m.cpid)} />
+                      </Link>
                     </TableCell>
                     <TableCell align="right">{m.magnitude.toFixed(2)}</TableCell>
                     <TableCell align="right">{`${formatGrc(m.researchSubsidy)} GRC`}</TableCell>

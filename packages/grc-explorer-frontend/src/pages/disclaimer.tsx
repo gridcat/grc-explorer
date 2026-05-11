@@ -75,7 +75,7 @@ export default function DisclaimerPage() {
                 <NextMuiLink
                   href="https://github.com/gridcat/grc-explorer"
                   rel="external noopener"
-                  color="primary"
+                  prose
                 >
                   github.com/gridcat/grc-explorer
                 </NextMuiLink>
@@ -283,7 +283,7 @@ export default function DisclaimerPage() {
                 from this explorer&rsquo;s display, or otherwise
                 warrants moderation, write to
                 {' '}
-                <NextMuiLink href={`mailto:${CONTACT_EMAIL}`} color="primary">
+                <NextMuiLink href={`mailto:${CONTACT_EMAIL}`} prose>
                   {CONTACT_EMAIL}
                 </NextMuiLink>
                 {' '}
@@ -346,10 +346,34 @@ export default function DisclaimerPage() {
                 data. To exercise erasure rights against this
                 explorer&rsquo;s display, contact
                 {' '}
-                <NextMuiLink href={`mailto:${CONTACT_EMAIL}`} color="primary">
+                <NextMuiLink href={`mailto:${CONTACT_EMAIL}`} prose>
                   {CONTACT_EMAIL}
                 </NextMuiLink>
                 .
+              </Typography>
+              <Typography gutterBottom variant="body1">
+                <b>BOINC display names.</b>
+                {' '}
+                To make researcher pages legible, the explorer mirrors
+                BOINC project user-stats from each whitelisted
+                project&rsquo;s public {' '}
+                <code>stats/user.gz</code>
+                {' '}
+                export. These exports are published by the projects
+                themselves and contain the display name a user chose
+                to publish in their BOINC profile. The explorer
+                resolves a CPID to that name on the CPID detail page
+                and in global search. If you wish to have your name
+                excluded from this resolution while keeping it
+                published on the BOINC project itself, write to
+                {' '}
+                <NextMuiLink href={`mailto:${CONTACT_EMAIL}`} prose>
+                  {CONTACT_EMAIL}
+                </NextMuiLink>
+                {' '}
+                with your CPID; we add it to a community-maintained
+                denylist and the next ingest cycle replaces the name
+                with &ldquo;Anonymous&rdquo;.
               </Typography>
               <Typography gutterBottom variant="body1">
                 <b>Lawful requests.</b>
@@ -543,7 +567,7 @@ export default function DisclaimerPage() {
                 notices, defamation notices, EDPB Article 17 erasure
                 requests, lawful-process correspondence, and DSA
                 Article 11 / 12 / 16 contact:{' '}
-                <NextMuiLink href={`mailto:${CONTACT_EMAIL}`} color="primary">
+                <NextMuiLink href={`mailto:${CONTACT_EMAIL}`} prose>
                   {CONTACT_EMAIL}
                 </NextMuiLink>
                 . The operator accepts service of process and
