@@ -1,7 +1,7 @@
 {
   "name": "grc-explorer",
   "description": "Gridcoin block explorer — event-driven indexer + JSON:API + SSE.",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "author": "",
   "commitlint": {
     "extends": [
