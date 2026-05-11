@@ -71,6 +71,18 @@ export class MempoolWatcher {
       // Coinbase / coinstake txs never sit in the mempool — but defend
       // against a malformed tx with no resolvable inputs by clamping
       // negative fees to zero (would mean we missed a prev_output).
+      // The resolveInputs RPC fallback handles CPFP-style cases where
+      // the parent isn't yet in tx_outputs; null here means even the
+      // RPC retrieval failed, which is genuinely anomalous — log it.
+      if (totalIn === null) {
+        log.warn(
+          `MempoolWatcher: tx ${txId} has unresolvable inputs even via RPC fallback — fee estimate forced to 0`,
+        );
+      } else if (totalIn < totalOut) {
+        log.warn(
+          `MempoolWatcher: tx ${txId} resolved totalIn (${totalIn}) < totalOut (${totalOut}); fee clamped to 0`,
+        );
+      }
       const fee = totalIn !== null && totalIn >= totalOut ? totalIn - totalOut : 0n;
       const firstSeen = Math.floor(Date.now() / 1000);
       const seq = await nextSeq();

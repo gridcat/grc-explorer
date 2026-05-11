@@ -1,3 +1,7 @@
+# Nx workspace
+.nx/cache
+.nx/workspace-data
+
 # Logs
 logs
 *.log

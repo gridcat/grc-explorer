@@ -160,6 +160,11 @@ export class BeaconPresenter extends Presenter {
       blockHeight: b.block_height,
       timestamp: b.timestamp,
       expiration: b.expiration,
+      // Renewal-state derivations from the /beacons route enrichment
+      // (see deriveRenewalState in routes/beacons.ts). Optional so older
+      // callers persisting `BeaconRow` shapes directly still work.
+      renewableUntil: b.renewable_until ?? null,
+      mustReadvertise: b.must_readvertise ?? false,
     };
   }
 
@@ -280,6 +285,8 @@ interface ClaimRow {
 interface BeaconRow {
   cpid: string; address: string; status: string;
   tx_id: string; block_height: number; timestamp: number; expiration: number;
+  renewable_until?: number | null;
+  must_readvertise?: boolean;
 }
 interface PollRow {
   poll_id: string; title: string; question: string;

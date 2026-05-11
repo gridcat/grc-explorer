@@ -62,18 +62,26 @@ export interface BlockDetailProps {
 
 /**
  * Map a block-header `version` to the human-readable Gridcoin era it
- * belongs to. Eras gate which fields the daemon decodes (claim shape,
- * smart-contract envelope, MRC support, …) — surfacing the version on
- * the detail page makes it obvious why a 2015 block has no `contracts`
- * but a 2024 block does.
+ * belongs to. Labels follow the actual consensus forks in
+ * `src/chainparams.cpp` + `src/gridcoin/staking/difficulty.cpp` — see
+ * `reference_gridcoin_protocol_gates.md` for the full table of what
+ * each version-bump activates.
  */
+function TxTypeChip({ isCoinbase, isCoinstake }: { isCoinbase: boolean; isCoinstake: boolean }) {
+  if (isCoinbase) return <Chip label="coinbase" size="small" />;
+  if (isCoinstake) return <Chip label="coinstake" size="small" />;
+  return <Chip label="standard" size="small" variant="outlined" />;
+}
+
 function blockEraLabel(version: number): string {
-  if (version >= 13) return 'v13+ (post-MRC)';
-  if (version === 12) return 'v12 (smart contracts + MRC)';
-  if (version === 11) return 'v11 (smart contracts)';
-  if (version >= 9) return 'v9–v10 (Fern / Greenstein)';
-  if (version >= 8) return 'v8 (legacy claim)';
-  if (version > 0) return `v${version} (early legacy)`;
+  if (version >= 14) return 'v14+ (BIP68 + beacon v3)';
+  if (version === 13) return 'v13 (MRC + SBv3)';
+  if (version === 12) return 'v12 (stake-time mask)';
+  if (version === 11) return 'v11 (Fern / binary contracts)';
+  if (version === 10) return 'v10 (sidestake checks)';
+  if (version === 9) return 'v9 (V9 tally)';
+  if (version === 8) return 'v8 (V8 kernel + 8-decimal subsidy)';
+  if (version > 0) return `v${version} (pre-V8 legacy)`;
   return '—';
 }
 
@@ -295,7 +303,7 @@ export function BlockDetail({
                   <TableCell align="right">{`${formatGrc(t.totalOut)} GRC`}</TableCell>
                   <TableCell align="right">{`${formatGrc(t.fee)} GRC`}</TableCell>
                   <TableCell>
-                    {t.isCoinbase ? <Chip label="coinbase" size="small" /> : t.isCoinstake ? <Chip label="coinstake" size="small" /> : <Chip label="standard" size="small" variant="outlined" />}
+                    <TxTypeChip isCoinbase={t.isCoinbase} isCoinstake={t.isCoinstake} />
                   </TableCell>
                 </TableRow>
               ))}

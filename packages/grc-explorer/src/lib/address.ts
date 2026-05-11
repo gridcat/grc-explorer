@@ -23,12 +23,27 @@ import { createHash } from 'node:crypto';
 
 export type Network = 'mainnet' | 'testnet';
 
-const VERSION_BYTE: Record<Network, number> = {
+// Pubkey-hash (P2PKH) version bytes from src/chainparams.cpp.
+const PUBKEY_VERSION_BYTE: Record<Network, number> = {
   mainnet: 62,
   testnet: 111,
 };
 
+// Script-hash (P2SH) version bytes from src/chainparams.cpp. No P2SH
+// outputs currently exist on chain, but `isValidAddress` accepts them
+// so a future P2SH-using payload doesn't get silently rejected.
+const SCRIPT_VERSION_BYTE: Record<Network, number> = {
+  mainnet: 85,
+  testnet: 196,
+};
+
+// Back-compat alias for the original PUBKEY-only export name.
+const VERSION_BYTE = PUBKEY_VERSION_BYTE;
+
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const BASE58_INDEX = new Map<string, number>(
+  Array.from(BASE58_ALPHABET, (c, i) => [c, i]),
+);
 
 /**
  * Derive a P2PKH address from the hex-encoded public key the daemon
@@ -91,4 +106,63 @@ function base58Encode(bytes: Buffer): string {
   for (let i = 0; i < zeros; i += 1) out.push('1');
 
   return out.reverse().join('');
+}
+
+/**
+ * Decode a Base58Check string and verify its trailing 4-byte checksum.
+ * Returns `{ version, hash160 }` on success, `null` on any decode or
+ * checksum failure. Same algorithm as Bitcoin / Gridcoin uses — leading
+ * '1' chars decode to zero bytes, the rest are bignum-converted, and
+ * the last 4 bytes must equal the first 4 bytes of double-SHA256 over
+ * the remainder.
+ */
+function base58CheckDecode(s: string): { version: number; hash160: Buffer } | null {
+  if (!s || typeof s !== 'string') return null;
+
+  let zeros = 0;
+  while (zeros < s.length && s[zeros] === '1') zeros += 1;
+
+  let n = 0n;
+  for (let i = zeros; i < s.length; i += 1) {
+    const idx = BASE58_INDEX.get(s[i]);
+    if (idx === undefined) return null;
+    n = n * 58n + BigInt(idx);
+  }
+
+  const bytes: number[] = [];
+  while (n > 0n) {
+    bytes.push(Number(n & 0xffn));
+    n >>= 8n;
+  }
+  for (let i = 0; i < zeros; i += 1) bytes.push(0);
+  bytes.reverse();
+  const buf = Buffer.from(bytes);
+
+  // Address payloads are 1 version byte + 20 hash bytes + 4 checksum bytes = 25.
+  if (buf.length !== 25) return null;
+
+  const payload = buf.subarray(0, 21);
+  const checksum = buf.subarray(21, 25);
+  const expected = createHash('sha256')
+    .update(createHash('sha256').update(payload).digest())
+    .digest()
+    .subarray(0, 4);
+  if (!checksum.equals(expected)) return null;
+
+  return { version: payload[0], hash160: payload.subarray(1) };
+}
+
+/**
+ * True if `s` is a syntactically-valid Gridcoin address (P2PKH or P2SH)
+ * for the given network — checksum verified, version byte recognised.
+ * Use this on any address string the explorer didn't itself derive (e.g.
+ * V1-beacon legacy payloads, user input) before persisting.
+ */
+export function isValidAddress(s: string, network: Network): boolean {
+  const decoded = base58CheckDecode(s);
+  if (!decoded) return false;
+  return (
+    decoded.version === PUBKEY_VERSION_BYTE[network]
+    || decoded.version === SCRIPT_VERSION_BYTE[network]
+  );
 }

@@ -6,6 +6,8 @@ import { getCursor } from '../lib/redis';
 import { withMeta } from '../lib/responseMeta';
 import { parseAt } from '../lib/timeMachine';
 import { NetworkStatsPoller, NetworkStatsPayload } from '../services/network/NetworkStatsPoller';
+import { resolveChainForks } from '../services/network/ChainForks';
+import { tsToUnix } from '../lib/time';
 
 export const networkRouter = Router();
 
@@ -24,12 +26,6 @@ interface SnapshotRow {
   mempool_size: number;
   difficulty: string;
   tip_height: number;
-}
-
-function tsToUnix(t: number | string): number {
-  if (typeof t === 'number') return t;
-  const ms = new Date(t).getTime();
-  return Number.isFinite(ms) ? Math.floor(ms / 1000) : 0;
 }
 
 // Build network-stats `attributes` from whatever we can find. Used as a
@@ -182,7 +178,7 @@ networkRouter.get('/history', async (req: Request, res: Response) => {
   let points: Point[];
   if (snapRows.length > 0) {
     points = snapRows.map((r) => ({
-      ts: tsToUnix(r.ts),
+      ts: tsToUnix(r.ts) ?? 0,
       peerCount: r.peer_count,
       mempoolSize: r.mempool_size,
       difficulty: r.difficulty,
@@ -303,6 +299,107 @@ networkRouter.get('/difficulty', async (req: Request, res: Response) => {
           close: r.dclose,
           avg: r.davg,
           samples: r.samples,
+        })),
+      },
+    },
+  }));
+});
+
+// On-chain protocol-registry events grouped by key. Mirrors what the
+// wallet's `ProtocolRegistry::TryLastBeforeTimestamp` would surface,
+// but with the full history chain — the live "current value" per key
+// is just the most recent ACTIVE row. Each row of the response is
+// one ADD or DELETE event from chain history.
+//
+// Used by /protocol/registry on the frontend; also the data source
+// for the poll aggregator's V13+ magnitude-weight-factor lookup
+// (different code path — direct CH ASOF-join in PollWeightAggregator).
+networkRouter.get('/protocol-entries', async (_req: Request, res: Response) => {
+  res.set('Cache-Control', 'public, max-age=60');
+  const result = await ch.query({
+    query: `
+      SELECT key, value, status,
+             contract_version,
+             tx_id,
+             previous_hash,
+             block_height,
+             toUnixTimestamp(time) AS time
+      FROM protocol_entries FINAL
+      ORDER BY key ASC, time DESC, tx_id ASC
+    `,
+    format: 'JSONEachRow',
+  });
+  type Row = {
+    key: string; value: string; status: string; contract_version: number;
+    tx_id: string; previous_hash: string; block_height: number; time: number;
+  };
+  const rows = await result.json<Row>();
+
+  // Group by key. Each group is a chain-ordered list (newest first
+  // since we ORDER BY time DESC). The "current" value for a key is
+  // the most-recent ACTIVE row; we annotate it so the frontend can
+  // surface it without re-scanning the events list.
+  const byKey = new Map<string, { key: string; current: Row | null; events: Row[] }>();
+  for (const r of rows) {
+    let bucket = byKey.get(r.key);
+    if (!bucket) {
+      bucket = { key: r.key, current: null, events: [] };
+      byKey.set(r.key, bucket);
+    }
+    bucket.events.push(r);
+    if (bucket.current === null && r.status === 'ACTIVE') {
+      bucket.current = r;
+    }
+  }
+
+  res.status(StatusCodes.OK).send(withMeta({
+    data: {
+      type: 'protocol_entries',
+      id: 'all',
+      attributes: {
+        keys: Array.from(byKey.values()).map((bucket) => ({
+          key: bucket.key,
+          current_value: bucket.current?.value ?? null,
+          current_set_at_height: bucket.current?.block_height ?? null,
+          current_set_at_time: bucket.current?.time ?? null,
+          events: bucket.events.map((e) => ({
+            value: e.value,
+            status: e.status,
+            block_height: e.block_height,
+            time: e.time,
+            tx_id: e.tx_id,
+            previous_hash: e.previous_hash,
+            contract_version: e.contract_version,
+          })),
+        })),
+      },
+    },
+  }));
+});
+
+// Canonical consensus-fork table with each fork's activation height
+// and block-time on the active network. Powers (a) the /protocol
+// reference page (full table + summaries), and (b) the difficulty
+// chart's vertical marker annotations. Cached for a minute since
+// once the indexer has crossed a fork the answer is monotonic.
+networkRouter.get('/forks', async (_req: Request, res: Response) => {
+  const forks = await resolveChainForks();
+  // Fork activation timestamps are monotonic — once a fork is crossed,
+  // its block-time never changes. A long TTL is safe; SWR keeps the
+  // user-perceived response fast through the day.
+  res.set('Cache-Control', 'public, max-age=3600, stale-while-revalidate=86400');
+  res.status(StatusCodes.OK).send(withMeta({
+    data: {
+      type: 'chain_forks',
+      id: 'all',
+      attributes: {
+        forks: forks.map((f) => ({
+          key: f.key,
+          height: f.height,
+          timestamp: f.timestamp,
+          chart_label: f.chartLabel,
+          summary: f.summary,
+          category: f.category,
         })),
       },
     },

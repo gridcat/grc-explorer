@@ -27,8 +27,20 @@ interface Point {
   samples: number;
 }
 
+interface ForkMarker {
+  key: string;
+  height: number;
+  /** Unix seconds. Null if the indexer hasn't crossed this fork yet
+   *  — those entries are filtered out before rendering. */
+  timestamp: number | null;
+  chart_label: string;
+  summary: string;
+  category: 'consensus' | 'patch';
+}
+
 interface DifficultyHistoryProps {
   points: Point[];
+  forks: ForkMarker[];
 }
 
 // Difficulty values stretch over many orders of magnitude across
@@ -41,6 +53,19 @@ function safeLog10(v: number): number {
   if (!Number.isFinite(v) || v <= 0) return 0;
   return Math.log10(v);
 }
+
+// The protocol itself defines `difficulty > 900_000` as pathological:
+// `GRC::GetNextTargetRequired` (src/gridcoin/staking/difficulty.cpp)
+// snaps the retarget back to PROOF_OF_STAKE_LIMIT whenever the current
+// difficulty exceeds that ceiling, since 2015-01-14 (R Halford patch).
+// On a real log axis, the pre-cap chaos era — handful of days in late
+// 2014 / early Jan 2015 where the formula computes 10^7 → 10^64 from
+// the raw `bits` — would size the y-range to 69 decades and crush the
+// legitimate 0.0002 → 100 lifetime range into a few pixels. So the
+// whole-chain view caps the y-axis at one decade above the protocol's
+// own ceiling, and the pre-cap days are drawn clamped to the top edge
+// with the two patch dates annotated below.
+const DISPLAY_DIFFICULTY_CEIL = 1_000_000;
 
 function formatDifficulty(v: number): string {
   if (!Number.isFinite(v) || v <= 0) return '—';
@@ -65,7 +90,7 @@ function formatDate(date: string): string {
   return `${Number(d)} ${MONTHS_SHORT[Number(m) - 1] ?? '???'} ${y}`;
 }
 
-export default function DifficultyHistory({ points }: DifficultyHistoryProps) {
+export default function DifficultyHistory({ points, forks }: DifficultyHistoryProps) {
   const router = useRouter();
   const yearGroups = useMemo(() => groupByYear(points), [points]);
 
@@ -236,7 +261,7 @@ export default function DifficultyHistory({ points }: DifficultyHistoryProps) {
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
               {selectedYear !== null
                 ? 'Linear Y axis. The shaded ribbon is the daily min↔max range; the line is the daily average. Hover for exact values.'
-                : 'Log-scale Y axis. The early-PoW years (2013–2014) and modern PoS-era difficulty differ by orders of magnitude; a linear scale would erase one or the other.'}
+                : 'Log-scale Y axis, capped at 1M difficulty (the protocol\'s own pathological threshold, see R Halford\'s 2015-01-14 patch). Daily averages above the cap from the pre-patch chaos era are clamped to the top edge and marked with a hatched strip. Dashed verticals mark the canonical chain forks (amber = Halford patches, grey = version-bump consensus forks); hover any marker for its activation summary.'}
             </Typography>
             {selectedYear !== null && selectedPoints.length >= 2 ? (
               <ChartFrameProvider height={380}>
@@ -245,7 +270,7 @@ export default function DifficultyHistory({ points }: DifficultyHistoryProps) {
             ) : null}
             {selectedYear === null && points.length >= 2 ? (
               <ChartFrameProvider height={320}>
-                {(frame) => <WholeChainChart frame={frame} points={points} />}
+                {(frame) => <WholeChainChart frame={frame} points={points} forks={forks} />}
               </ChartFrameProvider>
             ) : null}
             {(selectedYear === null && points.length < 2) && (
@@ -324,7 +349,9 @@ function groupByYear(points: Point[]): YearGroup[] {
     .sort((a, b) => a.year - b.year);
 }
 
-function WholeChainChart({ frame, points }: { frame: ChartFrame; points: Point[] }) {
+function WholeChainChart({
+  frame, points, forks,
+}: { frame: ChartFrame; points: Point[]; forks: ForkMarker[] }) {
   const theme = useTheme();
 
   const layout = useMemo(() => {
@@ -335,24 +362,48 @@ function WholeChainChart({ frame, points }: { frame: ChartFrame; points: Point[]
     const tsMax = points[points.length - 1].ts;
     const xScale = linearScale(tsMin, tsMax, 0, frame.innerWidth);
     let yMin = Number.POSITIVE_INFINITY;
-    let yMax = 0;
     for (const p of points) {
       const a = p.avg;
       const mn = Number(p.min);
-      const mx = Number(p.max);
       if (Number.isFinite(a) && a > 0 && a < yMin) yMin = a;
       if (Number.isFinite(mn) && mn > 0 && mn < yMin) yMin = mn;
-      if (Number.isFinite(mx) && mx > yMax) yMax = mx;
     }
     if (yMin === Number.POSITIVE_INFINITY) yMin = 1e-3;
-    if (yMax === 0) yMax = 1;
     const logMin = Math.floor(safeLog10(yMin));
-    const logMax = Math.ceil(safeLog10(yMax));
+    const logMax = Math.ceil(safeLog10(DISPLAY_DIFFICULTY_CEIL));
     const yScale = linearScale(logMin, logMax, frame.innerHeight, 0);
     return {
       tsMin, tsMax, xScale, yScale, logMin, logMax,
     };
   }, [points, frame.innerWidth, frame.innerHeight]);
+
+  // Days where the daily average exceeds the display ceiling get clamped
+  // to the top edge. Collected as contiguous runs so we can paint a thin
+  // hatched strip along the top of the chart for those ranges — the
+  // line alone going horizontal at the ceiling reads as a flat period
+  // rather than "spike off chart," which would be misleading.
+  const offChartRuns = useMemo(() => {
+    const runs: { x1: number; x2: number }[] = [];
+    if (!layout) return runs;
+    let runStart: number | null = null;
+    let runEnd: number | null = null;
+    for (let i = 0; i < points.length; i += 1) {
+      const p = points[i];
+      if (Number.isFinite(p.avg) && p.avg > DISPLAY_DIFFICULTY_CEIL) {
+        const x = layout.xScale(p.ts);
+        if (runStart === null) runStart = x;
+        runEnd = x;
+      } else if (runStart !== null && runEnd !== null) {
+        runs.push({ x1: runStart, x2: runEnd });
+        runStart = null;
+        runEnd = null;
+      }
+    }
+    if (runStart !== null && runEnd !== null) {
+      runs.push({ x1: runStart, x2: runEnd });
+    }
+    return runs;
+  }, [layout, points]);
 
   const path = useMemo(() => {
     if (!layout || points.length < 2) return null;
@@ -360,7 +411,12 @@ function WholeChainChart({ frame, points }: { frame: ChartFrame; points: Point[]
     for (let i = 0; i < points.length; i += 1) {
       const p = points[i];
       const x = layout.xScale(p.ts);
-      const y = layout.yScale(safeLog10(p.avg));
+      // Clamp daily averages above the ceiling to the ceiling itself so
+      // the path stays inside the SVG and the visible decade range stays
+      // legible. The hatched off-chart strip drawn above the line marks
+      // the affected days; the two Halford-patch annotations explain why.
+      const clamped = Math.min(p.avg, DISPLAY_DIFFICULTY_CEIL);
+      const y = layout.yScale(safeLog10(clamped));
       segs.push(`${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`);
     }
     return segs.join(' ');
@@ -396,7 +452,42 @@ function WholeChainChart({ frame, points }: { frame: ChartFrame; points: Point[]
         yFormat={(v) => formatDifficulty(10 ** v)}
         xFormat={(ts) => String(new Date(ts * 1000).getUTCFullYear())}
       />
+      <defs>
+        <pattern
+          id="difficulty-offchart-hatch"
+          patternUnits="userSpaceOnUse"
+          width={6}
+          height={6}
+          patternTransform="rotate(45)"
+        >
+          <line
+            x1={0}
+            y1={0}
+            x2={0}
+            y2={6}
+            stroke={theme.palette.warning.main}
+            strokeWidth={1.5}
+          />
+        </pattern>
+      </defs>
       <g transform={`translate(${frame.margin.left},${frame.margin.top})`}>
+        {offChartRuns.map((run) => (
+          <rect
+            key={`offchart-${run.x1}-${run.x2}`}
+            x={run.x1}
+            y={0}
+            // Make single-day runs visible by widening to a minimum
+            // 3px stripe — otherwise the Nov-2014 cluster (a single
+            // day or two of clamped averages) renders as a hairline
+            // and the hatch reads as a marker artefact.
+            width={Math.max(3, run.x2 - run.x1)}
+            height={10}
+            fill="url(#difficulty-offchart-hatch)"
+            opacity={0.7}
+          >
+            <title>Daily average above the chart ceiling — see Halford patch markers below.</title>
+          </rect>
+        ))}
         {path && (
           <path
             d={path}
@@ -405,6 +496,51 @@ function WholeChainChart({ frame, points }: { frame: ChartFrame; points: Point[]
             strokeWidth={1.5}
           />
         )}
+        {forks.map((fork, idx) => {
+          if (fork.timestamp === null) return null;
+          if (fork.timestamp < layout.tsMin || fork.timestamp > layout.tsMax) return null;
+          const x = layout.xScale(fork.timestamp);
+          // Patches (Halford) keep the warning palette so the eye
+          // tells them apart from version-bump consensus forks, which
+          // use the secondary text color and a slightly subtler dash.
+          const isPatch = fork.category === 'patch';
+          const strokeColor = isPatch
+            ? theme.palette.warning.main
+            : theme.palette.text.secondary;
+          const lineOpacity = isPatch ? 0.55 : 0.4;
+          const labelOpacity = isPatch ? 0.85 : 0.65;
+          // Stagger labels by array index — V13 and V14 (200 blocks
+          // apart on mainnet) would otherwise paint on top of each
+          // other. Index parity is zoom-invariant; the previous
+          // `xScale % 2` hack flipped labels around when the user
+          // resized the chart, which read as flicker.
+          const labelY = idx % 2 === 0 ? frame.innerHeight - 6 : frame.innerHeight - 18;
+          return (
+            <g key={`fork-${fork.key}`}>
+              <line
+                x1={x}
+                x2={x}
+                y1={0}
+                y2={frame.innerHeight}
+                stroke={strokeColor}
+                strokeDasharray={isPatch ? '4 3' : '2 4'}
+                opacity={lineOpacity}
+              >
+                <title>{fork.summary}</title>
+              </line>
+              <text
+                x={x + 4}
+                y={labelY}
+                fontSize={10}
+                fill={strokeColor}
+                opacity={labelOpacity}
+              >
+                {fork.chart_label}
+                <title>{fork.summary}</title>
+              </text>
+            </g>
+          );
+        })}
       </g>
     </svg>
   );
@@ -759,11 +895,18 @@ function TooltipNum({ label, value }: { label: string; value: string }) {
 }
 
 export const getServerSideProps: GetServerSideProps<DifficultyHistoryProps> = async () => {
-  try {
-    const r = await api.get('/network/difficulty', { params: { range: 'all' } });
-    const points = (r.data?.data?.attributes?.points ?? []) as Point[];
-    return { props: { points } };
-  } catch {
-    return { props: { points: [] } };
-  }
+  // Fetch the two endpoints in parallel — forks are cheap (12 rows) and
+  // independent of difficulty payload size, so blocking one on the other
+  // would burn a needless round-trip.
+  const [pointsRes, forksRes] = await Promise.allSettled([
+    api.get('/network/difficulty', { params: { range: 'all' } }),
+    api.get('/network/forks'),
+  ]);
+  const points = pointsRes.status === 'fulfilled'
+    ? ((pointsRes.value.data?.data?.attributes?.points ?? []) as Point[])
+    : [];
+  const forks = forksRes.status === 'fulfilled'
+    ? ((forksRes.value.data?.data?.attributes?.forks ?? []) as ForkMarker[])
+    : [];
+  return { props: { points, forks } };
 };

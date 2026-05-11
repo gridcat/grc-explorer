@@ -18,6 +18,13 @@ interface Beacon {
   blockHeight: number;
   timestamp: number;
   expiration: number;
+  /** Set when the beacon is past its 150-day renewal window and still
+   *  active; equals the 180-day expiration. Null otherwise. */
+  renewableUntil: number | null;
+  /** Pre-v11 beacons cannot be renewed by the wallet — they have to
+   *  be re-advertised. Surface this on the UI so researchers don't
+   *  attempt a renewal that will be rejected. */
+  mustReadvertise: boolean;
 }
 
 interface BeaconsPageProps {
@@ -28,16 +35,17 @@ interface BeaconsPageProps {
 
 const STATUSES = ['all', 'active', 'expired', 'superseded', 'revoked'] as const;
 
-export default function BeaconsPage({ initialRows, initialTotal, initialStatus }: BeaconsPageProps) {
+const STATUS_CHIP_COLOR: Record<string, 'success' | 'default' | 'warning' | 'error'> = {
+  active: 'success',
+  expired: 'default',
+  superseded: 'warning',
+  revoked: 'error',
+};
+
+export default function BeaconsPage({
+  initialRows: rows, initialTotal: total, initialStatus: status,
+}: BeaconsPageProps) {
   const router = useRouter();
-  // Reading directly from props rather than holding them in `useState`
-  // — Next.js calls `getServerSideProps` again on every tab change
-  // (status query param flips), but `useState(initial)` only takes its
-  // arg once at mount, so a stale list would otherwise stick around
-  // after the navigation.
-  const rows = initialRows;
-  const total = initialTotal;
-  const status = initialStatus;
 
   const onTabChange = (_e: React.SyntheticEvent, value: string) => {
     const next = value === 'all'
@@ -60,11 +68,13 @@ export default function BeaconsPage({ initialRows, initialTotal, initialStatus }
             Beacons are on-chain advertisements that link a researcher&apos;s
             CPID to a Gridcoin address. Every researcher who wants their
             BOINC magnitude rewarded must have a live beacon. Beacons
-            expire after a fixed window (renewable via a fresh advertisement)
-            and can be marked <em>superseded</em> when a newer beacon for
-            the same CPID lands. Status is evaluated against current
-            chain-time, not the value stored at write, so an &quot;active&quot;
-            row really is still in force.
+            expire 180 days after advertisement, become <em>renewable</em>
+            at 150 days, and can be marked <em>superseded</em> when a newer
+            beacon for the same CPID lands. Pre-v11 (Fern) beacons can&apos;t
+            be renewed by the wallet — they must be re-advertised.
+            Status is evaluated against current chain-time, not the value
+            stored at write, so an &quot;active&quot; row really is still
+            in force.
           </Typography>
         </Box>
 
@@ -106,17 +116,32 @@ export default function BeaconsPage({ initialRows, initialTotal, initialStatus }
                     </Link>
                   </TableCell>
                   <TableCell>
-                    <Chip
-                      size="small"
-                      label={b.status}
-                      color={
-                        b.status === 'active' ? 'success'
-                          : b.status === 'expired' ? 'default'
-                            : b.status === 'superseded' ? 'warning'
-                              : 'error'
-                      }
-                      variant={b.status === 'active' ? 'filled' : 'outlined'}
-                    />
+                    <Stack direction="row" spacing={0.5} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
+                      <Chip
+                        size="small"
+                        label={b.status}
+                        color={STATUS_CHIP_COLOR[b.status] ?? 'default'}
+                        variant={b.status === 'active' ? 'filled' : 'outlined'}
+                      />
+                      {b.renewableUntil !== null && (
+                        <Chip
+                          size="small"
+                          label="renewable"
+                          color="info"
+                          variant="outlined"
+                          title={`Past the 150-day renewal window; can be renewed without re-advertising until ${formatTime(b.renewableUntil)}.`}
+                        />
+                      )}
+                      {b.mustReadvertise && b.status === 'active' && (
+                        <Chip
+                          size="small"
+                          label="must re-advertise"
+                          color="warning"
+                          variant="outlined"
+                          title="Beacon registered before the v11 (Fern) fork — the wallet rejects renewal contracts that reference pre-v11 beacons. The owner must submit a fresh beacon advertisement."
+                        />
+                      )}
+                    </Stack>
                   </TableCell>
                   <TableCell sx={{ color: 'text.secondary', fontSize: 12 }}>
                     {formatTime(b.timestamp)}

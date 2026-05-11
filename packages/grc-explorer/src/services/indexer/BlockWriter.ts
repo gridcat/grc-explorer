@@ -71,6 +71,7 @@ export async function applyBlocks(parsedList: ParsedBlock[], options: ApplyBlock
     insertVotes(parsedList, seq),
     insertTxMessages(parsedList, seq),
     insertProjectContracts(parsedList, seq),
+    insertProtocolEntries(parsedList, seq),
     insertMrcRequests(parsedList, seq),
     reconcileMempool(parsedList, seq),
     captureMempoolSnapshots(parsedList, seq),
@@ -628,6 +629,22 @@ async function insertProjectContracts(parsedList: ParsedBlock[], seq: bigint): P
   })));
   if (rows.length === 0) return;
   await ch.insert({ table: 'project_contracts', format: 'JSONEachRow', values: rows });
+}
+
+async function insertProtocolEntries(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
+  const rows = parsedList.flatMap((p) => p.protocolEntries.map((pe) => ({
+    key: pe.key,
+    value: pe.value,
+    status: pe.status,
+    contract_version: pe.contractVersion,
+    tx_id: pe.txId,
+    previous_hash: pe.previousHash,
+    block_height: pe.blockHeight,
+    time: pe.time,
+    _seq: seq.toString(),
+  })));
+  if (rows.length === 0) return;
+  await ch.insert({ table: 'protocol_entries', format: 'JSONEachRow', values: rows });
 }
 
 async function insertTxMessages(parsedList: ParsedBlock[], seq: bigint): Promise<void> {

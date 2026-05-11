@@ -72,6 +72,7 @@ const HEIGHT_TABLES: Array<{ table: string; column: string }> = [
   { table: 'polls', column: 'block_height' },
   { table: 'votes', column: 'block_height' },
   { table: 'project_contracts', column: 'block_height' },
+  { table: 'protocol_entries', column: 'block_height' },
 ];
 
 // Per-Meili-index spec for collecting doc IDs to drop. Each `idSql`
