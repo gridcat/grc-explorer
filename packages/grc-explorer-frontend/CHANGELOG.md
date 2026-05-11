@@ -1,3 +1,10 @@
+# [grc-explorer-frontend-v1.1.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.0.3...grc-explorer-frontend-v1.1.0) (2026-05-11)
+
+
+### Features
+
+* **explorer:** protocol audit + /protocol pages + fork-aware UI ([e820a65](https://github.com/gridcat/grc-explorer/commit/e820a6588a3988bf1946690594fecf59898e5e90))
+
 # [grc-explorer-frontend-v1.0.3](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.0.2...grc-explorer-frontend-v1.0.3) (2026-05-09)
 
 
