@@ -1,3 +1,11 @@
+# [grc-explorer-frontend-v1.1.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.1.0...grc-explorer-frontend-v1.1.1) (2026-05-12)
+
+
+### Bug Fixes
+
+* a lot of fixes and other improvements ([307b8d8](https://github.com/gridcat/grc-explorer/commit/307b8d82d0b733c0ebdad87a02f352a3df2bd9a3))
+* kilo must be capital ([084758a](https://github.com/gridcat/grc-explorer/commit/084758ac37cf16c4c45c09054e26703e11932143))
+
 # [grc-explorer-frontend-v1.1.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.0.3...grc-explorer-frontend-v1.1.0) (2026-05-11)
 
 
