@@ -1,3 +1,10 @@
+# [grc-explorer-v1.2.2](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.2.1...grc-explorer-v1.2.2) (2026-05-12)
+
+
+### Bug Fixes
+
+* boinc fill ups and UTXO fix for early gridcoin ([b6bed5c](https://github.com/gridcat/grc-explorer/commit/b6bed5c69d8bf84347df19b8c32176db328ca49c))
+
 # [grc-explorer-v1.2.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.2.0...grc-explorer-v1.2.1) (2026-05-12)
 
 
