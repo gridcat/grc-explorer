@@ -1,3 +1,10 @@
+# [grc-explorer-v1.2.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.2.0...grc-explorer-v1.2.1) (2026-05-12)
+
+
+### Bug Fixes
+
+* a lot of fixes and other improvements ([307b8d8](https://github.com/gridcat/grc-explorer/commit/307b8d82d0b733c0ebdad87a02f352a3df2bd9a3))
+
 # [grc-explorer-v1.2.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.1.2...grc-explorer-v1.2.0) (2026-05-11)
 
 
