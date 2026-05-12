@@ -290,7 +290,9 @@ export class BoincStatsImportJob {
     userCount: number,
     error: string,
   ): Promise<void> {
-    const now = new Date().toISOString();
+    // ClickHouse's JSONEachRow can't parse ISO-8601 with a trailing 'Z'
+    // into DateTime64; it expects 'YYYY-MM-DD HH:MM:SS.fff'.
+    const now = new Date().toISOString().replace('T', ' ').replace('Z', '');
     const lastSuccess = status === 'ok' ? now : null;
     // We update last_success_at only on success — preserves the
     // previous value when the row is upserted. Fetch the prior value

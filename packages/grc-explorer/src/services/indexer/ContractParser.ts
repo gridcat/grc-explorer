@@ -138,6 +138,13 @@ export interface ParsedTxInputRow {
   prevVout: number;
   address: string | null;
   value: bigint | null;
+  // True when this vin re-claims a UTXO already spent by an earlier
+  // tx (Halford-era kernel-reuse coinstakes are the known case). Set
+  // by PhantomSpendDetector between parseBlock and applyBlocks; the
+  // debit is cancelled in the block's addressDeltas at the same time
+  // so address_balance_history stays consistent with the daemon's
+  // UTXO-set view.
+  isPhantomSpend?: boolean;
 }
 
 export interface AddressDelta {

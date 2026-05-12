@@ -7,6 +7,7 @@ import {
   applyWalletDeltasBatch, getCursor, nextSeq, setCursor, WalletDelta,
 } from '../../lib/redis';
 import { ParsedBlock } from './ContractParser';
+import { markPhantomSpends } from './PhantomSpendDetector';
 
 // Apply ParsedBlocks to ClickHouse. The new architecture is "every row
 // carries a `_seq` UInt64 that comes from a single Redis INCR; the
@@ -39,6 +40,12 @@ export async function applyBlocks(parsedList: ParsedBlock[], options: ApplyBlock
   // One _seq per call. Every row in this batch shares it; reorg
   // re-applies bump _seq globally so newer always wins.
   const seq = await nextSeq();
+
+  // Flag Halford-era kernel-reuse re-claims and cancel their phantom
+  // debits in addressDeltas before the per-table inserts read them.
+  // Must precede the insert dispatch — insertTxInputs and
+  // insertAddressBalanceHistory both consume the mutated parsedList.
+  await markPhantomSpends(parsedList);
 
   // Per-table inserts run in parallel — each writes to a different CH
   // table (no row-level dependencies between them at the storage
@@ -178,6 +185,7 @@ async function insertTxInputs(parsedList: ParsedBlock[], seq: bigint): Promise<v
     address: i.address,
     value: i.value !== null ? i.value.toString() : null,
     block_height: p.block.height,
+    is_phantom_spend: Boolean(i.isPhantomSpend),
     _seq: seq.toString(),
   })));
   if (rows.length === 0) return;

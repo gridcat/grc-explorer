@@ -4,6 +4,7 @@ import { events } from '../../lib/emitter';
 import { liveRpc } from '../../lib/gridcoin';
 import { log } from '../../lib/log';
 import { getCursor, setCursor } from '../../lib/redis';
+import { releaseSpentUtxos } from './PhantomSpendDetector';
 
 interface CursorPosition {
   height: number;
@@ -46,6 +47,13 @@ export class ChainReorgHandler {
     const depth = cursor.height - fork.height;
     const abandoned = await this.collectAbandonedHashes(fork.height + 1, cursor.height);
     log.warn(`Reorg detected — moving cursor back ${depth} blocks to fork ${fork.height}/${fork.hash}`);
+
+    // Release abandoned UTXO claims from the spent-UTXO set before
+    // the forward replay re-walks the new chain. Without this, every
+    // re-spend in the new chain would look like a phantom and lose
+    // its address_balance_history debit. The forward replay's SADD
+    // re-populates the set with whichever UTXOs the new chain spends.
+    await this.releaseAbandonedUtxos(fork.height + 1, cursor.height);
 
     // Move cursor; TipFollower's next tick re-applies fork+1 onward with
     // a fresh _seq, naturally superseding the abandoned chain.
@@ -105,6 +113,31 @@ export class ChainReorgHandler {
       }
     }
     return null;
+  }
+
+  private async releaseAbandonedUtxos(from: number, to: number): Promise<void> {
+    if (to < from) return;
+    // We only need to release UTXOs that the abandoned chain marked
+    // as first-spent. Phantom re-claims in the abandoned range don't
+    // own their SET entry — its canonical spender lives in some
+    // earlier (still-live) block — so SREM is restricted to
+    // non-phantom rows. `is_phantom_spend` defaults to false on
+    // pre-migration rows, which is the correct interpretation for
+    // pre-existing data.
+    const result = await ch.query({
+      query: `
+        SELECT prev_tx, prev_vout
+        FROM tx_inputs FINAL
+        WHERE block_height >= {from: UInt32}
+          AND block_height <= {to: UInt32}
+          AND prev_tx IS NOT NULL
+          AND is_phantom_spend = false
+      `,
+      query_params: { from, to },
+      format: 'JSONEachRow',
+    });
+    const rows = await result.json<{ prev_tx: string; prev_vout: number }>();
+    await releaseSpentUtxos(rows.map((r) => `${r.prev_tx}:${r.prev_vout}`));
   }
 
   private async collectAbandonedHashes(from: number, to: number): Promise<string[]> {

@@ -521,6 +521,42 @@ async function wipeClickhouseFromHeight(fromHeight: number): Promise<void> {
   }
 }
 
+// Re-populate utxo:spent from surviving (height < N) non-phantom
+// tx_inputs after a partial wipe. The forward replay covers >= N on
+// its own; this ensures that a new-chain block at H >= N re-spending
+// a UTXO that was canonically spent at H' < N is still detected as
+// a phantom rather than being silently re-debited.
+async function reseedUtxoSpent(fromHeight: number): Promise<void> {
+  if (fromHeight === 0) {
+    console.log('  utxo:spent: skip reseed (full chain replays from genesis)');
+    return;
+  }
+  console.log(`  utxo:spent: reseeding from tx_inputs WHERE block_height < ${fromHeight} AND is_phantom_spend = false`);
+  const rows = await chQueryJson<{ prev_tx: string; prev_vout: number }>(
+    `SELECT prev_tx, prev_vout
+       FROM tx_inputs FINAL
+      WHERE block_height < ${fromHeight}
+        AND prev_tx IS NOT NULL
+        AND is_phantom_spend = false`,
+  );
+  if (rows.length === 0) {
+    console.log('  utxo:spent: nothing to reseed');
+    return;
+  }
+  const CHUNK = 5000;
+  let seeded = 0;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const slice = rows.slice(i, i + CHUNK);
+    const pipe = redis.pipeline();
+    for (const r of slice) pipe.sadd('utxo:spent', `${r.prev_tx}:${r.prev_vout}`);
+    const run = pipe.exec.bind(pipe);
+    // eslint-disable-next-line no-await-in-loop
+    await run();
+    seeded += slice.length;
+  }
+  console.log(`  utxo:spent: ${seeded} member(s) re-seeded`);
+}
+
 async function rewindRedisToHeight(fromHeight: number): Promise<void> {
   console.log('→ Redis: rebuilding wallet projection from address_balance_history…');
   // The wallet HSETs are running totals; we can't decrement back
@@ -531,6 +567,17 @@ async function rewindRedisToHeight(fromHeight: number): Promise<void> {
   // path; the trimmed CH event log is exactly what we need.
   const replayed = await rebuildWallets();
   console.log(`  replayed ${replayed} delta rows`);
+
+  // Same problem on the spent-UTXO membership set: every member
+  // contributed by an abandoned block at height >= N must be released
+  // so the next forward replay can claim the UTXO as first-spender
+  // again. Simplest correct approach mirrors the wallet rebuild:
+  // wipe the SET and let the forward replay re-populate it. The
+  // surviving (< N) tx_inputs that aren't phantom-flagged stay
+  // sound because no later block has a chance to phantom them.
+  await redis.del('utxo:spent');
+  console.log('  utxo:spent: cleared (forward replay will re-seed)');
+  await reseedUtxoSpent(fromHeight);
 
   // Drop the meili:queue stream — pending envelopes for the deleted
   // height range would re-fire into Meili after the wipe lock clears,
