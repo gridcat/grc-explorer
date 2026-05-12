@@ -35,13 +35,13 @@ export function formatCompact(v: number, decimals = 2): string {
   if (abs >= 1e12) return `${sign}${(abs / 1e12).toFixed(decimals)}T`;
   if (abs >= 1e9) return `${sign}${(abs / 1e9).toFixed(decimals)}B`;
   if (abs >= 1e6) return `${sign}${(abs / 1e6).toFixed(decimals)}M`;
-  if (abs >= 1e4) return `${sign}${(abs / 1e3).toFixed(1)}k`;
+  if (abs >= 1e3) return `${sign}${(abs / 1e3).toFixed(1)}K`;
   if (abs >= 1) return `${sign}${abs.toLocaleString(NUM_LOCALE, { maximumFractionDigits: decimals })}`;
   return `${sign}${abs.toPrecision(2)}`;
 }
 
 /**
- * Compact GRC formatter for charts/axes — `1.2M`, `3.4k`, `567` — where
+ * Compact GRC formatter for charts/axes — `1.2M`, `3.4K`, `567` — where
  * thousands-separated full-precision noise hurts readability. Used by the
  * dashboard's SVG charts (Y-axis ticks, tooltips, address sparkline).
  */
