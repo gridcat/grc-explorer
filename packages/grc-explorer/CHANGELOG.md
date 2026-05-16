@@ -1,3 +1,15 @@
+# [grc-explorer-v1.3.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.2.2...grc-explorer-v1.3.0) (2026-05-16)
+
+
+### Bug Fixes
+
+* fix linter issues for the backend part ([842372f](https://github.com/gridcat/grc-explorer/commit/842372ff7694cbcc1736eea06b6ab62c3a8e9536))
+
+
+### Features
+
+* som many fixes and features, so I literally lost track of it ([ad44b6d](https://github.com/gridcat/grc-explorer/commit/ad44b6d38ddea262b9ba3387d6841e95060e5453))
+
 # [grc-explorer-v1.2.2](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.2.1...grc-explorer-v1.2.2) (2026-05-12)
 
 
