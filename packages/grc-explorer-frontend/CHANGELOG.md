@@ -1,3 +1,10 @@
+# [grc-explorer-frontend-v1.2.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.1.1...grc-explorer-frontend-v1.2.0) (2026-05-16)
+
+
+### Features
+
+* som many fixes and features, so I literally lost track of it ([ad44b6d](https://github.com/gridcat/grc-explorer/commit/ad44b6d38ddea262b9ba3387d6841e95060e5453))
+
 # [grc-explorer-frontend-v1.1.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.1.0...grc-explorer-frontend-v1.1.1) (2026-05-12)
 
 
