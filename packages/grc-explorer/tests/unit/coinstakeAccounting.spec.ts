@@ -11,7 +11,9 @@ function vout(value: number, n: number, address: string | null): Vout {
     value,
     n,
     scriptPubKey: {
-      asm: '', hex: '', type: address ? 'pubkeyhash' : 'nonstandard',
+      asm: '',
+      hex: '',
+      type: address ? 'pubkeyhash' : 'nonstandard',
       reqSigs: address ? 1 : 0,
       addresses: address ? [address] : [],
     },
@@ -20,8 +22,15 @@ function vout(value: number, n: number, address: string | null): Vout {
 
 function tx(txid: string, vin: BlockTx['vin'], vouts: Vout[]): BlockTx {
   return {
-    txid, version: 1, time: 0, locktime: 0, hashboinc: '',
-    contracts: [], vin, vout: vouts, size: 0,
+    txid,
+    version: 1,
+    time: 0,
+    locktime: 0,
+    hashboinc: '',
+    contracts: [],
+    vin,
+    vout: vouts,
+    size: 0,
   };
 }
 
@@ -46,9 +55,11 @@ describe('coinstake-aware received/sent accounting', () => {
 
     const b = block([
       tx('cb', [{ coinbase: '00', sequence: 0 }], [vout(0, 0, null)]),
-      tx('cs',
+      tx(
+        'cs',
         [{ txid: 'p0', vout: 0, sequence: 0 }],
-        [vout(0, 0, null), vout(1008, 1, STAKER), vout(2, 2, SIDE)]),
+        [vout(0, 0, null), vout(1008, 1, STAKER), vout(2, 2, SIDE)],
+      ),
     ]);
 
     const { addressDeltas } = processTransactions(b, true, prev);
@@ -73,10 +84,12 @@ describe('coinstake-aware received/sent accounting', () => {
       : null);
     const b = block([
       tx('cb', [{ coinbase: '00', sequence: 0 }], [vout(0, 0, null)]),
-      tx('cs',
+      tx(
+        'cs',
         [{ txid: 'p1', vout: 0, sequence: 0 }],
         // 990 back to staker, 20 to a sidestake (total out 1010 > 1000 in).
-        [vout(0, 0, null), vout(990, 1, STAKER), vout(20, 2, SIDE)]),
+        [vout(0, 0, null), vout(990, 1, STAKER), vout(20, 2, SIDE)],
+      ),
     ]);
     const s = processTransactions(b, true, prev).addressDeltas.get(STAKER)!;
     expect(s.delta).toBe(grc2halford(990) - grc2halford(1000)); // -10
@@ -90,14 +103,16 @@ describe('coinstake-aware received/sent accounting', () => {
       ? { address: A, value: grc2halford(100) }
       : null);
     const b = block([
-      tx('pay',
+      tx(
+        'pay',
         [{ txid: 'pa', vout: 0, sequence: 0 }],
-        [vout(30, 0, B), vout(70, 1, A)]), // 30 to B, 70 change back to A
+        [vout(30, 0, B), vout(70, 1, A)],
+      ), // 30 to B, 70 change back to A
     ]);
     const { addressDeltas } = processTransactions(b, false, prev);
     const a = addressDeltas.get(A)!;
     const recipient = addressDeltas.get(B)!;
-    expect(a.sent).toBe(grc2halford(100));    // full input, gross
+    expect(a.sent).toBe(grc2halford(100)); // full input, gross
     expect(a.received).toBe(grc2halford(70)); // change still counted (convention)
     expect(a.delta).toBe(grc2halford(70) - grc2halford(100)); // -30
     expect(recipient.received).toBe(grc2halford(30));
