@@ -1,9 +1,9 @@
 import { ch } from '../../lib/ch';
+import { HALFORD } from '../../lib/halford';
 import { log } from '../../lib/log';
 import { nextSeq } from '../../lib/redis';
 import { WEIGHT_TYPE } from '../indexer/ContractParser';
-import { CHAIN_FORKS } from '../network/ChainForks';
-import { config } from '../../config';
+import { forkHeight } from '../network/ChainForks';
 
 // Vote-weight + AV-W aggregator. For every closed poll where
 // `weights_computed_at_height` is still NULL:
@@ -27,7 +27,6 @@ import { config } from '../../config';
 // canonical formula. Capped at POLLS_PER_TICK polls per pass so a
 // backlog never monopolises the scheduler.
 const POLLS_PER_TICK = 5;
-const HALFORD = 100_000_000n;
 
 // Magnitude-weight factor for BALANCE_AND_MAGNITUDE polls. The wallet
 // (`src/gridcoin/voting/poll.cpp::ResolveMagnitudeWeightFactor`) hard-
@@ -41,10 +40,7 @@ const MAG_FACTOR_DEN = 567n;
 
 // V13 activation height comes from the canonical fork table so the
 // audit-relevant heights live in exactly one place (see ChainForks.ts).
-const V13_FORK = CHAIN_FORKS.find((f) => f.key === 'v13');
-const V13_HEIGHT = config.NETWORK === 'testnet'
-  ? (V13_FORK?.testnet ?? Number.POSITIVE_INFINITY)
-  : (V13_FORK?.mainnet ?? Number.POSITIVE_INFINITY);
+const V13_HEIGHT = forkHeight('v13') ?? Number.POSITIVE_INFINITY;
 
 interface PollSnapshot {
   poll_id: string;
@@ -121,9 +117,11 @@ export class PollWeightAggregator {
     });
     const sbHeight = (await sbResult.json<{ height: number }>())[0]?.height ?? null;
 
-    // address_balance_history stores per-block deltas, so balance-at-height
-    // is the cumulative sum.
-    const [eligBalResult, eligMagResult] = await Promise.all([
+    // Three CH lookups in parallel: AV-W eligible balance, AV-W
+    // eligible magnitude (depends on sbHeight), and the vote list.
+    // None of these depend on each other — only the post-await
+    // per-voter dictionary queries do.
+    const [eligBalResult, eligMagResult, voteResult] = await Promise.all([
       ch.query({
         query: `
           SELECT toString(sum(bal)) AS total FROM (
@@ -147,23 +145,21 @@ export class PollWeightAggregator {
           format: 'JSONEachRow',
         }).then((r) => r.json<{ total: string | null }>())
         : Promise.resolve([{ total: '0' }] as Array<{ total: string | null }>),
+      ch.query({
+        query: `
+          SELECT poll_id, voter_address, voter_cpid, mining_id, choice_idx,
+                 toString(weight)         AS weight,
+                 toString(weight_balance) AS weight_balance,
+                 weight_magnitude, tx_id, block_height
+          FROM votes FINAL
+          WHERE poll_id = {id: String}
+        `,
+        query_params: { id: poll.poll_id },
+        format: 'JSONEachRow',
+      }),
     ]);
     const avwBalance = BigInt((await eligBalResult.json<{ total: string | null }>())[0]?.total ?? '0');
     const avwMagnitude = Number((eligMagResult)[0]?.total ?? 0);
-
-    // Pull every vote on this poll.
-    const voteResult = await ch.query({
-      query: `
-        SELECT poll_id, voter_address, voter_cpid, mining_id, choice_idx,
-               toString(weight)         AS weight,
-               toString(weight_balance) AS weight_balance,
-               weight_magnitude, tx_id, block_height
-        FROM votes FINAL
-        WHERE poll_id = {id: String}
-      `,
-      query_params: { id: poll.poll_id },
-      format: 'JSONEachRow',
-    });
     const votes = await voteResult.json<VoteRow>();
     if (votes.length === 0) {
       // No votes: just stamp weights_computed_at_height so the poll
@@ -187,39 +183,38 @@ export class PollWeightAggregator {
       votes.map((v) => v.voter_cpid).filter((c): c is string => typeof c === 'string' && c !== ''),
     ));
 
+    // The per-voter balance and magnitude lookups are independent —
+    // fire in parallel.
     const balByAddress = new Map<string, bigint>();
-    if (voterAddresses.length > 0) {
-      const r = await ch.query({
-        query: `
-          SELECT address, toString(sum(delta)) AS bal
-          FROM address_balance_history FINAL
-          WHERE address IN ({addrs: Array(String)})
-            AND valid_from_height <= {h: UInt32}
-          GROUP BY address
-        `,
-        query_params: { addrs: voterAddresses, h: startHeight },
-        format: 'JSONEachRow',
-      });
-      for (const row of await r.json<{ address: string; bal: string }>()) {
-        balByAddress.set(row.address, BigInt(row.bal));
-      }
-    }
-
     const magByCpid = new Map<string, number>();
-    if (voterCpids.length > 0 && sbHeight !== null) {
-      const r = await ch.query({
-        query: `
-          SELECT cpid, magnitude FROM superblock_magnitudes FINAL
-          WHERE superblock_height = {h: UInt32}
-            AND cpid IN ({cpids: Array(String)})
-        `,
-        query_params: { h: sbHeight, cpids: voterCpids },
-        format: 'JSONEachRow',
-      });
-      for (const row of await r.json<{ cpid: string; magnitude: number }>()) {
-        magByCpid.set(row.cpid, row.magnitude);
-      }
-    }
+    const [balRows, magRows] = await Promise.all([
+      voterAddresses.length > 0
+        ? ch.query({
+          query: `
+            SELECT address, toString(sum(delta)) AS bal
+            FROM address_balance_history FINAL
+            WHERE address IN ({addrs: Array(String)})
+              AND valid_from_height <= {h: UInt32}
+            GROUP BY address
+          `,
+          query_params: { addrs: voterAddresses, h: startHeight },
+          format: 'JSONEachRow',
+        }).then((r) => r.json<{ address: string; bal: string }>())
+        : Promise.resolve([] as Array<{ address: string; bal: string }>),
+      voterCpids.length > 0 && sbHeight !== null
+        ? ch.query({
+          query: `
+            SELECT cpid, magnitude FROM superblock_magnitudes FINAL
+            WHERE superblock_height = {h: UInt32}
+              AND cpid IN ({cpids: Array(String)})
+          `,
+          query_params: { h: sbHeight, cpids: voterCpids },
+          format: 'JSONEachRow',
+        }).then((r) => r.json<{ cpid: string; magnitude: number }>())
+        : Promise.resolve([] as Array<{ cpid: string; magnitude: number }>),
+    ]);
+    for (const row of balRows) balByAddress.set(row.address, BigInt(row.bal));
+    for (const row of magRows) magByCpid.set(row.cpid, row.magnitude);
 
     // Pre-V13 polls use the hardcoded 100/567 factor. V13+ polls walk
     // the on-chain protocol registry for the `magnitudeweightfactor`

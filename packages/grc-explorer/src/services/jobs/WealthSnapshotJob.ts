@@ -1,6 +1,8 @@
 import { ch } from '../../lib/ch';
+import { events } from '../../lib/emitter';
 import { getTipAnchor } from '../../lib/indexerTip';
 import { log } from '../../lib/log';
+import { positiveBalancesDesc } from '../../lib/redis';
 
 // Daily wealth snapshot. One row per UTC-day bucket into the
 // `wealth_snapshots` CH table. The dashboard's wealth-distribution
@@ -30,12 +32,10 @@ import { log } from '../../lib/log';
 // duplicate bucket rows naturally, so concurrent re-writes (replays,
 // reorgs) heal to the latest version without manual cleanup.
 
-// Cap one tick to ~100 buckets. With ~4000 chain-days to backfill on
-// a fresh genesis-to-tip run and one tick per hour, that finishes in
-// under two days while keeping individual ticks under a minute of CH
-// time. Per-bucket cost is one large arrayReverseSort + a handful of
-// parallel counts, dominated by the ~50k-element balance scan.
-const MAX_BACKFILL_PER_TICK = 100;
+// Effectively uncapped: one tick drains every remaining missing
+// bucket in a single pass (schedule()'s single-flight guard prevents
+// overlapping ticks). Lower this to re-throttle to N buckets/tick.
+const MAX_BACKFILL_PER_TICK = 1_000_000;
 
 // Skip buckets older than the first chain block (no addresses, no
 // balances — the math would just emit zeros).
@@ -102,7 +102,7 @@ export class WealthSnapshotJob {
       const written: SnapshotRow[] = [];
       for (const bucketTs of missing) {
         // eslint-disable-next-line no-await-in-loop
-        const row = await this.computeSnapshot(bucketTs);
+        const row = await this.computeSnapshot(bucketTs, bucketTs === currentBucket);
         if (row !== null) written.push(row);
       }
 
@@ -125,6 +125,17 @@ export class WealthSnapshotJob {
           })),
         });
         log.info(`WealthSnapshot: wrote ${written.length} bucket(s); first=${written[0].bucketTs}, last=${written[written.length - 1].bucketTs}`);
+        // SSE fanout so the dashboard's WealthDistributionChart refreshes
+        // exactly when there's new data, instead of polling at block
+        // cadence. Latest bucket is what the chart's right edge renders.
+        try {
+          events.publish({
+            topic: 'wealth.snapshot',
+            payload: { bucket_ts: written[written.length - 1].bucketTs },
+          });
+        } catch (err) {
+          log.warn('WealthSnapshotJob: SSE fanout failed', err);
+        }
       }
     } catch (err) {
       log.warn('WealthSnapshotJob.tick failed', err);
@@ -146,8 +157,12 @@ export class WealthSnapshotJob {
 
   private async heightAtTime(ts: number): Promise<number | null> {
     const r = await ch.query({
+      // No FINAL: max(height) is unaffected by un-merged duplicate
+      // block rows (same height), and dropping it lets the
+      // idx_blocks_time minmax index prune `time <= X`. Empty match
+      // yields max()=0, which the caller already maps to null.
       query: `
-        SELECT max(height) AS h FROM blocks FINAL
+        SELECT max(height) AS h FROM blocks
         WHERE time <= toDateTime({at: UInt32})
       `,
       query_params: { at: ts },
@@ -160,7 +175,10 @@ export class WealthSnapshotJob {
   // Build one wealth_snapshots row for `bucketTs`. Returns null when
   // the chain hadn't reached this UTC day yet (block-time gap) or no
   // address state is reconstructable from history.
-  private async computeSnapshot(bucketTs: number): Promise<SnapshotRow | null> {
+  private async computeSnapshot(
+    bucketTs: number,
+    isCurrent: boolean,
+  ): Promise<SnapshotRow | null> {
     const heightAtBucket = await this.heightAtTime(bucketTs);
     if (heightAtBucket === null || heightAtBucket === 0) return null;
 
@@ -168,9 +186,13 @@ export class WealthSnapshotJob {
     // maintained by BlockWriter, so the max() over blocks at-or-before
     // the cutoff equals the supply at that height.
     const supplyResult = await ch.query({
+      // No FINAL: money_supply is a monotonic per-height counter, so
+      // max() over the `height <= h` (PK-pruned) range is unaffected
+      // by un-merged duplicate rows; FINAL would only add a full
+      // merge-scan.
       query: `
         SELECT toString(max(money_supply)) AS supply
-        FROM blocks FINAL
+        FROM blocks
         WHERE height <= {h: UInt32}
       `,
       query_params: { h: heightAtBucket },
@@ -193,22 +215,33 @@ export class WealthSnapshotJob {
     // ordering / sum / share calculations that only need ratios; the
     // result is identical to the prior Redis ZSET path which also
     // stored scores as f64.
-    const balancesResult = await ch.query({
-      query: `
-        SELECT arrayReverseSort(groupArray(toFloat64(balance))) AS sorted
-        FROM (
-          SELECT address, sum(delta) AS balance
-          FROM address_balance_history FINAL
-          WHERE valid_from_height <= {h: UInt32} AND address != ''
-          GROUP BY address
-          HAVING balance > 0
-        )
-      `,
-      query_params: { h: heightAtBucket },
-      format: 'JSONEachRow',
-    });
-    const sortedRow = (await balancesResult.json<{ sorted: number[] }>())[0];
-    const balances: number[] = Array.isArray(sortedRow?.sorted) ? sortedRow.sorted : [];
+    let balances: number[];
+    if (isCurrent) {
+      // Steady-state: current balances live in Redis
+      // (wallets:by_balance), maintained per-block by the indexer.
+      // Replaces a per-tick 20M-row address_balance_history FINAL
+      // scan. The ≤1-day skew vs the bucket's start-of-day height is
+      // the long-standing accepted behaviour for the live bucket;
+      // historical buckets still reconstruct exactly from CH below.
+      balances = await positiveBalancesDesc();
+    } else {
+      const balancesResult = await ch.query({
+        query: `
+          SELECT arrayReverseSort(groupArray(toFloat64(balance))) AS sorted
+          FROM (
+            SELECT address, sum(delta) AS balance
+            FROM address_balance_history FINAL
+            WHERE valid_from_height <= {h: UInt32} AND address != ''
+            GROUP BY address
+            HAVING balance > 0
+          )
+        `,
+        query_params: { h: heightAtBucket },
+        format: 'JSONEachRow',
+      });
+      const sortedRow = (await balancesResult.json<{ sorted: number[] }>())[0];
+      balances = Array.isArray(sortedRow?.sorted) ? sortedRow.sorted : [];
+    }
     const n = balances.length;
     const totalBal = balances.reduce((acc, b) => acc + b, 0);
 
@@ -235,14 +268,20 @@ export class WealthSnapshotJob {
     }
 
     // Cutoff heights for active / hodler windows, anchored on the
-    // BUCKET time (not wall-clock). Issuing the three lookups + the
-    // three derived counts in parallel keeps each bucket under one
-    // round-trip worth of latency.
+    // BUCKET time (not wall-clock). Resolve the three distinct
+    // cutoffs first (24h is shared between active+new) so the four
+    // downstream counts can fire as a real 4-way parallel without
+    // each branch doing its own height lookup.
+    const [h24, h30, h180] = await Promise.all([
+      this.heightAtTime(bucketTs - 86_400),
+      this.heightAtTime(bucketTs - 30 * 86_400),
+      this.heightAtTime(bucketTs - 180 * 86_400),
+    ]);
     const [active24h, new24h, hodler30d, hodler180d] = await Promise.all([
-      this.activeCount(heightAtBucket, bucketTs - 86_400),
-      this.newAddressCount(heightAtBucket, bucketTs - 86_400),
-      this.hodlerCount(heightAtBucket, bucketTs - 30 * 86_400),
-      this.hodlerCount(heightAtBucket, bucketTs - 180 * 86_400),
+      h24 === null ? 0 : this.activeCountAt(heightAtBucket, h24),
+      h24 === null ? 0 : this.newAddressCountAt(heightAtBucket, h24),
+      h30 === null ? 0 : this.hodlerCountAt(heightAtBucket, h30),
+      h180 === null ? 0 : this.hodlerCountAt(heightAtBucket, h180),
     ]);
 
     return {
@@ -260,9 +299,7 @@ export class WealthSnapshotJob {
     };
   }
 
-  private async activeCount(heightAtBucket: number, cutoffTs: number): Promise<number> {
-    const cutoffHeight = await this.heightAtTime(cutoffTs);
-    if (cutoffHeight === null) return 0;
+  private async activeCountAt(heightAtBucket: number, cutoffHeight: number): Promise<number> {
     const r = await ch.query({
       query: `
         SELECT count(DISTINCT address) AS c
@@ -277,9 +314,7 @@ export class WealthSnapshotJob {
     return Number((await r.json<{ c: number | string }>())[0]?.c ?? 0);
   }
 
-  private async newAddressCount(heightAtBucket: number, cutoffTs: number): Promise<number> {
-    const cutoffHeight = await this.heightAtTime(cutoffTs);
-    if (cutoffHeight === null) return 0;
+  private async newAddressCountAt(heightAtBucket: number, cutoffHeight: number): Promise<number> {
     const r = await ch.query({
       query: `
         SELECT count() AS c FROM (
@@ -296,9 +331,7 @@ export class WealthSnapshotJob {
     return Number((await r.json<{ c: number | string }>())[0]?.c ?? 0);
   }
 
-  private async hodlerCount(heightAtBucket: number, cutoffTs: number): Promise<number> {
-    const cutoffHeight = await this.heightAtTime(cutoffTs);
-    if (cutoffHeight === null) return 0;
+  private async hodlerCountAt(heightAtBucket: number, cutoffHeight: number): Promise<number> {
     // Hodler = currently positive balance AND last balance-changing
     // event at-or-before the cutoff. `max(valid_from_height)` picks
     // the address's most recent state change.

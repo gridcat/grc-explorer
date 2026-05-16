@@ -12,6 +12,15 @@ import { ErrorModel } from '../lib/errors';
 // which fires for every route that mentions `:name` — use this
 // middleware when a route needs a more elaborate path schema (e.g.,
 // cross-field constraints) or for query/body validation.
+//
+// Express 5 caveat: `req.query` is a getter-only property on the
+// IncomingMessage prototype (lets apps override the query-string
+// parser globally). Plain `req.query = …` throws "Cannot set
+// property query of #<IncomingMessage> which has only a getter".
+// `Object.defineProperty` installs an own-property that shadows the
+// getter, which is the canonical workaround and works for `body` /
+// `params` too — they're regular writable properties in Express 5
+// but defineProperty is a no-op-shaped overwrite there.
 export function validate(schemas: {
   params?: Joi.Schema;
   query?: Joi.Schema;
@@ -32,7 +41,12 @@ export function validate(schemas: {
         });
         return;
       }
-      (req as unknown as Record<string, unknown>)[key] = result.value;
+      Object.defineProperty(req, key, {
+        value: result.value,
+        writable: true,
+        configurable: true,
+        enumerable: true,
+      });
     }
     next();
   };

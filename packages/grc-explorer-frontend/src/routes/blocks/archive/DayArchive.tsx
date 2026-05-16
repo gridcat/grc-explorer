@@ -1,5 +1,5 @@
 import {
-  Box, Chip, Link as MuiLink, Pagination, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography,
+  Box, Chip, Link as MuiLink, Paper, Stack, Table, TableBody, TableCell, TableHead, TablePagination, TableRow, Typography,
 } from '@mui/material';
 import NextLink from 'next/link';
 import Link from 'next/link';
@@ -8,20 +8,19 @@ import { useRouter } from 'next/router';
 import { Layout } from '../../../layouts/Layout';
 import { HashTrim } from '../../../components/HashTrim';
 import { Crumbs } from '../../../components/Crumbs';
-import { formatNumber, formatTime, timeAgo } from '../../../lib/format';
+import {
+  formatNumber, formatTime, MONTHS_FULL, timeAgo,
+} from '../../../lib/format';
 import { PeriodStatRow } from './PeriodStats';
 import { EmptyPeriodBanner } from './EmptyPeriodBanner';
 import type { DayArchiveData } from './types';
-
-const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December'];
 
 export function DayArchive({ data }: { data: DayArchiveData }) {
   const router = useRouter();
   const {
     year, month, day, blocks, pagination,
   } = data;
-  const monthName = MONTH_NAMES[month - 1];
+  const monthName = MONTHS_FULL[month - 1];
   const isEmpty = data.blockCount === 0;
   const title = `Gridcoin blocks on ${day} ${monthName} ${year}`;
   const description = isEmpty
@@ -41,7 +40,12 @@ export function DayArchive({ data }: { data: DayArchiveData }) {
   const prevHref = `/blocks/${prev.getUTCFullYear()}/${fmt(prev.getUTCMonth() + 1)}/${fmt(prev.getUTCDate())}`;
   const nextHref = `/blocks/${next.getUTCFullYear()}/${fmt(next.getUTCMonth() + 1)}/${fmt(next.getUTCDate())}`;
 
-  const handlePageChange = (_e: unknown, p: number) => {
+  // TablePagination indexes pages from 0; the server / URL use 1-based.
+  // Translate at the boundary so the URL stays canonical (?page=2, not
+  // ?page=1 which is implicit) and the SEO-friendly "no ?page" first
+  // page matches the canonical-link logic above.
+  const handlePageChange = (_e: unknown, zeroBased: number) => {
+    const p = zeroBased + 1;
     router.push(p === 1 ? dayPath : `${dayPath}?page=${p}`, undefined, { scroll: true });
   };
 
@@ -160,15 +164,14 @@ export function DayArchive({ data }: { data: DayArchiveData }) {
             </Paper>
 
             {pagination.totalPages > 1 && (
-              <Stack direction="row" sx={{ justifyContent: 'center' }}>
-                <Pagination
-                  count={pagination.totalPages}
-                  page={pagination.pageNumber}
-                  onChange={handlePageChange}
-                  color="primary"
-                  size="small"
-                />
-              </Stack>
+              <TablePagination
+                component="div"
+                count={data.blockCount}
+                page={pagination.pageNumber - 1}
+                onPageChange={handlePageChange}
+                rowsPerPage={pagination.pageSize}
+                rowsPerPageOptions={[pagination.pageSize]}
+              />
             )}
           </>
         )}

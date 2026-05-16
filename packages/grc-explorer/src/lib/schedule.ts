@@ -17,6 +17,12 @@ import { isWipeInProgress } from './redis';
  * label optional so callers don't have to invent names for every
  * loop. Returns a stop function.
  */
+
+// Per-process counter so each schedule() caller gets a distinct
+// first-tick offset. Resets to 0 on every (re)start, which is exactly
+// what we want — a fresh stagger each boot.
+let scheduleSeq = 0;
+const STAGGER_STEP_MS = 750;
 export function schedule(
   intervalMs: number,
   fn: () => Promise<void> | void,
@@ -43,8 +49,23 @@ export function schedule(
     }
   };
   const handle = setInterval(tick, intervalMs);
-  // First tick fires on next microtask so the caller can wire dependent
-  // services before any work happens.
-  setImmediate(tick);
-  return () => clearInterval(handle);
+  // First tick is staggered, not immediate. setImmediate-ing every
+  // scheduled job fired all ~9 background workers' first CH/RPC hit in
+  // the same microtask on every (hot-)restart — a synchronized
+  // thundering herd that spiked ClickHouse. A per-caller deterministic
+  // step spreads them out; a sub-step random jitter avoids lockstep.
+  // setTimeout still defers past the synchronous boot wiring, so the
+  // original "caller wires dependent services first" guarantee holds.
+  // Capped at the job's own interval so a job never starts late.
+  const seq = scheduleSeq;
+  scheduleSeq += 1;
+  const firstDelayMs = Math.min(
+    seq * STAGGER_STEP_MS + Math.random() * STAGGER_STEP_MS,
+    intervalMs,
+  );
+  const firstTick = setTimeout(tick, firstDelayMs);
+  return () => {
+    clearInterval(handle);
+    clearTimeout(firstTick);
+  };
 }

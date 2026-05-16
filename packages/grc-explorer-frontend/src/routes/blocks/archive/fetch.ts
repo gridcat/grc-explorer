@@ -1,4 +1,4 @@
-import { api } from '../../../lib/api';
+import { api, getAttributes, getDataList } from '../../../lib/api';
 import type {
   YearArchiveData, MonthArchiveData, DayArchiveData,
 } from './types';
@@ -9,8 +9,7 @@ import type {
 
 export async function fetchYearArchive(year: number): Promise<YearArchiveData | null> {
   try {
-    const r = await api.get(`/blocks/archive/${year}`);
-    return (r.data?.data?.attributes ?? null) as YearArchiveData | null;
+    return getAttributes<YearArchiveData>(await api.get(`/blocks/archive/${year}`));
   } catch {
     return null;
   }
@@ -18,8 +17,9 @@ export async function fetchYearArchive(year: number): Promise<YearArchiveData | 
 
 export async function fetchMonthArchive(year: number, month: number): Promise<MonthArchiveData | null> {
   try {
-    const r = await api.get(`/blocks/archive/${year}/${String(month).padStart(2, '0')}`);
-    return (r.data?.data?.attributes ?? null) as MonthArchiveData | null;
+    return getAttributes<MonthArchiveData>(
+      await api.get(`/blocks/archive/${year}/${String(month).padStart(2, '0')}`),
+    );
   } catch {
     return null;
   }
@@ -33,7 +33,7 @@ export async function fetchDayArchive(
       `/blocks/archive/${year}/${String(month).padStart(2, '0')}/${String(day).padStart(2, '0')}`,
       { params: { 'page[number]': page } },
     );
-    return (r.data?.data?.attributes ?? null) as DayArchiveData | null;
+    return getAttributes<DayArchiveData>(r);
   } catch {
     return null;
   }
@@ -50,9 +50,7 @@ export interface YearListItem {
 
 export async function fetchYearList(): Promise<YearListItem[]> {
   try {
-    const r = await api.get('/blocks/archive/years');
-    const rows = (r.data?.data ?? []) as Array<{ attributes: YearListItem }>;
-    return rows.map((row) => row.attributes);
+    return getDataList<YearListItem>(await api.get('/blocks/archive/years'));
   } catch {
     return [];
   }

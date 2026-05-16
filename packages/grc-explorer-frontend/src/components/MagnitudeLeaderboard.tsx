@@ -1,10 +1,11 @@
 import {
-  Box, Card, CardContent, Stack, Typography,
+  Box, Button, Card, CardContent, Stack, Typography,
 } from '@mui/material';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import { useTheme } from '@mui/material/styles';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
-  useCallback, useEffect, useRef, useState,
+  useCallback, useEffect, useMemo, useRef, useState,
 } from 'react';
 import Link from 'next/link';
 import { api } from '../lib/api';
@@ -12,15 +13,20 @@ import { useSSE } from '../hooks/useSSE';
 import { useCpidNames } from '../hooks/useCpidNames';
 import { atParam, useTimeMachine } from '../hooks/useTimeMachine';
 import { CpidLabel } from './CpidLabel';
+import { SeeMoreButton } from './SeeMoreButton';
 
-interface Entry {
+export interface Entry {
   cpid: string;
+  // Server-resolved BOINC name (API enrichment); seeds useCpidNames so
+  // the first paint shows names without a /cpids/names round trip.
+  displayName?: string | null;
   magnitude: number;
   history: Array<{ height: number; magnitude: number }>;
 }
 
-interface LeaderboardEntry {
+export interface LeaderboardEntry {
   cpid: string;
+  displayName?: string | null;
   rank: number;
   magnitude: number;
   rankThen: number | null;
@@ -31,13 +37,29 @@ interface LeaderboardEntry {
 const COMPARE_DAYS_AGO = 30;
 const TOP_N = 15;
 
-export function MagnitudeLeaderboard() {
+export function MagnitudeLeaderboard({
+  initialRows = [],
+  initialDeltas = [],
+  initialNames,
+}: {
+  initialRows?: Entry[];
+  initialDeltas?: LeaderboardEntry[];
+  initialNames?: Record<string, string>;
+} = {}) {
   const theme = useTheme();
   const tm = useTimeMachine();
-  const [rows, setRows] = useState<Entry[]>([]);
-  const [deltas, setDeltas] = useState<Map<string, LeaderboardEntry>>(() => new Map());
+  const [rows, setRows] = useState<Entry[]>(initialRows);
+  const [deltas, setDeltas] = useState<Map<string, LeaderboardEntry>>(() => {
+    const m = new Map<string, LeaderboardEntry>();
+    initialDeltas.forEach((d) => m.set(d.cpid, d));
+    return m;
+  });
 
   const cancelledRef = useRef(false);
+  // Skip the first fetch when SSR has already hydrated state. Live
+  // refresh via SSE / safety poll keeps things current on top.
+  const initialSeed = initialRows.length > 0;
+  const skipFirstFetchRef = useRef(initialSeed);
   const refresh = useCallback(() => {
     api.get('/metrics/leaderboard/magnitude', {
       params: { limit: TOP_N, ...atParam(tm.at) },
@@ -65,45 +87,51 @@ export function MagnitudeLeaderboard() {
 
   useEffect(() => {
     cancelledRef.current = false;
-    refresh();
+    if (skipFirstFetchRef.current) {
+      skipFirstFetchRef.current = false;
+    } else {
+      refresh();
+    }
     return () => { cancelledRef.current = true; };
   }, [refresh]);
 
-  // SSE-driven refresh on `block.new` (debounced) — the leaderboard
-  // only really shifts when a superblock lands, but block.new is the
-  // cheapest universal "something changed" signal. 60 s debounce
-  // collapses a backfill burst into one refresh per window.
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useSSE(['block.new'], () => {
+  // SSE-driven refresh on `superblock.new` — the leaderboard's
+  // underlying data (latest superblock + 14-superblock window) only
+  // moves when a superblock lands, so listening to per-block events
+  // would just trigger ~1440 no-op refetches per real change.
+  useSSE(['superblock.new'], () => {
     if (tm.isReplay) return;
-    if (debounceRef.current) return;
-    debounceRef.current = setTimeout(() => {
-      debounceRef.current = null;
-      refresh();
-    }, 60_000);
+    refresh();
   });
-  useEffect(() => () => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-  }, []);
 
-  // Slow safety-net poll for when SSE is absent.
+  // Slow safety-net poll. SSE auto-reconnects but doesn't replay, and
+  // useSSE drops events while the tab is backgrounded — so a hidden
+  // tab through a superblock + a silent disconnect would otherwise sit
+  // on stale data until the user navigates. 1 h bounds that staleness
+  // while staying well under the ~24 h superblock cadence.
   useEffect(() => {
     if (tm.isReplay) return undefined;
-    const id = setInterval(refresh, 5 * 60 * 1000);
+    const id = setInterval(refresh, 60 * 60 * 1000);
     return () => clearInterval(id);
   }, [refresh, tm.isReplay]);
 
-  const names = useCpidNames(rows.map((r) => r.cpid));
+  const cpidList = useMemo(() => rows.map((r) => r.cpid), [rows]);
+  const names = useCpidNames(cpidList, initialNames);
 
   return (
     <Card variant="outlined">
       <CardContent>
-        <Typography variant="subtitle2" color="text.secondary">
-          Top researchers by magnitude
-        </Typography>
-        <Typography variant="caption" color="text.secondary">
-          {`Last 14 superblocks · rank vs ${COMPARE_DAYS_AGO} days ago`}
-        </Typography>
+        <Stack direction="row" sx={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <Box>
+            <Typography variant="subtitle2" color="text.secondary">
+              Top researchers by magnitude
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+              {`Last 14 superblocks · rank vs ${COMPARE_DAYS_AGO} days ago`}
+            </Typography>
+          </Box>
+          <SeeMoreButton href="/researchers/history" label="See history" />
+        </Stack>
         {/* Each row is keyed on cpid so framer-motion can fade entrants
             in, fade exits out, and physically slide rows when their
             rank shifts (the `layout` prop animates DOM-position

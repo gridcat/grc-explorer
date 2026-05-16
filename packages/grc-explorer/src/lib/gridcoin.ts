@@ -315,7 +315,7 @@ export const simpleRpc = makeProxy(heavyBreaker);
 // loading the blockchain.
 export async function connect(): Promise<boolean> {
   try {
-    await (liveRpc as unknown as { getBlockchainInfo: () => Promise<unknown> }).getBlockchainInfo();
+    await liveRpc.getBlockchainInfo();
     return true;
   } catch (_err) {
     log.warn('Gridcoin RPC connection error — retrying');

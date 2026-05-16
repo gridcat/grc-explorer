@@ -16,8 +16,9 @@ import {
 } from './charts/SvgChart';
 import { useSSE } from '../hooks/useSSE';
 import { atParam, useTimeMachine } from '../hooks/useTimeMachine';
+import { EmptyState } from './EmptyState';
 
-interface SeriesPoint {
+export interface SeriesPoint {
   bucketTs: number;
   totalSupply: string;
   gini: number;
@@ -27,7 +28,7 @@ interface SeriesPoint {
   addressesWithBalance: number;
 }
 
-interface CurrentSnapshot {
+export interface CurrentSnapshot {
   bucketTs: number;
   totalSupply: string;
   addressesWithBalance: number;
@@ -51,10 +52,17 @@ const WINDOW_DAYS = 365;
  * Source rows are written by `WealthSnapshotJob` once a day, so this
  * panel reads pre-computed values — no aggregate queries on render.
  */
-export function WealthDistributionChart() {
+export function WealthDistributionChart({
+  initialCurrent = null,
+  initialSeries = [],
+}: {
+  initialCurrent?: CurrentSnapshot | null;
+  initialSeries?: SeriesPoint[];
+} = {}) {
   const tm = useTimeMachine();
-  const [current, setCurrent] = useState<CurrentSnapshot | null>(null);
-  const [series, setSeries] = useState<SeriesPoint[]>([]);
+  const [current, setCurrent] = useState<CurrentSnapshot | null>(initialCurrent);
+  const [series, setSeries] = useState<SeriesPoint[]>(initialSeries);
+  const skipFirstFetchRef = useRef<boolean>(initialCurrent !== null || initialSeries.length > 0);
 
   // Snapshot + series fetcher. We deliberately *don't* pass
   // `from`/`to` when `tm.at` is null: wall-clock now is years ahead of
@@ -76,30 +84,26 @@ export function WealthDistributionChart() {
     }).catch(() => { /* ignore */ });
   }, [tm.at]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    if (skipFirstFetchRef.current) { skipFirstFetchRef.current = false; return; }
+    refresh();
+  }, [refresh]);
 
-  // Wealth snapshots are written at most once a day by WealthSnapshotJob,
-  // so we don't need fast-cadence updates. Bind to block.new just in
-  // case (with a generous 5-minute debounce) and keep the slow safety
-  // poll.
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useSSE(['block.new'], () => {
+  // Direct refresh on `wealth.snapshot` — fires exactly when
+  // WealthSnapshotJob writes a new bucket, so the chart picks up new
+  // data with zero waste. No debounce needed: the job runs at most
+  // hourly so duplicate events aren't a concern.
+  useSSE(['wealth.snapshot'], () => {
     if (tm.isReplay) return;
-    if (debounceRef.current) return;
-    debounceRef.current = setTimeout(() => {
-      debounceRef.current = null;
-      refresh();
-    }, 5 * 60 * 1000);
+    refresh();
   });
-  useEffect(() => () => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-  }, []);
 
-  // Safety-net poll. Wealth snapshots are written hourly at most by
-  // WealthSnapshotJob, so a slow cadence is plenty.
+  // Slow safety-net poll. SSE auto-reconnects but doesn't replay, and
+  // useSSE drops events while the tab is backgrounded — 1 h matches
+  // the job cadence so the worst case is one missed cycle.
   useEffect(() => {
     if (tm.isReplay) return undefined;
-    const id = setInterval(refresh, 10 * 60 * 1000);
+    const id = setInterval(refresh, 60 * 60 * 1000);
     return () => clearInterval(id);
   }, [refresh, tm.isReplay]);
 
@@ -111,16 +115,13 @@ export function WealthDistributionChart() {
           <Typography variant="subtitle2" color="text.secondary">
             Wealth distribution
           </Typography>
-          <Box sx={{
-            mt: 1, p: 2, borderRadius: 1, color: 'text.disabled', textAlign: 'center', border: 1, borderStyle: 'dashed', borderColor: 'divider',
-          }}
-          >
+          <EmptyState>
             <Typography variant="body2">
               Waiting for the first snapshot. WealthSnapshotJob runs hourly
               and writes one row per day. Give it a moment after the
               indexer catches up.
             </Typography>
-          </Box>
+          </EmptyState>
         </CardContent>
       </Card>
     );

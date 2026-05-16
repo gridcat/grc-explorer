@@ -34,6 +34,7 @@ export class BlockPresenter extends Presenter {
       isMrc: b.is_mrc ?? false,
       minerAddress: b.miner_address,
       stakerCpid: b.staker_cpid,
+      stakerName: b.staker_name ?? null,
       mint: halford2grc(b.mint),
       moneySupply: halford2grc(b.money_supply),
       valueMoved: halford2grc(b.value_moved ?? 0n),
@@ -91,6 +92,9 @@ export class AddressPresenter extends Presenter {
       txCount: a.tx_count,
       firstSeenBlock: a.first_seen_block,
       lastSeenBlock: a.last_seen_block,
+      firstSeenTime: a.first_seen_time ?? null,
+      lastSeenTime: a.last_seen_time ?? null,
+      cpid: a.cpid ?? null,
     };
   }
 
@@ -113,6 +117,12 @@ export class SuperblockPresenter extends Presenter {
       totalMagnitude: s.total_magnitude,
       cpidCount: s.cpid_count,
       projectCount: s.project_count,
+      // Normalise the 0 sentinel from the migration default to null
+      // so the frontend can branch cleanly: a known version (1-3) is
+      // a number, "we don't know" is null. Never 0.
+      contractVersion: s.contract_version && s.contract_version > 0
+        ? s.contract_version
+        : null,
     };
   }
 
@@ -132,6 +142,7 @@ export class ClaimPresenter extends Presenter {
     return {
       blockHeight: c.block_height,
       cpid: c.cpid,
+      cpidName: c.cpid_name ?? null,
       miningId: c.mining_id,
       clientVersion: c.client_version,
       organization: c.organization,
@@ -165,6 +176,10 @@ export class BeaconPresenter extends Presenter {
       // callers persisting `BeaconRow` shapes directly still work.
       renewableUntil: b.renewable_until ?? null,
       mustReadvertise: b.must_readvertise ?? false,
+      // Coerce migration-default empty string into 'unknown' so the
+      // wire enum is closed — frontend doesn't need to handle '' as a
+      // separate case from the four real values.
+      authMethod: b.auth_method && b.auth_method !== '' ? b.auth_method : 'unknown',
     };
   }
 
@@ -190,6 +205,11 @@ export class PollPresenter extends Presenter {
       blockHeight: p.block_height,
       claimTx: p.claim_tx,
       creatorAddress: p.creator_address,
+      // `result` is optional — only attached on list responses. The
+      // detail endpoint emits its own richer options/votes payload so
+      // it doesn't bother. `null`-valued topLabel means the poll had
+      // no votes recorded; the frontend renders that as "—".
+      ...(p.result ? { result: p.result as unknown as Attributes[string] } : {}),
     };
   }
 
@@ -262,6 +282,11 @@ interface BlockRow {
   // embedded transactions array, not from a presenter aggregate.
   value_moved?: bigint;
   fee_total?: bigint;
+  // Server-side resolved BOINC display name for `staker_cpid`, so the
+  // SSR seed renders names without a second /cpids/names round trip.
+  // Optional: paths that don't enrich (or anonymous stakers) leave it
+  // absent and the frontend falls back to the truncated CPID.
+  staker_name?: string | null;
 }
 interface TransactionRow {
   tx_id: string; block_height: number; block_hash: string; time: number;
@@ -271,22 +296,46 @@ interface TransactionRow {
 interface AddressRow {
   address: string; balance: bigint; total_received: bigint; total_sent: bigint;
   tx_count: number; first_seen_block: number | null; last_seen_block: number | null;
+  first_seen_time?: number | null; last_seen_time?: number | null;
+  // Researcher CPID this address registered a beacon under, when
+  // known (rich-list cross-link). Absent on paths that don't resolve.
+  cpid?: string | null;
 }
 interface SuperblockRow {
   height: number; quorum_hash: string; total_magnitude: number;
   cpid_count: number; project_count: number;
+  /** Daemon's `m_version` from SuperblockToJson (src/rpc/blockchain.cpp).
+   *  V3 (activated at V13) carries per-project all-CPID total credit
+   *  needed for AutoGreylist. Optional — pre-feature indexed rows
+   *  come back as 0 (the migration-default sentinel) which the
+   *  presenter normalises to null. */
+  contract_version?: number;
 }
 interface ClaimRow {
   block_height: number; cpid: string | null; mining_id: string;
   client_version: string; organization: string;
   block_subsidy: bigint; research_subsidy: bigint;
   magnitude: number; magnitude_unit: number; is_mrc: boolean;
+  // Server-side resolved BOINC display name for `cpid` (optional;
+  // absent when not enriched or anonymous).
+  cpid_name?: string | null;
 }
 interface BeaconRow {
   cpid: string; address: string; status: string;
   tx_id: string; block_height: number; timestamp: number; expiration: number;
   renewable_until?: number | null;
   must_readvertise?: boolean;
+  /** Derived from BeaconPayload.m_version at parse time:
+   *  legacy | v2_email_verify | v3_boinc_signed | unknown.
+   *  Optional because pre-feature rows may still be empty string from
+   *  the migration default — readers should treat '' as 'unknown'. */
+  auth_method?: string;
+}
+interface PollResult {
+  topLabel: string | null;
+  topPctOfCast: number;
+  totalVotes: number;
+  totalWeightCast: string;
 }
 interface PollRow {
   poll_id: string; title: string; question: string;
@@ -294,6 +343,7 @@ interface PollRow {
   response_type: string; weight_type: string;
   start_time: number; end_time: number; block_height: number;
   claim_tx: string; creator_address: string | null;
+  result?: PollResult;
 }
 interface MempoolTxRow {
   tx_id: string; first_seen: number; fee_estimate: bigint;

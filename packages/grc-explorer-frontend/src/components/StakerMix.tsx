@@ -8,16 +8,20 @@ import { api } from '../lib/api';
 import { useSSE } from '../hooks/useSSE';
 import { atParam, useTimeMachine } from '../hooks/useTimeMachine';
 
-interface Mix {
+export interface Mix {
   blocks: number;
   researcher: number;
   investor: number;
   researcherSharePct: number;
 }
 
-export function StakerMix() {
+export function StakerMix({
+  initialMix = null,
+}: {
+  initialMix?: Mix | null;
+} = {}) {
   const tm = useTimeMachine();
-  const [mix, setMix] = useState<Mix | null>(null);
+  const [mix, setMix] = useState<Mix | null>(initialMix);
 
   const refresh = useCallback(() => {
     api.get('/metrics/staker-mix', { params: { blocks: 1000, ...atParam(tm.at) } }).then((r) => {
@@ -31,9 +35,14 @@ export function StakerMix() {
   // second), with a slow safety-net poll only if SSE has gone silent.
   const lastEventAtRef = useRef<number>(Date.now());
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skipFirstFetchRef = useRef(initialMix !== null);
 
   useEffect(() => {
-    refresh();
+    if (skipFirstFetchRef.current) {
+      skipFirstFetchRef.current = false;
+    } else {
+      refresh();
+    }
     lastEventAtRef.current = Date.now();
     if (tm.isReplay) return undefined; // replay snapshot is fixed; no live polling
     const STALE_MS = 5 * 60 * 1000;

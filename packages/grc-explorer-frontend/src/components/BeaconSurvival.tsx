@@ -13,10 +13,11 @@ import {
   linearScale,
   niceTicks,
 } from './charts/SvgChart';
-import { useSSE } from '../hooks/useSSE';
+import { useSSEDebounced } from '../hooks/useSSE';
 import { useTimeMachine } from '../hooks/useTimeMachine';
+import { EmptyState } from './EmptyState';
 
-interface Point {
+export interface Point {
   cohort: string;
   advertised: number;
   confirmed: number;
@@ -30,9 +31,14 @@ interface Point {
  * from `/metrics/beacon-survival`. Renders as four overlaid lines so
  * you can see at a glance how the funnel compares across cohorts.
  */
-export function BeaconSurvival() {
+export function BeaconSurvival({
+  initialPoints = [],
+}: {
+  initialPoints?: Point[];
+} = {}) {
   const tm = useTimeMachine();
-  const [points, setPoints] = useState<Point[]>([]);
+  const [points, setPoints] = useState<Point[]>(initialPoints);
+  const skipFirstFetchRef = useRef(initialPoints.length > 0);
   const cancelledRef = useRef(false);
 
   const refresh = useCallback(() => {
@@ -45,26 +51,18 @@ export function BeaconSurvival() {
 
   useEffect(() => {
     cancelledRef.current = false;
-    refresh();
+    if (skipFirstFetchRef.current) {
+      skipFirstFetchRef.current = false;
+    } else {
+      refresh();
+    }
     return () => { cancelledRef.current = true; };
   }, [refresh]);
 
-  // Cohorts shift on month boundaries of chain-time. SSE-driven
-  // refresh on block.new with a 5-minute debounce — slow cadence is
-  // fine since the funnel only changes when a beacon expires or
-  // gets superseded, both of which are rare.
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useSSE(['block.new'], () => {
-    if (tm.isReplay) return;
-    if (debounceRef.current) return;
-    debounceRef.current = setTimeout(() => {
-      debounceRef.current = null;
-      refresh();
-    }, 5 * 60 * 1000);
-  });
-  useEffect(() => () => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-  }, []);
+  // Cohorts shift on month boundaries of chain-time. 5-minute debounce
+  // is fine — the funnel only changes when a beacon expires or gets
+  // superseded, both rare.
+  useSSEDebounced(['block.new'], refresh, 5 * 60 * 1000, { skip: tm.isReplay });
 
   // Slow safety-net poll for when the SSE stream is dropped or paused
   // (e.g. user is on a backgrounded tab and `visibilitychange` skips
@@ -89,14 +87,11 @@ export function BeaconSurvival() {
         </Typography>
 
         {empty ? (
-          <Box sx={{
-            mt: 2, p: 2, borderRadius: 1, color: 'text.disabled', textAlign: 'center', border: 1, borderStyle: 'dashed', borderColor: 'divider',
-          }}
-          >
+          <EmptyState>
             <Typography variant="body2">
               Need at least two cohort months to draw a funnel.
             </Typography>
-          </Box>
+          </EmptyState>
         ) : (
           <>
             <FunnelLegend />

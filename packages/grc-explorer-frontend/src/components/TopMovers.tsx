@@ -4,15 +4,16 @@ import {
 import { AnimatePresence, motion } from 'framer-motion';
 import Link from 'next/link';
 import {
-  useCallback, useEffect, useRef, useState,
+  useCallback, useEffect, useMemo, useRef, useState,
 } from 'react';
 import { api } from '../lib/api';
 import { useSSE } from '../hooks/useSSE';
 import { useCpidNames } from '../hooks/useCpidNames';
 import { atParam, useTimeMachine } from '../hooks/useTimeMachine';
 import { CpidLabel } from './CpidLabel';
+import { EmptyState } from './EmptyState';
 
-interface Entry {
+export interface TopMoversEntry {
   cpid: string;
   rank: number;
   magnitude: number;
@@ -31,10 +32,17 @@ const TOP = 5;
  * endpoint that powers the rank-delta column on the main magnitude
  * leaderboard, just sliced differently.
  */
-export function TopMovers() {
+export function TopMovers({
+  initialEntries = [],
+  initialNames,
+}: {
+  initialEntries?: TopMoversEntry[];
+  initialNames?: Record<string, string>;
+} = {}) {
   const tm = useTimeMachine();
-  const [entries, setEntries] = useState<Entry[]>([]);
+  const [entries, setEntries] = useState<TopMoversEntry[]>(initialEntries);
   const cancelledRef = useRef(false);
+  const skipFirstFetchRef = useRef(initialEntries.length > 0);
 
   // We pass `compare_days` rather than computing `compare_at` from
   // wall-clock `Date.now()`. During backfill the indexer's chain-time
@@ -52,51 +60,53 @@ export function TopMovers() {
       },
     }).then((r) => {
       if (cancelledRef.current) return;
-      const data = (r.data?.data ?? []) as Array<{ attributes: Entry }>;
+      const data = (r.data?.data ?? []) as Array<{ attributes: TopMoversEntry }>;
       setEntries(data.map((d) => d.attributes));
     }).catch(() => { /* ignore */ });
   }, [tm.at]);
 
   useEffect(() => {
     cancelledRef.current = false;
-    refresh();
+    if (skipFirstFetchRef.current) {
+      skipFirstFetchRef.current = false;
+    } else {
+      refresh();
+    }
     return () => { cancelledRef.current = true; };
   }, [refresh]);
 
-  // SSE-driven update: a new block is the cheapest signal that
-  // ranks may have shifted (each superblock = one rank refresh
-  // worth doing). Debounced because backfill bursts fire many
-  // block.new events per second; slow safety-net poll catches a
-  // dropped SSE.
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useSSE(['block.new'], () => {
+  // SSE-driven refresh on `superblock.new` — rank deltas are anchored
+  // to the latest superblock at-or-before the comparison time, so the
+  // response only changes when a new superblock is indexed. Listening
+  // to per-block events would just trigger ~1440 no-op refetches per
+  // real change.
+  useSSE(['superblock.new'], () => {
     if (tm.isReplay) return;
-    if (debounceRef.current) return;
-    debounceRef.current = setTimeout(() => {
-      debounceRef.current = null;
-      refresh();
-    }, 60_000);
+    refresh();
   });
-  useEffect(() => () => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-  }, []);
 
+  // Slow safety-net poll. SSE auto-reconnects but doesn't replay, and
+  // useSSE drops events while the tab is backgrounded — so a hidden
+  // tab through a superblock + a silent disconnect would otherwise sit
+  // on stale data until the user navigates. 1 h bounds that staleness
+  // while staying well under the ~24 h superblock cadence.
   useEffect(() => {
     if (tm.isReplay) return undefined;
-    const STALE_MS = 5 * 60 * 1000;
-    const id = setInterval(refresh, STALE_MS);
+    const id = setInterval(refresh, 60 * 60 * 1000);
     return () => clearInterval(id);
   }, [refresh, tm.isReplay]);
 
-  const climbers = entries
-    .filter((e) => e.rankDelta !== null && e.rankDelta > 0)
-    .sort((a, b) => (b.rankDelta ?? 0) - (a.rankDelta ?? 0))
-    .slice(0, TOP);
-  const fallers = entries
-    .filter((e) => e.rankDelta !== null && e.rankDelta < 0)
-    .sort((a, b) => (a.rankDelta ?? 0) - (b.rankDelta ?? 0))
-    .slice(0, TOP);
-  const newcomers = entries.filter((e) => e.isNew).slice(0, TOP);
+  const { climbers, fallers, newcomers } = useMemo(() => ({
+    climbers: entries
+      .filter((e) => e.rankDelta !== null && e.rankDelta > 0)
+      .sort((a, b) => (b.rankDelta ?? 0) - (a.rankDelta ?? 0))
+      .slice(0, TOP),
+    fallers: entries
+      .filter((e) => e.rankDelta !== null && e.rankDelta < 0)
+      .sort((a, b) => (a.rankDelta ?? 0) - (b.rankDelta ?? 0))
+      .slice(0, TOP),
+    newcomers: entries.filter((e) => e.isNew).slice(0, TOP),
+  }), [entries]);
 
   const empty = entries.length === 0
     || (climbers.length === 0 && fallers.length === 0 && newcomers.length === 0);
@@ -112,16 +122,13 @@ export function TopMovers() {
         </Typography>
 
         {empty ? (
-          <Box sx={{
-            mt: 2, p: 2, borderRadius: 1, color: 'text.disabled', textAlign: 'center', border: 1, borderStyle: 'dashed', borderColor: 'divider',
-          }}
-          >
+          <EmptyState>
             <Typography variant="body2">
               Waiting for {COMPARE_DAYS_AGO} days of superblock history.
             </Typography>
-          </Box>
+          </EmptyState>
         ) : (
-          <Sections climbers={climbers} fallers={fallers} newcomers={newcomers} />
+          <Sections climbers={climbers} fallers={fallers} newcomers={newcomers} initialNames={initialNames} />
         )}
       </CardContent>
     </Card>
@@ -134,12 +141,16 @@ export function TopMovers() {
 // (although the in-memory cache would coalesce after the first
 // render, the initial paint still costs three fetches).
 function Sections({
-  climbers, fallers, newcomers,
+  climbers, fallers, newcomers, initialNames,
 }: {
-  climbers: Entry[]; fallers: Entry[]; newcomers: Entry[];
+  climbers: TopMoversEntry[]; fallers: TopMoversEntry[]; newcomers: TopMoversEntry[];
+  initialNames?: Record<string, string>;
 }) {
-  const allCpids = [...climbers, ...fallers, ...newcomers].map((e) => e.cpid);
-  const names = useCpidNames(allCpids);
+  const allCpids = useMemo(
+    () => [...climbers, ...fallers, ...newcomers].map((e) => e.cpid),
+    [climbers, fallers, newcomers],
+  );
+  const names = useCpidNames(allCpids, initialNames);
   return (
     <Stack spacing={2} sx={{ mt: 1.5 }}>
       <Section title="Climbers" entries={climbers} kind="climber" names={names} />
@@ -153,7 +164,7 @@ function Section({
   title, entries, kind, names,
 }: {
   title: string;
-  entries: Entry[];
+  entries: TopMoversEntry[];
   kind: 'climber' | 'faller' | 'new';
   names: Map<string, string>;
 }) {
@@ -213,7 +224,7 @@ function DeltaBadge({
   entry,
   kind,
 }: {
-  entry: Entry;
+  entry: TopMoversEntry;
   kind: 'climber' | 'faller' | 'new';
 }) {
   if (kind === 'new') {

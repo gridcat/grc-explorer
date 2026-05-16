@@ -3,10 +3,9 @@ import {
 } from '@mui/material';
 import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
-import { useState } from 'react';
 import { Layout } from '../layouts/Layout';
 import { api } from '../lib/api';
-import { formatGrc } from '../lib/format';
+import { formatGrcShort, formatNumber } from '../lib/format';
 import { Crumbs } from '../components/Crumbs';
 import { HashTrim } from '../components/HashTrim';
 
@@ -18,6 +17,7 @@ interface Wallet {
   txCount: number;
   firstSeenBlock: number | null;
   lastSeenBlock: number | null;
+  cpid?: string | null;
 }
 
 interface WalletsPageProps {
@@ -26,8 +26,8 @@ interface WalletsPageProps {
 }
 
 export default function WalletsPage({ initialRows, initialTotal }: WalletsPageProps) {
-  const [rows] = useState<Wallet[]>(initialRows);
-  const [total] = useState<number | null>(initialTotal);
+  const rows = initialRows;
+  const total = initialTotal;
 
   return (
     <Layout>
@@ -42,7 +42,7 @@ export default function WalletsPage({ initialRows, initialTotal }: WalletsPagePr
             addresses worth a closer look. Balances reflect every
             confirmed input and output the indexer has seen; pending
             mempool moves are not included.
-            {total !== null && ` ${total.toLocaleString()} addresses indexed in total.`}
+            {total !== null && ` ${formatNumber(total)} addresses indexed in total.`}
           </Typography>
         </Box>
         <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
@@ -51,6 +51,7 @@ export default function WalletsPage({ initialRows, initialTotal }: WalletsPagePr
               <TableRow>
                 <TableCell sx={{ width: 60 }}>#</TableCell>
                 <TableCell>Address</TableCell>
+                <TableCell>CPID</TableCell>
                 <TableCell align="right">Balance (GRC)</TableCell>
                 <TableCell align="right">Received</TableCell>
                 <TableCell align="right">Sent</TableCell>
@@ -67,18 +68,27 @@ export default function WalletsPage({ initialRows, initialTotal }: WalletsPagePr
                       <HashTrim text={w.address} head={12} tail={8} />
                     </Link>
                   </TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 600 }}>{formatGrc(w.balance)}</TableCell>
-                  <TableCell align="right" sx={{ color: 'text.secondary' }}>{formatGrc(w.totalReceived)}</TableCell>
-                  <TableCell align="right" sx={{ color: 'text.secondary' }}>{formatGrc(w.totalSent)}</TableCell>
-                  <TableCell align="right">{w.txCount.toLocaleString()}</TableCell>
+                  <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>
+                    {w.cpid ? (
+                      <Link href={`/cpids/${w.cpid}`} style={{ color: 'inherit' }}>
+                        <HashTrim text={w.cpid} head={6} tail={4} />
+                      </Link>
+                    ) : (
+                      <span style={{ color: 'var(--mui-palette-text-disabled, #888)' }}>—</span>
+                    )}
+                  </TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{formatGrcShort(w.balance)}</TableCell>
+                  <TableCell align="right" sx={{ color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}>{formatGrcShort(w.totalReceived)}</TableCell>
+                  <TableCell align="right" sx={{ color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}>{formatGrcShort(w.totalSent)}</TableCell>
+                  <TableCell align="right">{formatNumber(w.txCount)}</TableCell>
                   <TableCell sx={{ color: 'text.secondary' }}>
-                    {w.lastSeenBlock != null ? `#${w.lastSeenBlock.toLocaleString()}` : '—'}
+                    {w.lastSeenBlock != null ? `#${formatNumber(w.lastSeenBlock)}` : '—'}
                   </TableCell>
                 </TableRow>
               ))}
               {rows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} sx={{ textAlign: 'center', color: 'text.secondary', py: 4 }}>
+                  <TableCell colSpan={8} sx={{ textAlign: 'center', color: 'text.secondary', py: 4 }}>
                     No addresses indexed yet.
                   </TableCell>
                 </TableRow>

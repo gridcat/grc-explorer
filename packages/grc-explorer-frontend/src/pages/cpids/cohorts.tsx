@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { Layout } from '../../layouts/Layout';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { api } from '../../lib/api';
+import { nowSec } from '../../lib/format';
 
 interface Point { monthOffset: number; bucketTs: number; active: number }
 interface CohortPayload {
@@ -213,7 +214,7 @@ export const getServerSideProps: GetServerSideProps<CpidCohortsProps> = async ()
   // not wall-clock. Otherwise during backfill we'd request future
   // cohorts that don't exist (e.g. "2026-04" against a 2017-era
   // chain) and the page paints empty.
-  let anchorTs = Math.floor(Date.now() / 1000);
+  let anchorTs = nowSec();
   try {
     const r = await api.get('/blocks', { params: { 'page[size]': 1 } });
     const t = r.data?.data?.[0]?.attributes?.time;

@@ -9,7 +9,7 @@ import { Crumbs } from '../../components/Crumbs';
 import { NextMuiLink } from '../../components/NextMuiLink';
 import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
-import { formatTime } from '../../lib/format';
+import { formatNumber, formatTime } from '../../lib/format';
 import { IS_TESTNET } from '../../lib/network';
 
 interface Fork {
@@ -145,7 +145,7 @@ export default function ProtocolPage({ forks }: ProtocolPageProps) {
                     <TableCell>{categoryChip(f.category)}</TableCell>
                     <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
                       <Link href={`/block/${f.height}`} style={{ color: 'inherit' }}>
-                        {f.height.toLocaleString()}
+                        {formatNumber(f.height)}
                       </Link>
                     </TableCell>
                     <TableCell sx={{ color: 'text.secondary', fontSize: 13 }}>

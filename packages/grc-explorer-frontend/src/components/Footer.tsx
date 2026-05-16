@@ -4,8 +4,10 @@ import GithubIcon from '@mui/icons-material/GitHub';
 import { DaemonInfo } from './DaemonInfo';
 import { NextMuiLink } from './NextMuiLink';
 import {
-  IS_TESTNET, NETWORK, SISTER_NETWORK_LABEL, SISTER_NETWORK_URL,
+  IS_TESTNET, NETWORK, SISTER_NETWORK, SISTER_NETWORK_URL,
 } from '../lib/network';
+
+const SISTER_NETWORK_LABEL = SISTER_NETWORK === 'mainnet' ? 'Mainnet' : 'Testnet';
 
 const SubFooterTypography = styled(Typography)(({ theme }) => ({
   textAlign: 'left',

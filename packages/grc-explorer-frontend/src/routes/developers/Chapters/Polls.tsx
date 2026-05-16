@@ -24,6 +24,15 @@ export function Polls() {
         (<code>end_time &gt; now</code>). Default sort is{' '}
         <code>-block_height</code>.
       </Typography>
+      <Typography gutterBottom variant="body1" component="p">
+        Each row carries a <code>result</code> object with the current
+        leading option, that option&apos;s share of total cast weight,
+        the vote count, and the total weight cast in GRC. The list
+        endpoint aggregates votes on the fly via two extra CH queries
+        scoped to the page&apos;s poll IDs, so reorgs and late-arriving
+        votes show up without manual recomputation. Polls with no
+        votes yet emit <code>topLabel: null</code>.
+      </Typography>
       <CodeBlock
         caption="Request"
         language="bash"
@@ -46,7 +55,13 @@ export function Polls() {
         "endTime": 1775914000,
         "responseType": 1,
         "voteWeight": "magnitude",
-        "active": true
+        "active": true,
+        "result": {
+          "topLabel": "Yes",
+          "topPctOfCast": 67.3,
+          "totalVotes": 21,
+          "totalWeightCast": "165.50000000"
+        }
       }
     }
   ]

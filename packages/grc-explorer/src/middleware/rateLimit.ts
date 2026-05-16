@@ -70,10 +70,14 @@ function makeMiddleware(limiter: RateLimiterRedis, label: string) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
     try {
-      // Global ceiling consumed first so a flood doesn't burn per-IP
-      // budget before being shed.
-      await globalCeiling.consume('__global__');
-      await limiter.consume(ip);
+      // Global + per-IP are independent Redis consumes; parallelise to
+      // drop one RTT per request. A tripped global is no worse than a
+      // tripped per-IP — both reject with the same RateLimiterRes
+      // shape that the catch surfaces below.
+      await Promise.all([
+        globalCeiling.consume('__global__'),
+        limiter.consume(ip),
+      ]);
       next();
     } catch (err) {
       // RateLimiterRes is the rejection shape; anything else is a

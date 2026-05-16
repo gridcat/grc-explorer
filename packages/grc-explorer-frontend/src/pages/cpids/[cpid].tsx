@@ -5,15 +5,20 @@ import { useTheme } from '@mui/material/styles';
 import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { useEffect, useState } from 'react';
+import {
+  Fragment, useEffect, useMemo, useRef, useState,
+} from 'react';
 import {
   Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
 import { Layout } from '../../layouts/Layout';
 import { Stat } from '../../components/Stat';
-import { api } from '../../lib/api';
-import { formatGrc, shortHash } from '../../lib/format';
+import { api, notFoundOrRethrow } from '../../lib/api';
+import {
+  formatCompact, formatGrc, formatNumber, formatTime, shortHash,
+} from '../../lib/format';
 import { HashTrim } from '../../components/HashTrim';
+import { makeRechartsTooltip } from '../../components/charts/RechartsTooltip';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 
 interface CpidSummary {
@@ -23,10 +28,17 @@ interface CpidSummary {
    *  out via the denylist. */
   displayName: string | null;
   currentMagnitude: number;
+  /** Current position in the magnitude leaderboard (1 = top). Null
+   *  when the CPID has no magnitude in the latest superblock. */
+  currentRank: number | null;
   blocksStaked: number;
   beaconCount: number;
   firstClaimAt: number | null;
+  /** Unix-seconds time of the first claim's block. Null when the CPID
+   *  has no claims indexed yet. */
+  firstClaimTime: number | null;
   lastClaimAt: number | null;
+  lastClaimTime: number | null;
 }
 interface CpidNameEntry {
   projectName: string;
@@ -53,6 +65,15 @@ interface MrcEntry {
   status: 'pending' | 'confirmed' | 'evicted';
   waitSeconds: number | null;
 }
+interface LinkedWallet {
+  address: string;
+  balance?: string;
+  beaconCount: number;
+  stakedBlocks: number;
+  mrcPayouts: number;
+  firstHeight: number;
+  lastHeight: number;
+}
 
 interface CpidDetailProps {
   initialSummary: CpidSummary | null;
@@ -61,10 +82,15 @@ interface CpidDetailProps {
   initialBeacons: Beacon[];
   initialMrcs: MrcEntry[];
   initialNames: CpidNameEntry[];
+  initialLinkedWallets: LinkedWallet[];
+  initialCombinedBalance: string;
+  initialCombinedSharePct: number;
+  initialCombinedCount: number;
 }
 
 export default function CpidDetail({
   initialSummary, initialClaims, initialMagnitudes, initialBeacons, initialMrcs, initialNames,
+  initialLinkedWallets, initialCombinedBalance, initialCombinedSharePct, initialCombinedCount,
 }: CpidDetailProps) {
   const theme = useTheme();
   const router = useRouter();
@@ -75,10 +101,20 @@ export default function CpidDetail({
   const [beacons, setBeacons] = useState<Beacon[]>(initialBeacons);
   const [mrcs, setMrcs] = useState<MrcEntry[]>(initialMrcs);
   const [names, setNames] = useState<CpidNameEntry[]>(initialNames);
+  const [linkedWallets, setLinkedWallets] = useState<LinkedWallet[]>(initialLinkedWallets);
+  const [combined, setCombined] = useState({
+    balance: initialCombinedBalance,
+    sharePct: initialCombinedSharePct,
+    count: initialCombinedCount,
+  });
 
+  // Ref guard so the post-fetch setSummary doesn't re-trigger the
+  // effect via the prior `[cpid, summary]` deps (was a 2-pass waste).
+  const lastFetchedRef = useRef<string | null>(initialSummary?.cpid ?? null);
   useEffect(() => {
-    if (!cpid) return;
-    if (summary && summary.cpid === cpid) return;
+    if (typeof cpid !== 'string' || !cpid) return;
+    if (lastFetchedRef.current === cpid) return;
+    lastFetchedRef.current = cpid;
     api.get(`/cpids/${cpid}`).then((r) => {
       setSummary(r.data?.data?.attributes ?? null);
       setClaims(r.data?.claims ?? []);
@@ -86,8 +122,32 @@ export default function CpidDetail({
       setBeacons(r.data?.beacons ?? []);
       setMrcs(r.data?.mrcs ?? []);
       setNames(r.data?.names ?? []);
+      setLinkedWallets(r.data?.linkedWallets ?? []);
+      setCombined({
+        balance: r.data?.combinedBalance ?? '0',
+        sharePct: r.data?.combinedSharePct ?? 0,
+        count: r.data?.combinedCount ?? 0,
+      });
     }).catch(() => { /* ignore */ });
-  }, [cpid, summary]);
+  }, [cpid]);
+
+  // Collapse the secondary `names` rows to one entry per distinct
+  // username, collecting the projects that publish each. Skips
+  // names[0] (the primary, shown in the header) so the section
+  // doesn't echo the displayName. Backend ships rows sorted by
+  // total_credit desc; Map's insertion-order iteration preserves
+  // that ranking.
+  const groupedOtherNames = useMemo(() => {
+    const groups = new Map<string, string[]>();
+    for (const n of names.slice(1)) {
+      const projects = groups.get(n.name);
+      if (projects) projects.push(n.projectName);
+      else groups.set(n.name, [n.projectName]);
+    }
+    return Array.from(groups, ([name, projects]) => ({ name, projects }));
+  }, [names]);
+  const visibleOtherNames = groupedOtherNames.slice(0, 5);
+  const remainingGroupCount = Math.max(0, groupedOtherNames.length - 5);
 
   if (!summary) return <Layout><Typography>Loading…</Typography></Layout>;
 
@@ -116,27 +176,98 @@ export default function CpidDetail({
             </Typography>
           )}
         </Stack>
-        {names.length > 1 && (
+        {visibleOtherNames.length > 0 && (
           <Typography variant="body2" color="text.secondary">
             Also known as:{' '}
-            {names.slice(1, 6).map((n, i) => (
-              <span key={`${n.projectName}:${n.name}`}>
+            {visibleOtherNames.map((g, i) => (
+              <span key={g.name}>
                 {i > 0 && ', '}
-                <Link href={`/projects/${encodeURIComponent(n.projectName)}`} style={{ color: 'inherit' }}>
-                  {n.name}
-                </Link>
-                <span style={{ opacity: 0.6 }}>{` (${n.projectName})`}</span>
+                {g.name}
+                <span style={{ opacity: 0.6 }}>
+                  {' ('}
+                  {g.projects.map((p, j) => (
+                    <Fragment key={p}>
+                      {j > 0 && ', '}
+                      <Link href={`/projects/${encodeURIComponent(p)}`} style={{ color: 'inherit' }}>
+                        {p}
+                      </Link>
+                    </Fragment>
+                  ))}
+                  {')'}
+                </span>
               </span>
             ))}
-            {names.length > 6 ? `, and ${names.length - 6} more` : null}
+            {remainingGroupCount > 0 ? `, and ${remainingGroupCount} more` : null}
           </Typography>
         )}
 
-        <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: '1fr', md: 'repeat(4, 1fr)' } }}>
-          <Stat label="Current magnitude" value={summary.currentMagnitude.toFixed(2)} />
-          <Stat label="Blocks staked" value={summary.blocksStaked.toLocaleString()} />
-          <Stat label="Beacons" value={String(summary.beaconCount)} />
-          <Stat label="Active since" value={summary.firstClaimAt ? `#${summary.firstClaimAt}` : '—'} />
+        {/* One row: related metrics merged into a single card each
+            (magnitude+its rank; staking+beacons) so the conditional
+            combined-balance card never spills onto a second row. Grid
+            column count is exact, so it's always a single row on md. */}
+        <Box
+          sx={{
+            display: 'grid',
+            gap: 2,
+            gridTemplateColumns: {
+              xs: '1fr',
+              sm: 'repeat(2, 1fr)',
+              md: `repeat(${linkedWallets.length > 0 ? 4 : 3}, 1fr)`,
+            },
+          }}
+        >
+          <Stat
+            label="Magnitude"
+            value={(
+              <>
+                {summary.currentMagnitude.toFixed(2)}
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
+                  {summary.currentRank !== null ? `Rank #${formatNumber(summary.currentRank)}` : 'Unranked'}
+                </Typography>
+              </>
+            )}
+          />
+          <Stat
+            label="On-chain activity"
+            value={(
+              <>
+                {`${formatNumber(summary.blocksStaked)} staked`}
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
+                  {`${formatNumber(summary.beaconCount)} beacon(s)`}
+                </Typography>
+              </>
+            )}
+          />
+          <Stat
+            label="Active since"
+            value={summary.firstClaimAt ? (
+              <>
+                <span>{`#${formatNumber(summary.firstClaimAt)}`}</span>
+                {summary.firstClaimTime && (
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ display: 'block', mt: 0.25 }}
+                  >
+                    {formatTime(summary.firstClaimTime)}
+                  </Typography>
+                )}
+              </>
+            ) : '—'}
+          />
+          {linkedWallets.length > 0 && (
+            <Stat
+              label="Combined balance"
+              value={(
+                <>
+                  {formatGrc(combined.balance)} GRC
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
+                    {combined.sharePct}% of supply · {combined.count} addresses (cluster)
+                  </Typography>
+                </>
+              )}
+            />
+          )}
         </Box>
 
         <Card variant="outlined">
@@ -146,76 +277,174 @@ export default function CpidDetail({
               <LineChart data={[...magnitudes].reverse()}>
                 <XAxis dataKey="superblockHeight" fontSize={11} />
                 <YAxis fontSize={11} />
-                <Tooltip />
+                <Tooltip
+                  cursor={{ stroke: theme.palette.divider, strokeDasharray: '3 3' }}
+                  content={<MagnitudeTooltip />}
+                />
                 <Line type="monotone" dataKey="magnitude" stroke={theme.palette.primary.main} strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </CardContent>
         </Card>
 
-        <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
-          <Typography variant="subtitle2" sx={{ p: 2 }} color="text.secondary">Recent claims</Typography>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Block</TableCell>
-                <TableCell>Organization</TableCell>
-                <TableCell align="right">Block reward</TableCell>
-                <TableCell align="right">Research reward</TableCell>
-                <TableCell align="right">Magnitude</TableCell>
-                <TableCell />
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {claims.map((c) => (
-                <TableRow key={c.blockHeight} hover>
-                  <TableCell>
-                    <Link href={`/block/${c.blockHeight}`} style={{ color: 'inherit' }}>{c.blockHeight}</Link>
-                  </TableCell>
-                  <TableCell>{c.organization}</TableCell>
-                  <TableCell align="right">{formatGrc(c.blockSubsidy)}</TableCell>
-                  <TableCell align="right">{formatGrc(c.researchSubsidy)}</TableCell>
-                  <TableCell align="right">{c.magnitude.toFixed(2)}</TableCell>
-                  <TableCell>{c.isMrc && <Chip label="MRC" size="small" />}</TableCell>
+        {/* Recent claims (block-level reward log) pairs with Linked
+            wallets (address-level identity log) — both are "what has
+            this CPID done?" lenses, just at different cardinalities.
+            Grid collapses when there are no linked wallets so the
+            claims paper goes full-width. */}
+        <Box
+          sx={{
+            display: 'grid',
+            gap: 2,
+            gridTemplateColumns: { xs: '1fr', md: linkedWallets.length > 0 ? '1fr 1fr' : '1fr' },
+            alignItems: 'start',
+          }}
+        >
+          <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
+            <Typography variant="subtitle2" sx={{ p: 2 }} color="text.secondary">Recent claims</Typography>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Block</TableCell>
+                  <TableCell align="right">Reward</TableCell>
+                  <TableCell align="right">Magnitude</TableCell>
+                  <TableCell />
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Paper>
+              </TableHead>
+              <TableBody>
+                {claims.map((c) => (
+                  <TableRow key={c.blockHeight} hover>
+                    <TableCell>
+                      <Link href={`/block/${c.blockHeight}`} style={{ color: 'inherit' }}>{c.blockHeight}</Link>
+                      {c.organization && (
+                        <Typography variant="caption" sx={{ display: 'block', color: 'text.disabled', fontSize: 10 }}>
+                          {c.organization}
+                        </Typography>
+                      )}
+                    </TableCell>
+                    <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
+                      <Box
+                        component="span"
+                        title={`research reward: ${c.researchSubsidy}`}
+                      >
+                        {formatGrc(c.blockSubsidy)}
+                        <Box
+                          component="span"
+                          sx={{ color: 'text.disabled', fontSize: 11, ml: 0.75 }}
+                        >
+                          {`+${formatGrc(c.researchSubsidy)} research`}
+                        </Box>
+                      </Box>
+                    </TableCell>
+                    <TableCell align="right">{c.magnitude.toFixed(2)}</TableCell>
+                    <TableCell>{c.isMrc && <Chip label="MRC" size="small" />}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Paper>
 
-        <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
-          <Typography variant="subtitle2" sx={{ p: 2 }} color="text.secondary">Beacon history</Typography>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Address</TableCell>
-                <TableCell>Status</TableCell>
-                <TableCell>Block</TableCell>
-                <TableCell>Expires</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {beacons.map((b) => (
-                <TableRow key={b.txId} hover>
-                  <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>
-                    <Link href={`/addresses/${b.address}`} style={{ color: 'inherit' }}><HashTrim text={b.address} head={8} tail={6} /></Link>
-                  </TableCell>
-                  <TableCell>
-                    <Chip
-                      size="small"
-                      label={b.status}
-                      color={b.status === 'active' ? 'success' : b.status === 'revoked' ? 'error' : 'default'}
-                    />
-                  </TableCell>
-                  <TableCell>#{b.blockHeight}</TableCell>
-                  <TableCell>{new Date(b.expiration * 1000).toLocaleDateString()}</TableCell>
+          {linkedWallets.length > 0 && (
+            <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
+              <Typography variant="subtitle2" sx={{ p: 2 }} color="text.secondary">
+                Linked wallets ({linkedWallets.length})
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 2, pb: 1 }}>
+                Addresses that have provably acted as this CPID on-chain:
+                registered as a beacon, signed a coinstake under this CPID,
+                or received an MRC payout for it.
+              </Typography>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Address</TableCell>
+                    <TableCell align="right">Balance</TableCell>
+                    <TableCell>Activity</TableCell>
+                    <TableCell>Block range</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {linkedWallets.map((w) => (
+                    <TableRow key={w.address} hover>
+                      <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>
+                        <Link href={`/addresses/${w.address}`} style={{ color: 'inherit' }}>
+                          <HashTrim text={w.address} head={8} tail={6} />
+                        </Link>
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontFamily: 'monospace', fontSize: 12, whiteSpace: 'nowrap' }}>
+                        {formatGrc(w.balance ?? '0')} GRC
+                      </TableCell>
+                      <TableCell sx={{ fontSize: 12, whiteSpace: 'nowrap' }} title={activityTooltip(w)}>
+                        {activitySummary(w)}
+                      </TableCell>
+                      <TableCell sx={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+                        {blockRange(w.firstHeight, w.lastHeight)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  <TableRow>
+                    <TableCell sx={{ fontWeight: 700 }}>Combined</TableCell>
+                    <TableCell
+                      align="right"
+                      sx={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}
+                      title={`${combined.sharePct}% of money supply`}
+                    >
+                      {formatGrc(combined.balance)} GRC
+                    </TableCell>
+                    <TableCell colSpan={2} />
+                  </TableRow>
+                </TableBody>
+              </Table>
+            </Paper>
+          )}
+        </Box>
+
+        {/* Beacon history + MRC requests pair side-by-side on desktop:
+            both are address-/tx-level audit logs scoped to this CPID.
+            Grid collapses to one column when one of them is empty so
+            the surviving paper doesn't shrink to half-width for no
+            reason. */}
+        <Box
+          sx={{
+            display: 'grid',
+            gap: 2,
+            gridTemplateColumns: { xs: '1fr', md: mrcs.length > 0 ? '1fr 1fr' : '1fr' },
+            alignItems: 'start',
+          }}
+        >
+          <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
+            <Typography variant="subtitle2" sx={{ p: 2 }} color="text.secondary">Beacon history</Typography>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Address</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell>Block</TableCell>
+                  <TableCell>Expires</TableCell>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Paper>
+              </TableHead>
+              <TableBody>
+                {beacons.map((b) => (
+                  <TableRow key={b.txId} hover>
+                    <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>
+                      <Link href={`/addresses/${b.address}`} style={{ color: 'inherit' }}><HashTrim text={b.address} head={8} tail={6} /></Link>
+                    </TableCell>
+                    <TableCell>
+                      <Chip
+                        size="small"
+                        label={b.status}
+                        color={b.status === 'active' ? 'success' : b.status === 'revoked' ? 'error' : 'default'}
+                      />
+                    </TableCell>
+                    <TableCell>#{b.blockHeight}</TableCell>
+                    <TableCell>{new Date(b.expiration * 1000).toLocaleDateString()}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Paper>
 
-        {mrcs.length > 0 && (
+          {mrcs.length > 0 && (
           <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
             <Typography variant="subtitle2" sx={{ p: 2 }} color="text.secondary">
               MRC requests ({mrcs.length})
@@ -264,17 +493,93 @@ export default function CpidDetail({
               </TableBody>
             </Table>
           </Paper>
-        )}
+          )}
+        </Box>
       </Stack>
     </Layout>
   );
 }
 
+const MagnitudeTooltip = makeRechartsTooltip((payload, label) => {
+  const point = payload[0]?.payload as { superblockHeight?: number } | undefined;
+  const value = Number(payload[0]?.value ?? 0);
+  const sb = point?.superblockHeight ?? label;
+  return {
+    title: `Superblock #${typeof sb === 'number' ? formatNumber(sb) : String(sb ?? '?')}`,
+    rows: [{ label: 'Magnitude', value: value.toFixed(2) }],
+  };
+});
+
+// Compact "Activity" summary for a linked wallet — drops zero-count
+// signals so a beacon-only wallet doesn't render "0 stakes · 0 mrc".
+function activitySummary(w: { beaconCount: number; stakedBlocks: number; mrcPayouts: number }): string {
+  const parts: string[] = [];
+  if (w.beaconCount > 0) parts.push(`${formatCompact(w.beaconCount, 0)} bcn`);
+  if (w.stakedBlocks > 0) parts.push(`${formatCompact(w.stakedBlocks, 0)} stk`);
+  if (w.mrcPayouts > 0) parts.push(`${formatCompact(w.mrcPayouts, 0)} mrc`);
+  return parts.length > 0 ? parts.join(' · ') : '—';
+}
+
+function activityTooltip(w: { beaconCount: number; stakedBlocks: number; mrcPayouts: number }): string {
+  const parts: string[] = [];
+  if (w.beaconCount > 0) parts.push(`${formatNumber(w.beaconCount)} beacons`);
+  if (w.stakedBlocks > 0) parts.push(`${formatNumber(w.stakedBlocks)} staked blocks`);
+  if (w.mrcPayouts > 0) parts.push(`${formatNumber(w.mrcPayouts)} MRC payouts`);
+  return parts.join(', ');
+}
+
+function blockRange(first: number, last: number): string {
+  if (first === last) return `#${formatNumber(first)}`;
+  return `#${formatNumber(first)} – #${formatNumber(last)}`;
+}
+
+// 32 lowercase hex chars — same shape the backend validates. Used to
+// distinguish "looks like a CPID, fetch it" from "looks like a
+// username, resolve it first" in the SSR path.
+const CPID_HEX_RE = /^[0-9a-f]{32}$/;
+
+// Wallet's MiningId::Parse (src/gridcoin/cpid.cpp) maps these strings
+// to the Noncruncher sentinel — i.e. "no CPID, staked as investor".
+// They are not real CPIDs and won't resolve via the names index, so
+// short-circuit to the researchers-vs-investors breakdown instead of
+// 404'ing.
+const NONCRUNCHER_ALIASES = new Set(['noncruncher', 'non-cruncher', 'investor']);
+
 export const getServerSideProps: GetServerSideProps<CpidDetailProps> = async (ctx) => {
   const { cpid } = ctx.params ?? {};
   if (typeof cpid !== 'string') return { notFound: true };
+  const param = cpid.trim();
+  if (NONCRUNCHER_ALIASES.has(param.toLowerCase())) {
+    return {
+      redirect: { destination: '/network/stakers', permanent: false },
+    };
+  }
+  // If the URL param looks like a BOINC username (or anything that
+  // isn't a 32-char lowercase hex CPID), resolve it via the names
+  // index and 302 to the canonical /cpids/<hex> URL. Lets users (and
+  // crawlers) reach a researcher by typing /cpids/<username>.
+  if (!CPID_HEX_RE.test(param.toLowerCase())) {
+    try {
+      const r = await api.get('/cpids/resolve', { params: { name: param } });
+      const matches = (r.data?.data?.attributes?.matches ?? []) as Array<{ cpid: string }>;
+      if (matches.length > 0) {
+        return {
+          redirect: {
+            destination: `/cpids/${matches[0].cpid}`,
+            permanent: false,
+          },
+        };
+      }
+    } catch (err) {
+      // A genuine "no such name" 404 → notFound; a transient resolver
+      // failure (timeout/5xx) must NOT masquerade as a permanent 404,
+      // so rethrow and let Next render its error page.
+      return notFoundOrRethrow(err);
+    }
+    return { notFound: true };
+  }
   try {
-    const r = await api.get(`/cpids/${cpid}`);
+    const r = await api.get(`/cpids/${param.toLowerCase()}`);
     const attrs = r.data?.data?.attributes as CpidSummary | undefined;
     if (!attrs) return { notFound: true };
     return {
@@ -285,10 +590,14 @@ export const getServerSideProps: GetServerSideProps<CpidDetailProps> = async (ct
         initialBeacons: r.data?.beacons ?? [],
         initialMrcs: r.data?.mrcs ?? [],
         initialNames: r.data?.names ?? [],
+        initialLinkedWallets: r.data?.linkedWallets ?? [],
+        initialCombinedBalance: (r.data?.combinedBalance ?? '0') as string,
+        initialCombinedSharePct: (r.data?.combinedSharePct ?? 0) as number,
+        initialCombinedCount: (r.data?.combinedCount ?? 0) as number,
       },
     };
-  } catch {
-    return { notFound: true };
+  } catch (err) {
+    return notFoundOrRethrow(err);
   }
 };
 

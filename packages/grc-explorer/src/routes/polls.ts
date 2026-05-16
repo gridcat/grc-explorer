@@ -5,10 +5,12 @@ import { ErrorModel } from '../lib/errors';
 import { liveRpc } from '../lib/gridcoin';
 import { halford2grc } from '../lib/halford';
 import { hiddenPollIds, isHiddenPoll } from '../lib/hiddenPolls';
+import { getTipAnchor } from '../lib/indexerTip';
 import { log } from '../lib/log';
 import { getPagination } from '../lib/pagination';
 import { param } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
+import { tsToUnix } from '../lib/time';
 import { PollPresenter } from '../presenters';
 import { registerParamValidators } from '../lib/validators';
 
@@ -32,19 +34,19 @@ interface PollRow {
   av_w_balance: string | null;
   av_w_magnitude: number | null;
   weights_computed_at_height: number | null;
-}
-
-function tsToUnix(t: number | string): number {
-  if (typeof t === 'number') return t;
-  const ms = new Date(t).getTime();
-  return Number.isFinite(ms) ? Math.floor(ms / 1000) : 0;
+  result?: {
+    topLabel: string | null;
+    topPctOfCast: number;
+    totalVotes: number;
+    totalWeightCast: string;
+  };
 }
 
 function presentPoll(p: PollRow) {
   return {
     ...p,
-    start_time: tsToUnix(p.start_time),
-    end_time: tsToUnix(p.end_time),
+    start_time: tsToUnix(p.start_time) ?? 0,
+    end_time: tsToUnix(p.end_time) ?? 0,
     av_w_balance: p.av_w_balance === null ? null : BigInt(p.av_w_balance),
   };
 }
@@ -52,7 +54,7 @@ function presentPoll(p: PollRow) {
 pollsRouter.get('/', async (req: Request, res: Response) => {
   const { offset, limit } = getPagination(req);
   const filterActive = req.query.active === '1';
-  const now = Math.floor(Date.now() / 1000);
+  const now = await getTipAnchor();
   const hidden = hiddenPollIds();
 
   const conditions: string[] = [];
@@ -92,6 +94,90 @@ pollsRouter.get('/', async (req: Request, res: Response) => {
   ]);
   const rows = (await rowsResult.json<PollRow>()).map(presentPoll);
   const total = Number((await countResult.json<{ c: string | number }>())[0]?.c ?? 0);
+
+  // Per-poll result aggregate. Two extra CH queries scoped to this
+  // page's poll_ids — cheap (≤ 25 polls × ~5 options × ~handful of
+  // votes per option on testnet, well under a second on mainnet's
+  // larger but still bounded poll set). Computing the winner in
+  // JS keeps the SQL simple: per-option sums, then argmax in code.
+  const pollIds = rows.map((p) => p.poll_id);
+  if (pollIds.length > 0) {
+    const [tallyResult, optionsResult] = await Promise.all([
+      ch.query({
+        query: `
+          SELECT poll_id, choice_idx,
+                 toString(sum(weight)) AS option_weight,
+                 toUInt32(count())     AS option_votes
+          FROM votes FINAL
+          WHERE poll_id IN ({ids: Array(String)})
+          GROUP BY poll_id, choice_idx
+        `,
+        query_params: { ids: pollIds },
+        format: 'JSONEachRow',
+      }),
+      ch.query({
+        query: `
+          SELECT poll_id, idx, label
+          FROM poll_options FINAL
+          WHERE poll_id IN ({ids: Array(String)})
+        `,
+        query_params: { ids: pollIds },
+        format: 'JSONEachRow',
+      }),
+    ]);
+    const tallyRows = await tallyResult.json<{
+      poll_id: string; choice_idx: number; option_weight: string; option_votes: number;
+    }>();
+    const optionRows = await optionsResult.json<{ poll_id: string; idx: number; label: string }>();
+
+    const labelByKey = new Map<string, string>();
+    for (const o of optionRows) labelByKey.set(`${o.poll_id}:${o.idx}`, o.label);
+
+    // Aggregate per poll: track top option by weight, total cast
+    // weight, total vote count. BigInt arithmetic keeps the weight
+    // sums exact across halford-precision values.
+    interface Acc {
+      topIdx: number | null;
+      topWeight: bigint;
+      totalWeight: bigint;
+      totalVotes: number;
+    }
+    const byPoll = new Map<string, Acc>();
+    for (const t of tallyRows) {
+      const acc = byPoll.get(t.poll_id) ?? {
+        topIdx: null, topWeight: 0n, totalWeight: 0n, totalVotes: 0,
+      };
+      const w = BigInt(t.option_weight);
+      acc.totalWeight += w;
+      acc.totalVotes += t.option_votes;
+      if (w > acc.topWeight) {
+        acc.topWeight = w;
+        acc.topIdx = t.choice_idx;
+      }
+      byPoll.set(t.poll_id, acc);
+    }
+
+    for (const row of rows) {
+      const acc = byPoll.get(row.poll_id);
+      if (!acc || acc.totalWeight === 0n) {
+        row.result = {
+          topLabel: null, topPctOfCast: 0, totalVotes: acc?.totalVotes ?? 0, totalWeightCast: '0',
+        };
+        continue;
+      }
+      const topLabel = acc.topIdx === null
+        ? null
+        : labelByKey.get(`${row.poll_id}:${acc.topIdx}`) ?? null;
+      const topPct = Number((acc.topWeight * 10000n) / acc.totalWeight) / 100;
+      row.result = {
+        topLabel,
+        topPctOfCast: topPct,
+        totalVotes: acc.totalVotes,
+        totalWeightCast: halford2grc(acc.totalWeight),
+      };
+    }
+  }
+
   const body = PollPresenter.render(rows, { meta: { count: total } });
   res.status(StatusCodes.OK).send(withMeta(body));
 });
@@ -237,12 +323,6 @@ pollsRouter.get('/:poll_id', async (req: Request, res: Response) => {
 // rejects because they have no claim signature.
 pollsRouter.get('/votes/:tx_id/claim', async (req: Request, res: Response) => {
   const txId = param(req, 'tx_id');
-  if (!/^[a-fA-F0-9]{64}$/.test(txId)) {
-    res.status(StatusCodes.BAD_REQUEST).send({
-      errors: [new ErrorModel(StatusCodes.BAD_REQUEST, 'Bad tx_id', 'must be 64 hex chars')],
-    });
-    return;
-  }
   try {
     const claim = await (liveRpc as unknown as { getVotingClaim: (id: string) => Promise<unknown> })
       .getVotingClaim(txId);

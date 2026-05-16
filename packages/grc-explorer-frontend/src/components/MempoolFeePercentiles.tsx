@@ -14,10 +14,11 @@ import {
   niceTicks,
 } from './charts/SvgChart';
 import { atParam, useTimeMachine } from '../hooks/useTimeMachine';
-import { useSSE } from '../hooks/useSSE';
+import { useSSEDebounced } from '../hooks/useSSE';
+import { EmptyState } from './EmptyState';
 
-interface PercentilePoint { bucketTs: number; p50: number; p95: number; p99: number; txCount: number }
-interface PercentileMeta {
+export interface PercentilePoint { bucketTs: number; p50: number; p95: number; p99: number; txCount: number }
+export interface PercentileMeta {
   /** Most recent non-empty bucket anywhere in the MV, regardless of
    *  whether it falls in the 24h window. Lets us tell the user
    *  "the MV has data, just outside this window" vs "the MV is bare". */
@@ -40,12 +41,19 @@ const PERCENTILE_HOURS = 24;
  * vs "what the chain has actually been charging." Reads pre-computed
  * `fee_percentiles` rows maintained by `FeePercentileJob`.
  */
-export function MempoolFeePercentiles() {
+export function MempoolFeePercentiles({
+  initialPoints = [],
+  initialMeta = null,
+}: {
+  initialPoints?: PercentilePoint[];
+  initialMeta?: PercentileMeta | null;
+} = {}) {
   const tm = useTimeMachine();
-  const [points, setPoints] = useState<PercentilePoint[]>([]);
-  const [meta, setMeta] = useState<PercentileMeta | null>(null);
+  const [points, setPoints] = useState<PercentilePoint[]>(initialPoints);
+  const [meta, setMeta] = useState<PercentileMeta | null>(initialMeta);
   const [explainOpen, setExplainOpen] = useState(false);
   const cancelledRef = useRef(false);
+  const skipFirstFetchRef = useRef(initialPoints.length > 0 || initialMeta !== null);
 
   // Single fetcher reused by the mount effect, the SSE-driven refresh,
   // and the slow safety-net poll. Wrapped in useCallback so the SSE
@@ -78,27 +86,20 @@ export function MempoolFeePercentiles() {
 
   useEffect(() => {
     cancelledRef.current = false;
-    fetchOnce();
+    if (skipFirstFetchRef.current) {
+      skipFirstFetchRef.current = false;
+    } else {
+      fetchOnce();
+    }
     return () => { cancelledRef.current = true; };
   }, [fetchOnce]);
 
-  // FeePercentileJob processes finalised buckets every 5 min, so the
-  // underlying data can change on that cadence. Refetch on block.new
-  // (debounced) so the chart picks up the new bucket as soon as the
-  // job has written it; the 60-second debounce prevents a backfill
-  // burst (one block.new per block) from hammering the endpoint.
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useSSE(['block.new'], () => {
-    if (tm.isReplay) return;
-    if (debounceRef.current) return;
-    debounceRef.current = setTimeout(() => {
-      debounceRef.current = null;
-      fetchOnce();
-    }, 60_000);
-  });
-  useEffect(() => () => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-  }, []);
+  // FeePercentileJob processes finalised buckets every 5 min — a
+  // shorter debounce would just refetch the same data many times.
+  // Match the job's cadence: one refresh per 5-min window, triggered
+  // by any block.new, so the chart picks up new buckets within
+  // seconds of the job finalising them.
+  useSSEDebounced(['block.new'], fetchOnce, 5 * 60 * 1000, { skip: tm.isReplay });
 
   // Safety-net poll for when SSE drops.
   useEffect(() => {
@@ -175,12 +176,9 @@ export function MempoolFeePercentiles() {
           </Typography>
         </Collapse>
         {!hasData ? (
-          <Box sx={{
-            height: 220, p: 2, borderRadius: 1, color: 'text.disabled', textAlign: 'center', border: 1, borderStyle: 'dashed', borderColor: 'divider', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}
-          >
+          <EmptyState height={220}>
             <EmptyStateMessage hasBuckets={hasBuckets} meta={meta} points={points} />
-          </Box>
+          </EmptyState>
         ) : (
           <>
             <PercentileLegend />

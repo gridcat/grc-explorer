@@ -5,9 +5,9 @@ import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Layout } from '../../layouts/Layout';
-import { api } from '../../lib/api';
+import { api, isAbsentError } from '../../lib/api';
 import {
   formatCompact, formatGrc, formatNumber, formatTime,
 } from '../../lib/format';
@@ -31,6 +31,7 @@ export interface Block {
   isSuperblock: boolean;
   minerAddress: string | null;
   stakerCpid: string | null;
+  stakerName?: string | null;
   mint: string;
   moneySupply: string;
 }
@@ -49,11 +50,26 @@ export interface ClaimSummary {
 
 export interface ClaimMrc {
   cpid: string;
+  cpidName?: string | null;
   miningId: string;
   clientVersion: string;
   researchSubsidy: string;
   magnitude: number;
   payToAddress: string | null;
+}
+
+export interface BlockSidestake {
+  address: string;
+  voutIdx: number;
+  txId: string;
+  amount: string;
+  time: number;
+  allocationPct: number;
+  description: string;
+  /** 'MANDATORY' if the recipient was in the active registry at this
+   *  block's height; '' otherwise (voluntary/local sidestake to a
+   *  non-protocol address). */
+  registryStatus: string;
 }
 
 export interface BlockDetailProps {
@@ -62,6 +78,7 @@ export interface BlockDetailProps {
   initialClaim: ClaimSummary | null;
   initialMrcs: ClaimMrc[];
   initialTipHeight: number | null;
+  initialCpidNames: Record<string, string>;
 }
 
 /**
@@ -91,6 +108,7 @@ function blockEraLabel(version: number): string {
 
 export function BlockDetail({
   initialBlock, initialTransactions, initialClaim, initialMrcs, initialTipHeight,
+  initialCpidNames,
 }: BlockDetailProps) {
   const router = useRouter();
   const { height } = router.query;
@@ -98,6 +116,11 @@ export function BlockDetail({
   const [transactions, setTransactions] = useState(initialTransactions);
   const [claim, setClaim] = useState<ClaimSummary | null>(initialClaim);
   const [mrcs, setMrcs] = useState<ClaimMrc[]>(initialMrcs);
+  // Sidestakes are fetched lazily — they only exist on V13+ PoS
+  // blocks, and even there most blocks have none. Skipping the fetch
+  // on pre-V13 blocks keeps the page footprint low for the ~99.99% of
+  // chain history that came before mandatory sidestaking activated.
+  const [sidestakes, setSidestakes] = useState<BlockSidestake[]>([]);
   // Indexer-tip height comes back with the block payload so the page can
   // hide "Next →" when we're already on the chain tip without making a
   // second request to /network on every render.
@@ -133,15 +156,36 @@ export function BlockDetail({
     }).catch(() => { /* ignore */ });
   }, [height, block]);
 
+  // Lazy sidestakes fetch — only when the block is V13+. The endpoint
+  // returns an empty array for any block without payouts so this
+  // doesn't need a separate "has sidestakes" indicator on the main
+  // /blocks/:height response.
+  useEffect(() => {
+    if (!block || block.version < 13) {
+      setSidestakes([]);
+      return;
+    }
+    let cancelled = false;
+    api.get(`/blocks/${block.height}/sidestakes`).then((r) => {
+      if (cancelled) return;
+      const data = (r.data?.data ?? []) as Array<{ attributes: BlockSidestake }>;
+      setSidestakes(data.map((d) => d.attributes));
+    }).catch(() => { if (!cancelled) setSidestakes([]); });
+    return () => { cancelled = true; };
+  }, [block]);
+
   // Batched display-name lookup for every CPID on this page — the
   // staker plus every MRC recipient. Called BEFORE the early-return
   // for `!block` so the hook always runs in the same order (rules of
   // hooks). The hook caches across components so the next block view
   // inherits already-resolved names.
-  const cpidList: string[] = [];
-  if (block?.stakerCpid) cpidList.push(block.stakerCpid);
-  for (const m of mrcs) cpidList.push(m.cpid);
-  const names = useCpidNames(cpidList);
+  const cpidList = useMemo(() => {
+    const list: string[] = [];
+    if (block?.stakerCpid) list.push(block.stakerCpid);
+    for (const m of mrcs) list.push(m.cpid);
+    return list;
+  }, [block?.stakerCpid, mrcs]);
+  const names = useCpidNames(cpidList, initialCpidNames);
 
   if (!block) return <Layout><Typography>Loading…</Typography></Layout>;
 
@@ -199,61 +243,75 @@ export function BlockDetail({
           </Stack>
         </Stack>
 
-        <Card variant="outlined">
-          <CardContent>
-            <DetailRow label="Hash" value={block.hash} mono />
-            <DetailRow label="Previous" value={<Link href={`/block/${block.height - 1}`} style={{ color: 'inherit' }}><HashTrim text={block.prevHash} /></Link>} />
-            <DetailRow label="Merkle root" value={<HashTrim text={block.merkleRoot} />} />
-            <DetailRow label="Time" value={formatTime(block.time)} />
-            <DetailRow
-              label="Block version"
-              value={`${block.version} · ${blockEraLabel(block.version)}`}
-            />
-            <DetailRow label="Difficulty" value={formatCompact(Number(block.difficulty), 2)} />
-            <DetailRow label="Size" value={`${formatNumber(block.size)} bytes`} />
-            <DetailRow label="Transactions" value={String(block.txCount)} />
-            <DetailRow label="Mint (this block)" value={`${formatGrc(block.mint)} GRC`} />
-            <DetailRow label="Money supply" value={`${formatGrc(block.moneySupply)} GRC`} />
-            {block.minerAddress && (
-              <DetailRow label="Staker / miner" value={(
-                <Link href={`/addresses/${block.minerAddress}`} style={{ color: 'inherit' }}>{block.minerAddress}</Link>
-              )} mono />
-            )}
-            {block.stakerCpid && (
-              <DetailRow label="Researcher CPID" value={(
-                <Link href={`/cpids/${block.stakerCpid}`} style={{ color: 'inherit', textDecoration: 'none' }}>
-                  <CpidLabel cpid={block.stakerCpid} name={names.get(block.stakerCpid)} />
-                </Link>
-              )} />
-            )}
-          </CardContent>
-        </Card>
-
-        {claim && (
+        {/* Block details (the dozen-ish DetailRows) and the optional
+            Claim card pair side-by-side on desktop with the wider
+            block card on the left (2fr) and the narrower claim on
+            the right (1fr). Without a claim — PoW blocks, pre-research
+            era — the block card spans full width. */}
+        <Box
+          sx={{
+            display: 'grid',
+            gap: 2,
+            gridTemplateColumns: { xs: '1fr', md: claim ? '2fr 1fr' : '1fr' },
+            alignItems: 'start',
+          }}
+        >
           <Card variant="outlined">
             <CardContent>
-              <Typography variant="subtitle2" color="text.secondary">Claim</Typography>
-              <DetailRow label="Organization" value={claim.organization || '—'} />
-              <DetailRow label="Client" value={claim.client_version} />
-              <DetailRow label="Block reward" value={`${formatGrc(claim.block_subsidy)} GRC`} />
-              <DetailRow label="Research reward" value={`${formatGrc(claim.research_subsidy)} GRC`} />
-              <DetailRow label="Magnitude" value={claim.magnitude.toFixed(4)} />
-              {claim.is_mrc && (
-                <>
-                  <DetailRow
-                    label="MRC fees → staker"
-                    value={`${formatGrc(claim.mrc_staker_fees ?? '0')} GRC`}
-                  />
-                  <DetailRow
-                    label="MRC fees → foundation"
-                    value={`${formatGrc(claim.mrc_foundation_fees ?? '0')} GRC`}
-                  />
-                </>
+              <DetailRow label="Hash" value={block.hash} mono />
+              <DetailRow label="Previous" value={hasPrev ? <Link href={`/block/${block.height - 1}`} style={{ color: 'inherit' }}><HashTrim text={block.prevHash} /></Link> : <HashTrim text={block.prevHash} />} />
+              <DetailRow label="Merkle root" value={<HashTrim text={block.merkleRoot} />} />
+              <DetailRow label="Time" value={formatTime(block.time)} />
+              <DetailRow
+                label="Block version"
+                value={`${block.version} · ${blockEraLabel(block.version)}`}
+              />
+              <DetailRow label="Difficulty" value={formatCompact(Number(block.difficulty), 2)} />
+              <DetailRow label="Size" value={`${formatNumber(block.size)} bytes`} />
+              <DetailRow label="Transactions" value={String(block.txCount)} />
+              <DetailRow label="Mint (this block)" value={`${formatGrc(block.mint)} GRC`} />
+              <DetailRow label="Money supply" value={`${formatGrc(block.moneySupply)} GRC`} />
+              {block.minerAddress && (
+                <DetailRow label="Staker / miner" value={(
+                  <Link href={`/addresses/${block.minerAddress}`} style={{ color: 'inherit' }}>{block.minerAddress}</Link>
+                )} mono />
               )}
-              {claim.is_mrc && <Chip label="MRC" size="small" color="secondary" sx={{ mt: 1 }} />}
+              {block.stakerCpid && (
+                <DetailRow label="Researcher CPID" value={(
+                  <Link href={`/cpids/${block.stakerCpid}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+                    <CpidLabel cpid={block.stakerCpid} name={names.get(block.stakerCpid)} />
+                  </Link>
+                )} />
+              )}
             </CardContent>
           </Card>
-        )}
+
+          {claim && (
+            <Card variant="outlined">
+              <CardContent>
+                <Typography variant="subtitle2" color="text.secondary">Claim</Typography>
+                <DetailRow label="Organization" value={claim.organization || '—'} />
+                <DetailRow label="Client" value={claim.client_version} />
+                <DetailRow label="Block reward" value={`${formatGrc(claim.block_subsidy)} GRC`} />
+                <DetailRow label="Research reward" value={`${formatGrc(claim.research_subsidy)} GRC`} />
+                <DetailRow label="Magnitude" value={claim.magnitude.toFixed(4)} />
+                {claim.is_mrc && (
+                  <>
+                    <DetailRow
+                      label="MRC fees → staker"
+                      value={`${formatGrc(claim.mrc_staker_fees ?? '0')} GRC`}
+                    />
+                    <DetailRow
+                      label="MRC fees → foundation"
+                      value={`${formatGrc(claim.mrc_foundation_fees ?? '0')} GRC`}
+                    />
+                  </>
+                )}
+                {claim.is_mrc && <Chip label="MRC" size="small" color="secondary" sx={{ mt: 1 }} />}
+              </CardContent>
+            </Card>
+          )}
+        </Box>
 
         {mrcs.length > 0 && (
           <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
@@ -288,6 +346,53 @@ export function BlockDetail({
                     <TableCell sx={{ fontSize: 12, color: 'text.secondary' }}>{m.clientVersion || '—'}</TableCell>
                   </TableRow>
                 ))}
+              </TableBody>
+            </Table>
+          </Paper>
+        )}
+
+        {sidestakes.length > 0 && (
+          <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
+            <Typography variant="subtitle2" sx={{ p: 2 }} color="text.secondary">
+              Sidestakes on this coinstake: {sidestakes.length}
+            </Typography>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Type</TableCell>
+                  <TableCell>Recipient</TableCell>
+                  <TableCell>Description</TableCell>
+                  <TableCell align="right">Allocation</TableCell>
+                  <TableCell align="right">Amount (GRC)</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {sidestakes.map((s) => {
+                  const isMandatory = s.registryStatus === 'MANDATORY';
+                  return (
+                    <TableRow key={`${s.txId}-${s.voutIdx}`} hover>
+                      <TableCell>
+                        {isMandatory
+                          ? <Chip size="small" label="mandatory" color="primary" />
+                          : <Chip size="small" label="local" variant="outlined" />}
+                      </TableCell>
+                      <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>
+                        <Link href={`/addresses/${s.address}`} style={{ color: 'inherit' }}>
+                          {s.address}
+                        </Link>
+                      </TableCell>
+                      <TableCell sx={{ fontSize: 12, color: 'text.secondary' }}>
+                        {s.description || '—'}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                        {isMandatory ? `${s.allocationPct.toFixed(2)}%` : '—'}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                        {`${formatGrc(s.amount)} GRC`}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           </Paper>
@@ -355,6 +460,18 @@ export async function fetchBlockDetailProps(height: string): Promise<BlockDetail
     const attrs = r.data?.data?.attributes as Block | undefined;
     if (!attrs) return null;
     const c = r.data?.claim;
+    const mrcs = (r.data?.mrcs ?? []) as ClaimMrc[];
+    // Names are resolved server-side now (block.stakerName,
+    // claim.cpidName, mrc.cpidName); seed useCpidNames from them
+    // instead of a second /cpids/names round trip.
+    const initialCpidNames: Record<string, string> = {};
+    if (attrs.stakerCpid && attrs.stakerName) {
+      initialCpidNames[attrs.stakerCpid] = attrs.stakerName;
+    }
+    if (c?.cpid && c?.cpidName) initialCpidNames[c.cpid as string] = c.cpidName as string;
+    for (const m of mrcs) {
+      if (m.cpid && m.cpidName) initialCpidNames[m.cpid] = m.cpidName;
+    }
     return {
       initialBlock: attrs,
       initialTransactions: r.data?.transactions ?? [],
@@ -369,10 +486,15 @@ export async function fetchBlockDetailProps(height: string): Promise<BlockDetail
         mrc_foundation_fees: c.mrc_foundation_fees?.toString() ?? '0',
         mrc_staker_fees: c.mrc_staker_fees?.toString() ?? '0',
       } : null,
-      initialMrcs: r.data?.mrcs ?? [],
+      initialMrcs: mrcs,
       initialTipHeight: typeof r.data?.tipHeight === 'number' ? r.data.tipHeight : null,
+      initialCpidNames,
     };
-  } catch {
-    return null;
+  } catch (err) {
+    // Block genuinely absent → null (caller renders 404). A transient
+    // backend failure must NOT collapse to null/404 — rethrow so the
+    // page surfaces a retryable error instead of a permanent 404.
+    if (isAbsentError(err)) return null;
+    throw err;
   }
 }

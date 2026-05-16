@@ -1,19 +1,27 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { ch } from '../lib/ch';
+import { ch, hasColumns } from '../lib/ch';
 import { ErrorModel } from '../lib/errors';
 import { liveRpc } from '../lib/gridcoin';
-import { halford2grc } from '../lib/halford';
+import { grc2halford, halford2grc } from '../lib/halford';
+import { redeemScriptIsHtlc } from '../lib/htlc';
 import { log } from '../lib/log';
 import { getCursor, redis } from '../lib/redis';
 import { param } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
 import { disassembleScript } from '../lib/scriptAsm';
+import { tsToUnix } from '../lib/time';
 import { TransactionPresenter } from '../presenters';
+import { forkHeight } from '../services/network/ChainForks';
 import { registerParamValidators } from '../lib/validators';
 
 export const transactionsRouter = Router();
 registerParamValidators(transactionsRouter);
+
+const hasInputColumns = () => hasColumns('tx_inputs', ['script_sig_hex', 'sequence']);
+
+// HTLC detection lives in lib/htlc.ts (proper redeemScript opcode
+// parse). The V14 activation gate is applied at the call site.
 
 interface TxRow {
   tx_id: string;
@@ -32,16 +40,10 @@ interface TxRow {
   hashboinc: string | null;
 }
 
-function tsToUnix(t: number | string): number {
-  if (typeof t === 'number') return t;
-  const ms = new Date(t).getTime();
-  return Number.isFinite(ms) ? Math.floor(ms / 1000) : 0;
-}
-
 function presentTx(r: TxRow) {
   return {
     ...r,
-    time: tsToUnix(r.time),
+    time: tsToUnix(r.time) ?? 0,
     fee: BigInt(r.fee),
     total_in: BigInt(r.total_in),
     total_out: BigInt(r.total_out),
@@ -55,17 +57,9 @@ function presentTx(r: TxRow) {
 // daemon with -5 lookups (audit P0 #2).
 const RAW_TX_CACHE_TTL_S = 24 * 3600;
 const RAW_TX_NEGATIVE_TTL_S = 5 * 60;
-const TXID_RE = /^[0-9a-f]{64}$/;
 
 transactionsRouter.get('/:tx_id/raw', async (req: Request, res: Response) => {
   const txId = param(req, 'tx_id').toLowerCase();
-  if (!TXID_RE.test(txId)) {
-    res.status(StatusCodes.BAD_REQUEST).send({
-      errors: [new ErrorModel(StatusCodes.BAD_REQUEST, 'Bad txid', 'txid must be 64 hex characters')],
-    });
-    return;
-  }
-
   const cacheKey = `raw:${txId}`;
   const cached = await redis.get(cacheKey);
   if (cached) {
@@ -159,34 +153,86 @@ transactionsRouter.get('/:tx_id', async (req: Request, res: Response) => {
 
 async function loadIndexedTx(txId: string): Promise<unknown | null> {
   const txResult = await ch.query({
-    query: 'SELECT * FROM transactions FINAL WHERE tx_id = {tx: String} LIMIT 1',
+    // No FINAL: it forces the merge path and ignores the tx_id bloom
+    // skip index, turning this point lookup into a ~5M-row scan
+    // (measured). Without FINAL the bloom prunes to a handful of
+    // granules; `ORDER BY _seq DESC LIMIT 1` keeps the canonical
+    // (latest-version) row — exactly FINAL's result for a unique
+    // tx_id. Verified row-identical. Same pattern as 0027-0030.
+    query: 'SELECT * FROM transactions WHERE tx_id = {tx: String} ORDER BY _seq DESC LIMIT 1',
     query_params: { tx: txId },
     format: 'JSONEachRow',
   });
   const txRows = await txResult.json<TxRow>();
   if (txRows.length === 0) return null;
   const row = presentTx(txRows[0]);
+  // Column-existence guard for script_sig_hex / sequence — same
+  // pattern as the beacon auth_method route. Migration 0022 adds
+  // these; falling back to defaults if the migrate script hasn't
+  // run yet keeps the tx detail page rendering instead of 500ing.
+  const hasScriptSig = await hasInputColumns();
+  const inputColumns = hasScriptSig
+    ? 'vin_n, prev_tx, prev_vout, address, value, script_sig_hex, sequence'
+    : "vin_n, prev_tx, prev_vout, address, value, '' AS script_sig_hex, toUInt32(4294967295) AS sequence";
   const [vinResult, voutResult, mrcRow, cursor] = await Promise.all([
     ch.query({
-      query: 'SELECT vin_n, prev_tx, prev_vout, address, value FROM tx_inputs FINAL WHERE tx_id = {tx: String} ORDER BY vin_n ASC',
+      // No FINAL: tx_id isn't a leading key (ORDER BY is
+      // block_height, tx_id, vin_n) so this scanned ~13.9M rows with
+      // or without FINAL. Migration 0031 adds an idx_tx_inputs_txid
+      // bloom; dropping FINAL lets it prune, then dedup the
+      // ReplacingMergeTree per vin_n via `_seq DESC LIMIT 1 BY vin_n`
+      // (exactly FINAL's effect for this tx's inputs).
+      query: `
+        SELECT ${inputColumns} FROM (
+          SELECT * FROM tx_inputs
+          WHERE tx_id = {tx: String}
+          ORDER BY _seq DESC
+          LIMIT 1 BY vin_n
+        )
+        ORDER BY vin_n ASC
+      `,
       query_params: { tx: txId },
       format: 'JSONEachRow',
     }).then((r) => r.json<{
       vin_n: number; prev_tx: string | null; prev_vout: number | null;
       address: string | null; value: string | null;
+      script_sig_hex: string; sequence: number;
     }>()),
     ch.query({
+      // Every output here belongs to one transaction ({tx}), so its
+      // spends are exactly the tx_inputs rows with prev_tx = {tx}.
+      // Both sides are point lookups, but they must NOT use `FINAL`:
+      // ClickHouse can't serve a FINAL (read-time dedup) query from a
+      // projection, so FINAL forces a full-table scan (~3.6s) while the
+      // projections sit unused. Instead read WITHOUT FINAL — which the
+      // projections proj_by_outpoint (tx_id,vout_n) / proj_by_prevout
+      // (prev_tx,prev_vout) serve as ~2-granule lookups — and dedup the
+      // ReplacingMergeTree versions in-query via `ORDER BY _seq DESC
+      // LIMIT 1 BY <key>` (keep the highest version per logical row,
+      // exactly FINAL's semantics on this tiny result set). ~3.6s → ~13ms,
+      // result verified byte-identical to the old FINAL query.
       query: `
         SELECT
           o.vout_n AS vout_n,
           o.value AS value,
           o.address AS address,
           o.script_type AS script_type,
-          (i.tx_id != '') AS is_spent,
-          i.tx_id AS spent_in_tx
-        FROM tx_outputs AS o FINAL
-        ANY LEFT JOIN tx_inputs AS i FINAL ON i.prev_tx = o.tx_id AND i.prev_vout = o.vout_n
-        WHERE o.tx_id = {tx: String}
+          (s.tx_id != '') AS is_spent,
+          s.tx_id AS spent_in_tx
+        FROM (
+          SELECT vout_n, value, address, script_type
+          FROM tx_outputs
+          WHERE tx_id = {tx: String}
+          ORDER BY _seq DESC
+          LIMIT 1 BY vout_n
+        ) AS o
+        ANY LEFT JOIN (
+          SELECT prev_vout, tx_id
+          FROM tx_inputs
+          WHERE prev_tx = {tx: String}
+          ORDER BY _seq DESC
+          LIMIT 1 BY prev_vout
+        ) AS s ON s.prev_vout = o.vout_n
         ORDER BY o.vout_n ASC
       `,
       query_params: { tx: txId },
@@ -201,6 +247,14 @@ async function loadIndexedTx(txId: string): Promise<unknown | null> {
   const tipHeight = cursor?.height ?? row.block_height;
   const confirmations = Math.max(0, tipHeight - row.block_height + 1);
 
+  // HTLC marking is gated on V14 activation: CLTV/CSV only become
+  // consensus-meaningful at the V14 fork, and (more importantly) the
+  // proper redeemScript parser should not surface a badge for a
+  // network/height where these contracts can't exist. forkHeight()
+  // resolves the active network's V14 height (null if N/A).
+  const v14Height = forkHeight('v14');
+  const htlcGateOpen = v14Height !== null && row.block_height >= v14Height;
+
   const body = TransactionPresenter.render(row);
   return withMeta(body, {
     vins: vinResult.map((v) => ({
@@ -209,6 +263,18 @@ async function loadIndexedTx(txId: string): Promise<unknown | null> {
       prevVout: v.prev_vout,
       address: v.address,
       value: v.value === null ? null : halford2grc(BigInt(v.value)),
+      // True only when (a) the tx is at/after V14 and (b) the
+      // scriptSig's final push parses as a redeemScript whose
+      // OPCODES form a hashlock+timelock+branch HTLC shape — see
+      // lib/htlc.ts. Coincidental 0xb1/0xb2 bytes inside signatures
+      // (the old byte-scan's flaw) cannot match.
+      isHtlcRedemption: htlcGateOpen && redeemScriptIsHtlc(v.script_sig_hex),
+      sequence: v.sequence,
+      // BIP68 enables semantic nSequence at V14. Any non-default
+      // value flags the input as sequence-locked for the tx detail
+      // page; the daemon's mempool acceptance + miner enforcement
+      // does the actual sequence-lock validation.
+      isSequenceLocked: v.sequence !== 0xffffffff,
     })),
     vouts: voutResult.map((o) => ({
       voutN: o.vout_n,
@@ -409,7 +475,7 @@ async function buildPendingResponse(txId: string, args: PendingArgs): Promise<un
 
   let totalOut = 0n;
   const vouts = voutList.map((o, idx) => {
-    const value = grcNumberToHalford(o.value);
+    const value = grc2halford(o.value ?? 0);
     totalOut += value;
     const addrList = o.scriptPubKey?.addresses;
     const address = Array.isArray(addrList) && addrList.length > 0 ? addrList[0] : null;
@@ -525,25 +591,9 @@ async function resolvePrevOutAttrs(
     if (!o || typeof o.value !== 'number') continue;
     const addrList = o.scriptPubKey?.addresses;
     const address = Array.isArray(addrList) && addrList.length > 0 ? addrList[0] : null;
-    out.set(`${ref.txid}:${ref.vout}`, { address, value: grcNumberToHalford(o.value) });
+    out.set(`${ref.txid}:${ref.vout}`, { address, value: grc2halford(o.value) });
   }
   return out;
-}
-
-function grcNumberToHalford(grc: number | string | undefined): bigint {
-  if (typeof grc === 'number') {
-    if (!Number.isFinite(grc)) return 0n;
-    return BigInt(Math.round(grc * 1e8));
-  }
-  if (typeof grc !== 'string') return 0n;
-  const dot = grc.indexOf('.');
-  if (dot < 0) return BigInt(grc) * 100_000_000n;
-  const whole = grc.slice(0, dot) || '0';
-  const fracRaw = grc.slice(dot + 1);
-  const frac = (`${fracRaw}00000000`).slice(0, 8);
-  const sign = whole.startsWith('-') ? -1n : 1n;
-  const wholeAbs = whole.replace(/^-/, '');
-  return sign * (BigInt(wholeAbs) * 100_000_000n + BigInt(frac));
 }
 
 function trimNullBytes(s: string | null | undefined): string | null {

@@ -8,7 +8,17 @@ import { useEffect, useRef, useState } from 'react';
 import { Layout } from '../../layouts/Layout';
 import { Crumbs } from '../../components/Crumbs';
 import { api } from '../../lib/api';
-import { formatTime } from '../../lib/format';
+import { formatTime, nowSec } from '../../lib/format';
+import {
+  PAGE_SIZE_OPTIONS, pushPaginationQuery, readPageFromQuery, readPageSizeFromQuery,
+} from '../../lib/pagination';
+
+interface PollResult {
+  topLabel: string | null;
+  topPctOfCast: number;
+  totalVotes: number;
+  totalWeightCast: string;
+}
 
 interface Poll {
   pollId: string;
@@ -16,6 +26,7 @@ interface Poll {
   question: string;
   startTime: number;
   endTime: number;
+  result?: PollResult;
 }
 
 interface PollsListProps {
@@ -23,22 +34,6 @@ interface PollsListProps {
   initialTotal: number;
   initialPage: number;
   initialPageSize: number;
-}
-
-const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
-const DEFAULT_PAGE_SIZE = 25;
-
-function clampPageSize(n: number): number {
-  return PAGE_SIZE_OPTIONS.includes(n) ? n : DEFAULT_PAGE_SIZE;
-}
-
-function readPageFromQuery(q: Record<string, string | string[] | undefined>): number {
-  const raw = parseInt((q.page as string) ?? '', 10);
-  return Number.isFinite(raw) && raw >= 0 ? raw : 0;
-}
-
-function readPageSizeFromQuery(q: Record<string, string | string[] | undefined>): number {
-  return clampPageSize(parseInt((q.pageSize as string) ?? '', 10) || DEFAULT_PAGE_SIZE);
 }
 
 export default function PollsList({
@@ -81,21 +76,10 @@ export default function PollsList({
   }, [page, pageSize]);
 
   const updateQuery = (next: { page?: number; pageSize?: number }) => {
-    router.replace(
-      {
-        pathname: router.pathname,
-        query: {
-          ...router.query,
-          page: String(next.page ?? page),
-          pageSize: String(next.pageSize ?? pageSize),
-        },
-      },
-      undefined,
-      { scroll: false, shallow: true },
-    );
+    pushPaginationQuery(router, next);
   };
 
-  const now = Math.floor(Date.now() / 1000);
+  const now = nowSec();
 
   return (
     <Layout>
@@ -119,6 +103,7 @@ export default function PollsList({
               <TableRow>
                 <TableCell>Title</TableCell>
                 <TableCell>Status</TableCell>
+                <TableCell>Result</TableCell>
                 <TableCell>Started</TableCell>
                 <TableCell>Ends</TableCell>
               </TableRow>
@@ -160,6 +145,9 @@ export default function PollsList({
                     <TableCell>
                       <Chip size="small" label={active ? 'active' : 'closed'} color={active ? 'success' : 'default'} />
                     </TableCell>
+                    <TableCell sx={{ maxWidth: { xs: 160, sm: 240 } }}>
+                      <PollResultCell result={p.result} active={active} />
+                    </TableCell>
                     <TableCell>{formatTime(p.startTime)}</TableCell>
                     <TableCell>{formatTime(p.endTime)}</TableCell>
                   </TableRow>
@@ -167,7 +155,7 @@ export default function PollsList({
               })}
               {rows.length === 0 && !loading && (
                 <TableRow>
-                  <TableCell colSpan={4} sx={{ textAlign: 'center', color: 'text.secondary', py: 4 }}>
+                  <TableCell colSpan={5} sx={{ textAlign: 'center', color: 'text.secondary', py: 4 }}>
                     No polls found.
                   </TableCell>
                 </TableRow>
@@ -189,9 +177,54 @@ export default function PollsList({
   );
 }
 
+// Compact one-line result for each poll in the list. Closed polls
+// show the winner; active polls show the current leader with an
+// emphasis that the tally is still moving. No-vote polls fall back
+// to an em-dash so the column doesn't render empty cells. Hover
+// tooltip carries the full label + total weight cast for users who
+// want the precise numbers.
+function PollResultCell({
+  result, active,
+}: {
+  result: PollResult | undefined;
+  active: boolean;
+}) {
+  if (!result || result.topLabel === null || result.totalVotes === 0) {
+    return (
+      <Typography variant="body2" color="text.disabled">—</Typography>
+    );
+  }
+  const verb = active ? 'Leading' : 'Winner';
+  const pct = result.topPctOfCast.toFixed(1);
+  const fullTitle = `${verb}: ${result.topLabel} · ${pct}% of ${result.totalWeightCast} GRC cast · ${result.totalVotes} vote${result.totalVotes === 1 ? '' : 's'}`;
+  return (
+    <Box title={fullTitle} sx={{ minWidth: 0 }}>
+      <Typography
+        variant="body2"
+        sx={{
+          fontWeight: 600,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          color: active ? 'warning.main' : 'text.primary',
+        }}
+      >
+        {result.topLabel}
+      </Typography>
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        sx={{ display: 'block', fontVariantNumeric: 'tabular-nums' }}
+      >
+        {`${pct}% · ${result.totalVotes} vote${result.totalVotes === 1 ? '' : 's'}`}
+      </Typography>
+    </Box>
+  );
+}
+
 export const getServerSideProps: GetServerSideProps<PollsListProps> = async (ctx) => {
-  const page = readPageFromQuery(ctx.query as Record<string, string | string[] | undefined>);
-  const pageSize = readPageSizeFromQuery(ctx.query as Record<string, string | string[] | undefined>);
+  const page = readPageFromQuery(ctx.query);
+  const pageSize = readPageSizeFromQuery(ctx.query);
   try {
     const r = await api.get('/polls', {
       params: { 'page[number]': page + 1, 'page[size]': pageSize },

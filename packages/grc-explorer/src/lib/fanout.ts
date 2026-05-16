@@ -1,5 +1,5 @@
 import { config } from '../config';
-import { events, ExplorerEvent } from './emitter';
+import { events, ExplorerEvent, STATIC_TOPICS } from './emitter';
 import { log } from './log';
 import { redisPub, redisSub } from './redis';
 
@@ -14,22 +14,8 @@ const CHANNEL_PREFIX = `${config.REDIS_PREFIX}:events:`;
  * because EventEmitter doesn't support real wildcards (the wildcard
  * channels in emitter.ts are local-only fan-out for SSE filtering).
  */
-const PUBLISHED_TOPICS: Array<ExplorerEvent['topic']> = [
-  'block.new',
-  'block.tip',
-  'chain.reorg',
-  'mempool.entered',
-  'mempool.exited',
-  'mempool.tick',
-  'mempool.fee_histogram',
-  'network.stats',
-  'metrics.tick',
-  'metrics.daily',
-  'backfill.progress',
-];
-
 export function publishToRedis(): void {
-  PUBLISHED_TOPICS.forEach((topic) => {
+  STATIC_TOPICS.forEach((topic) => {
     events.on(topic, async (payload) => {
       try {
         await redisPub.publish(`${CHANNEL_PREFIX}${topic}`, JSON.stringify(payload));

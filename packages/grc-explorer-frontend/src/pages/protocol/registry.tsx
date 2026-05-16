@@ -9,7 +9,7 @@ import { Crumbs } from '../../components/Crumbs';
 import { HashTrim } from '../../components/HashTrim';
 import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
-import { formatTime } from '../../lib/format';
+import { formatNumber, formatTime } from '../../lib/format';
 import { IS_TESTNET } from '../../lib/network';
 
 interface RegistryEvent {
@@ -124,7 +124,7 @@ export default function ProtocolRegistryPage({ keys }: ProtocolRegistryPageProps
                         <Typography variant="caption" color="text.secondary">
                           set at{' '}
                           <Link href={`/block/${k.current_set_at_height}`} style={{ color: 'inherit' }}>
-                            #{k.current_set_at_height.toLocaleString()}
+                            #{formatNumber(k.current_set_at_height)}
                           </Link>
                           {k.current_set_at_time !== null && (
                             <>{' '}({formatTime(k.current_set_at_time)})</>
@@ -164,7 +164,7 @@ export default function ProtocolRegistryPage({ keys }: ProtocolRegistryPageProps
                       </TableCell>
                       <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
                         <Link href={`/block/${e.block_height}`} style={{ color: 'inherit' }}>
-                          {e.block_height.toLocaleString()}
+                          {formatNumber(e.block_height)}
                         </Link>
                       </TableCell>
                       <TableCell sx={{ color: 'text.secondary', fontSize: 13 }}>

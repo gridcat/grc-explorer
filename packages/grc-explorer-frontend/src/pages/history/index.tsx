@@ -7,6 +7,7 @@ import Head from 'next/head';
 import Link from 'next/link';
 import { Layout } from '../../layouts/Layout';
 import { Crumbs } from '../../components/Crumbs';
+import { formatGrcCompact, formatNumber } from '../../lib/format';
 import { fetchYearList, type YearListItem } from '../../routes/blocks/archive/fetch';
 
 interface HistoryProps {
@@ -43,7 +44,7 @@ export default function HistoryLanding({ years }: HistoryProps) {
           name="description"
           content={
             yearsCovered > 0
-              ? `${yearsCovered} years of Gridcoin chain history (${oldest}–${newest}): ${totalBlocks.toLocaleString()} blocks, ${totalTxs.toLocaleString()} transactions, ${totalSuperblocks.toLocaleString()} superblocks. Browse by year, month, or day.`
+              ? `${yearsCovered} years of Gridcoin chain history (${oldest}–${newest}): ${formatNumber(totalBlocks)} blocks, ${formatNumber(totalTxs)} transactions, ${formatNumber(totalSuperblocks)} superblocks. Browse by year, month, or day.`
               : 'Browse the full history of the Gridcoin chain — every block since genesis, organised by year and month, with stats and superblock landmarks.'
           }
         />
@@ -92,9 +93,9 @@ function AllTimeStats({
 }) {
   const tiles: Array<{ label: string; value: string }> = [
     { label: 'Years covered', value: oldest !== null && newest !== null ? `${oldest} – ${newest}` : `${yearsCovered}` },
-    { label: 'Blocks', value: totalBlocks.toLocaleString() },
-    { label: 'Transactions', value: totalTxs.toLocaleString() },
-    { label: 'Superblocks', value: totalSuperblocks.toLocaleString() },
+    { label: 'Blocks', value: formatNumber(totalBlocks) },
+    { label: 'Transactions', value: formatNumber(totalTxs) },
+    { label: 'Superblocks', value: formatNumber(totalSuperblocks) },
     { label: 'GRC moved', value: formatGrcCompact(totalMovedGrc) },
   ];
   return (
@@ -178,9 +179,9 @@ function YearTile({ item, max }: { item: YearListItem; max: number }) {
             {item.year}
           </Typography>
           <Stack spacing={0.25}>
-            <YearStat label="blocks" value={item.blockCount.toLocaleString()} />
-            <YearStat label="txs" value={item.txCount.toLocaleString()} />
-            <YearStat label="superblocks" value={item.superblockCount.toLocaleString()} />
+            <YearStat label="blocks" value={formatNumber(item.blockCount)} />
+            <YearStat label="txs" value={formatNumber(item.txCount)} />
+            <YearStat label="superblocks" value={formatNumber(item.superblockCount)} />
           </Stack>
         </CardContent>
       </Card>
@@ -208,36 +209,26 @@ function bgForIntensity(theme: Theme, t: number): string {
   return alpha(theme.palette.primary.main, opacity);
 }
 
-function formatGrcCompact(n: number): string {
-  if (!Number.isFinite(n) || n === 0) return '0';
-  const abs = Math.abs(n);
-  if (abs < 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-  const units = ['K', 'M', 'G', 'T', 'P'];
-  let v = n;
-  let idx = -1;
-  while (Math.abs(v) >= 1000 && idx < units.length - 1) {
-    v /= 1000;
-    idx += 1;
-  }
-  return `${v.toFixed(2)} ${units[idx]}`;
-}
-
 /**
- * Hand-curated list of inflection points in Gridcoin's history. Static
- * for now — when per-fork article pages exist they'll live under
- * /history/<slug> and these chips become real links. Until then the
- * chips are visible-but-disabled signals of "this is what's coming."
+ * Hand-curated inflection points in Gridcoin's history. The per-year
+ * deep-dive articles now exist, so each chip links to its year page.
  */
 function NotableEvents() {
   // Gridcoin *Research* (the chain this explorer indexes) launched in
-  // October 2014 — distinct from Gridcoin Classic, the earlier 2013
-  // PoW chain that's tracked for context only. Subsequent landmarks
-  // are the major consensus / economic upgrades that shaped the
-  // chain's current shape.
+  // October 2014, distinct from Gridcoin Classic, the earlier 2013
+  // PoW chain that's tracked for context only. The rest are the major
+  // consensus / economic forks, keyed to their mainnet activation
+  // year. Note Fern is the 2020 v11 fork, NOT 2018 — the 2018 fork is
+  // 4.0.0.0 'Betsy' / v10 (constant block reward). Natasha's v13/v14
+  // fork is released but, as of the indexed cursor, not yet activated
+  // on mainnet, so it's framed as "released" rather than "activated".
   const events = [
     { year: 2013, label: 'Gridcoin Classic launches (predecessor chain)' },
-    { year: 2014, label: 'Gridcoin Research · PoR mainnet launch' },
-    { year: 2018, label: 'Fern hard fork' },
+    { year: 2014, label: 'Gridcoin Research · proof-of-research mainnet launch' },
+    { year: 2018, label: '4.0.0.0 "Betsy" · constant block reward (v10)' },
+    { year: 2020, label: 'Fern (5.0.0.0) · the v11 rewrite' },
+    { year: 2022, label: '"Kermit\'s Mom" (5.4.0.0) · Manual Reward Claims (v12)' },
+    { year: 2026, label: 'Natasha (5.5.0.0) released · v13/v14 fork scheduled' },
   ];
   return (
     <Box>
@@ -248,7 +239,10 @@ function NotableEvents() {
         <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: 'wrap' }}>
           {events.map((e) => (
             <Chip
-              key={e.label}
+              key={e.year}
+              component={Link}
+              href={`/blocks/${e.year}`}
+              clickable
               label={`${e.year} — ${e.label}`}
               size="small"
               variant="outlined"
@@ -256,7 +250,7 @@ function NotableEvents() {
           ))}
         </Stack>
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1.5 }}>
-          Year-by-year deep dives are being authored now and will replace these chips with full pages.
+          Each chip opens that year&apos;s full write-up. Browse every year in the grid above.
         </Typography>
       </Paper>
     </Box>

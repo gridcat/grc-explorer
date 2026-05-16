@@ -96,6 +96,109 @@ export function Metrics() {
 }`}
       />
 
+      <Typography variant="h6" component="h3" id="metrics-researchers-history" sx={{ pt: 2, pb: 1 }}>
+        Researcher history (whole-chain and per-year)
+      </Typography>
+      <Endpoint method="GET" path="/api/metrics/researchers/history" title="Per-superblock chain-wide rollup" />
+      <Endpoint method="GET" path="/api/metrics/researchers/history/series" title="Whole-chain top-N magnitude series" />
+      <Endpoint method="GET" path="/api/metrics/researchers/history/year/:year/series" title="Per-year top-N magnitude series" />
+      <Typography gutterBottom variant="body1" component="p">
+        Three endpoints power the{' '}
+        <code>/researchers/history</code> page. The rollup is one row
+        per indexed superblock with the active-researcher count
+        (magnitude &gt; 0), total network magnitude, and the top-10
+        magnitude share. The two <code>/series</code> endpoints return
+        a per-CPID magnitude trajectory for the top-N CPIDs in either
+        the whole-chain window or one calendar year. Ranking inside a
+        window is by total magnitude across all superblocks in that
+        window — a metric that weights both peak magnitude and
+        persistence, so a researcher who topped #1 on a single
+        superblock won&apos;t outrank a steady top-10 contributor.
+      </Typography>
+      <Typography variant="subtitle2" component="h4" sx={{ pt: 1, pb: 0.5 }}>
+        Query parameters
+      </Typography>
+      <List dense>
+        <ListItem disableGutters>
+          <ListItemText
+            primary={<><code>range</code> (rollup only)</>}
+            secondary={<><code>all</code> (default) or <code>year</code>. With <code>year</code>, also pass <code>year=YYYY</code>; the response carries only that year&apos;s superblocks.</>}
+          />
+        </ListItem>
+        <ListItem disableGutters>
+          <ListItemText
+            primary={<><code>limit</code> (series only)</>}
+            secondary="Top-N CPIDs to return. Default 30, min 1, max 100."
+          />
+        </ListItem>
+      </List>
+      <Typography gutterBottom variant="body1" component="p">
+        Responses are cached server-side for 1 h with single-flight; a
+        new superblock invalidates implicitly on the next eviction. The
+        series endpoints reuse the rollup&apos;s height range, so the
+        x-axis on the consuming chart aligns with the rollup&apos;s
+        points without an extra round trip.
+      </Typography>
+      <CodeBlock
+        caption="Request"
+        language="bash"
+        code={`# Whole-chain rollup
+curl '${API_BASE}/metrics/researchers/history'
+
+# Top-20 chain-wide magnitude lines
+curl '${API_BASE}/metrics/researchers/history/series?limit=20'
+
+# Same shape, scoped to one year
+curl '${API_BASE}/metrics/researchers/history/year/2024/series?limit=20'`}
+      />
+      <CodeBlock
+        caption="Response — rollup, 200 OK (excerpt)"
+        language="json"
+        code={`{
+  "data": {
+    "type": "researchers_history",
+    "id": "all",
+    "attributes": {
+      "range": "all",
+      "year": null,
+      "points": [
+      { "height": 2400000, "ts": 1672531200, "date": "2023-01-01",
+        "active": 132, "totalMagnitude": 11432.7,
+        "top10Magnitude": 6210.5, "top10Share": 0.5432 },
+      { "height": 2401000, "ts": 1672617600, "date": "2023-01-02",
+        "active": 134, "totalMagnitude": 11521.0,
+        "top10Magnitude": 6298.4, "top10Share": 0.5468 }
+      ]
+    }
+  }
+}`}
+      />
+      <CodeBlock
+        caption="Response — series, 200 OK (excerpt)"
+        language="json"
+        code={`{
+  "data": {
+    "type": "researchers_year_series",
+    "id": "year:2024:limit:20",
+    "attributes": {
+      "year": 2024, "limit": 20,
+      "series": [
+      { "cpid": "ab12...c34d",
+        "points": [
+          { "height": 2400000, "magnitude": 224.5 },
+          { "height": 2401000, "magnitude": 230.1 }
+        ] },
+      { "cpid": "ef56...7890",
+        "points": [
+          { "height": 2400000, "magnitude": 198.2 },
+          { "height": 2401000, "magnitude": 201.7 }
+        ] }
+      ]
+    }
+  }
+}`}
+      />
+
       <Typography variant="h6" component="h3" id="metrics-research-split" sx={{ pt: 2, pb: 1 }}>
         Research / block reward split
       </Typography>

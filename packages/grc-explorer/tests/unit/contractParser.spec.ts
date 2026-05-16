@@ -135,6 +135,21 @@ describe('parseVoteContract', () => {
     expect(rows[0].miningId).toBe('INVESTOR');
   });
 
+  it('treats NONCRUNCHER mining_id as no CPID', () => {
+    // Post-fern wallet emits "NONCRUNCHER" via MiningId::ToString().
+    const contract: ContractEnvelope = {
+      version: 1,
+      type: 'vote',
+      action: 'A',
+      body: {
+        key: 'foo;bar', miningId: 'NONCRUNCHER', amount: 0, magnitude: 0, responses: 'no',
+      },
+    };
+    const rows = parseVoteContract(contract, 'legacyTx', 0, null);
+    expect(rows[0].voterCpid).toBeNull();
+    expect(rows[0].miningId).toBe('NONCRUNCHER');
+  });
+
   it('returns empty array for non-vote contract types', () => {
     expect(parseVoteContract({
       version: 2, type: 'poll', action: 'A', body: {},

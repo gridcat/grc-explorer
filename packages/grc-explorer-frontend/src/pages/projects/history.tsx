@@ -14,6 +14,8 @@ import {
 } from '../../components/charts/SvgChart';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { api } from '../../lib/api';
+import { buildSmoothLinePath } from '../../lib/chartUtils';
+import { formatCount, formatYmdDate, MONTHS_SHORT } from '../../lib/format';
 
 interface HistoryEvent {
   project: string;
@@ -33,22 +35,7 @@ interface ProjectHistoryProps {
   points: Point[];
 }
 
-// Hoisted so the X-axis tick formatter can reuse it against
-// `getUTCMonth()`. Locale-dependent date formatting caused SSR/CSR
-// hydration drift on year-boundary ticks (server renders Dec 31 23:59:59
-// UTC in UTC, client renders the same instant in its own TZ as Jan 1).
-// UTC-anchored array lookup is timezone-invariant.
-const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-function formatDate(date: string): string {
-  const [y, m, d] = date.split('-');
-  return `${Number(d)} ${MONTHS_SHORT[Number(m) - 1] ?? '???'} ${y}`;
-}
-
-function formatCount(v: number): string {
-  if (!Number.isFinite(v) || v < 0) return '—';
-  return Math.round(v).toLocaleString();
-}
+const formatDate = formatYmdDate;
 
 type YearViewMode = 'timeline' | 'composition';
 
@@ -168,8 +155,7 @@ export default function ProjectHistory({ points }: ProjectHistoryProps) {
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             Whitelisted projects (cumulative) and de-listed projects (cumulative)
             across the whole chain, plus per-day spike markers when one or more
-            projects were voted off the list. Greylist transitions are derived
-            state and not yet plotted here — see the live <Link href="/" style={{ color: 'inherit' }}>projects board</Link> for the current greylist snapshot.
+            projects were voted off the list.
           </Typography>
         </Box>
 
@@ -412,23 +398,6 @@ function maxCount(points: Point[]): number {
   return m;
 }
 
-function buildLinePath(
-  points: Point[],
-  xOf: (p: Point) => number,
-  yOf: (count: number) => number,
-  pickValue: (p: Point) => number,
-): string | null {
-  if (points.length < 2) return null;
-  const segs: string[] = [];
-  for (let i = 0; i < points.length; i += 1) {
-    const p = points[i];
-    const x = xOf(p);
-    const y = yOf(pickValue(p));
-    segs.push(`${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`);
-  }
-  return segs.join(' ');
-}
-
 function WholeChainChart({ frame, points }: { frame: ChartFrame; points: Point[] }) {
   const theme = useTheme();
 
@@ -448,8 +417,8 @@ function WholeChainChart({ frame, points }: { frame: ChartFrame; points: Point[]
 
   if (!layout || frame.width === 0) return null;
 
-  const activePath = buildLinePath(points, (p) => layout.xScale(p.ts), (n) => layout.yScale(n), (p) => p.active);
-  const delistedPath = buildLinePath(points, (p) => layout.xScale(p.ts), (n) => layout.yScale(n), (p) => p.delisted);
+  const activePath = buildSmoothLinePath(points, (p) => layout.xScale(p.ts), (n) => layout.yScale(n), (p) => p.active);
+  const delistedPath = buildSmoothLinePath(points, (p) => layout.xScale(p.ts), (n) => layout.yScale(n), (p) => p.delisted);
 
   const startYear = new Date(layout.tsMin * 1000).getUTCFullYear();
   const endYear = new Date(layout.tsMax * 1000).getUTCFullYear();
@@ -569,8 +538,8 @@ function YearMiniChart({ frame, points }: { frame: ChartFrame; points: Point[] }
 
   if (!layout || frame.width === 0) return null;
 
-  const activePath = buildLinePath(points, (p) => layout.xScale(p.ts), (n) => layout.yScale(n), (p) => p.active);
-  const delistedPath = buildLinePath(points, (p) => layout.xScale(p.ts), (n) => layout.yScale(n), (p) => p.delisted);
+  const activePath = buildSmoothLinePath(points, (p) => layout.xScale(p.ts), (n) => layout.yScale(n), (p) => p.active);
+  const delistedPath = buildSmoothLinePath(points, (p) => layout.xScale(p.ts), (n) => layout.yScale(n), (p) => p.delisted);
   const spikes = points.filter((p) => p.delistedToday > 0);
 
   return (

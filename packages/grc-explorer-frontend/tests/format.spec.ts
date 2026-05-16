@@ -1,5 +1,5 @@
 import {
-  formatDuration, formatGrc, formatGrcCompact, shortHash,
+  formatCompact, formatDuration, formatGrc, formatGrcCompact, shortHash,
 } from '../src/lib/format';
 
 describe('formatGrc', () => {
@@ -16,6 +16,42 @@ describe('formatGrc', () => {
     // backend ships halford strings; the formatter shouldn't lose
     // precision when the value reaches the UI as text
     expect(formatGrc('1.23456789')).toMatch(/^1[.,]23456789$/);
+  });
+});
+
+describe('formatCompact scientific branch', () => {
+  it('renders 1.3e+64 as mantissa·10⁶⁴ with Unicode superscripts', () => {
+    expect(formatCompact(1.3e64)).toBe('1.3·10⁶⁴');
+  });
+
+  it('drops a unit mantissa (renders 10⁶⁴ rather than 1.0·10⁶⁴)', () => {
+    expect(formatCompact(1e64)).toBe('10⁶⁴');
+  });
+
+  it('falls back to scientific only below 1e-9', () => {
+    expect(formatCompact(1.7e-12)).toBe('1.7·10⁻¹²');
+  });
+
+  it('preserves sign on negatives', () => {
+    expect(formatCompact(-1.3e64)).toBe('-1.3·10⁶⁴');
+  });
+});
+
+describe('formatCompact sub-1 decimal branch', () => {
+  it('renders 0.00024 as a literal decimal, not scientific', () => {
+    expect(formatCompact(0.00024)).toBe('0.00024');
+  });
+
+  it('trims trailing zeros from 0.001 → "0.001"', () => {
+    expect(formatCompact(0.001)).toBe('0.001');
+  });
+
+  it('renders 0.5 without padding ("0.5", not "0.50")', () => {
+    expect(formatCompact(0.5)).toBe('0.5');
+  });
+
+  it('keeps two significant figures across the sub-1 range', () => {
+    expect(formatCompact(0.012345)).toBe('0.012');
   });
 });
 

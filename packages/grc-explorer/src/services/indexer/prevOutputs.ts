@@ -1,5 +1,7 @@
 import { TupleParam } from '@clickhouse/client';
 import { ch } from '../../lib/ch';
+import { chunked } from '../../lib/chunked';
+import { grc2halford } from '../../lib/halford';
 import { ParsedTxOutputRow, PrevOutputsLookup } from './ContractParser';
 
 interface CacheEntry {
@@ -97,7 +99,7 @@ export async function buildPrevOutputsLookupMulti(
       for (const vout of vouts) {
         const addrList = vout.scriptPubKey?.addresses;
         const address = Array.isArray(addrList) && addrList.length > 0 ? addrList[0] : null;
-        const value = grcToHalford(vout.value);
+        const value = grc2halford(vout.value);
         cache.set(`${tx.txid}:${vout.n}`, { address, value });
       }
     }
@@ -135,10 +137,8 @@ export async function buildPrevOutputsLookupMulti(
       // per tuple literal → ~200KB payload). Chunking at 400 pairs
       // keeps every request well under the limit at the cost of a
       // few extra round trips per batch on dense periods.
-      const CHUNK = 400;
       type Row = { tx_id: string; vout_n: number; address: string; value: string };
-      for (let i = 0; i < dbRefs.length; i += CHUNK) {
-        const slice = dbRefs.slice(i, i + CHUNK);
+      for (const slice of chunked(dbRefs, 400)) {
         const pairs = slice.map((r) => new TupleParam([r.prev_tx, r.prev_vout]));
         // eslint-disable-next-line no-await-in-loop
         const result = await ch.query({
@@ -164,23 +164,4 @@ export async function buildPrevOutputsLookupMulti(
 
   if (cache.size === 0) return () => null;
   return (prevTx, prevVout) => cache.get(`${prevTx}:${prevVout}`) ?? null;
-}
-
-/** GRC string ("12.34567890") → halford bigint (12_34567890n). Copy
- *  of `lib/halford.ts:grc2halford` kept local so this module doesn't
- *  pull the heavy halford lib path; we only need vout values. */
-function grcToHalford(grc: number | string): bigint {
-  if (typeof grc === 'number') {
-    if (!Number.isFinite(grc)) return 0n;
-    return BigInt(Math.round(grc * 1e8));
-  }
-  const s = String(grc);
-  const dot = s.indexOf('.');
-  if (dot < 0) return BigInt(s) * 100_000_000n;
-  const whole = s.slice(0, dot) || '0';
-  const fracRaw = s.slice(dot + 1);
-  const frac = (`${fracRaw}00000000`).slice(0, 8);
-  const sign = whole.startsWith('-') ? -1n : 1n;
-  const wholeAbs = whole.replace(/^-/, '');
-  return sign * (BigInt(wholeAbs) * 100_000_000n + BigInt(frac));
 }

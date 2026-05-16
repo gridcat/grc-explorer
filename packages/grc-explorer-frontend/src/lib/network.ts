@@ -11,4 +11,4 @@ export const IS_TESTNET = NETWORK === 'testnet';
 // hides itself rather than guessing a domain.
 export const SISTER_NETWORK_URL = process.env.NEXT_PUBLIC_SISTER_URL ?? '';
 
-export const SISTER_NETWORK_LABEL = IS_TESTNET ? 'Mainnet' : 'Testnet';
+export const SISTER_NETWORK: Network = IS_TESTNET ? 'mainnet' : 'testnet';

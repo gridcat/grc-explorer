@@ -2,8 +2,10 @@ import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { ch } from '../lib/ch';
 import { halford2grc } from '../lib/halford';
+import { getTipAnchor } from '../lib/indexerTip';
 import { statusOf, waitSecondsOf } from '../lib/mrcStatus';
 import { getPagination } from '../lib/pagination';
+import { clampedQueryInt } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
 import { tsToUnix } from '../lib/time';
 
@@ -76,8 +78,37 @@ const SELECT_MRC = `
   ANY LEFT JOIN mempool_txs AS mt FINAL ON mt.tx_id = m.tx_id
 `;
 
+// Whitelist of sortable columns mapped to their SQL expression. Inputs
+// outside this set fall back to the default (newest first) so a typo'd
+// `?sort=foo` can't either error or open a SQL-injection path. Type
+// derived `as const` so a future contributor adding a column gets a
+// compile-time nudge to keep the frontend's `SORT_FIELDS` in sync.
+const SORTABLE = {
+  first_seen: 'm.first_seen',
+  block_height: 'm.block_height',
+  research_subsidy: 'm.research_subsidy',
+  fee_offered: 'm.fee_offered',
+} as const satisfies Record<string, string>;
+type SortField = keyof typeof SORTABLE;
+
+function parseSort(raw: unknown): { sql: string; field: SortField; dir: 'ASC' | 'DESC' } {
+  const value = typeof raw === 'string' ? raw : '';
+  const dir = value.startsWith('-') ? 'DESC' : 'ASC';
+  const field = value.replace(/^-/, '') as SortField;
+  const column = (SORTABLE as Record<string, string>)[field];
+  if (!column) {
+    return { sql: `${SORTABLE.first_seen} DESC`, field: 'first_seen', dir: 'DESC' };
+  }
+  // `block_height` is nullable (pending / evicted rows). Force NULLs
+  // to the trailing position regardless of dir so confirmed rows
+  // always sort first.
+  const nullsClause = field === 'block_height' ? ' NULLS LAST' : '';
+  return { sql: `${column} ${dir}${nullsClause}`, field, dir };
+}
+
 // GET /mrc-requests
 //   filters: ?cpid=... ?status=pending|confirmed|evicted
+//   sort: ?sort=[-]first_seen|block_height|research_subsidy|fee_offered
 //   pagination: page[size], page[offset]
 mrcRequestsRouter.get('/', async (req: Request, res: Response) => {
   const { offset, limit } = getPagination(req);
@@ -85,6 +116,7 @@ mrcRequestsRouter.get('/', async (req: Request, res: Response) => {
     ? req.query.cpid.toLowerCase()
     : null;
   const status = typeof req.query.status === 'string' ? req.query.status : null;
+  const sort = parseSort(req.query.sort);
 
   const filters: string[] = [];
   const params: Record<string, unknown> = { limit, offset };
@@ -102,7 +134,7 @@ mrcRequestsRouter.get('/', async (req: Request, res: Response) => {
       query: `
         ${SELECT_MRC}
         ${where}
-        ORDER BY m.first_seen DESC
+        ORDER BY ${sort.sql}
         LIMIT {limit: UInt32} OFFSET {offset: UInt32}
       `,
       query_params: params,
@@ -130,19 +162,38 @@ mrcRequestsRouter.get('/', async (req: Request, res: Response) => {
 // GET /mrc-requests/summary
 //   Headline numbers for the dashboard: lifetime totals + 24h activity.
 mrcRequestsRouter.get('/summary', async (_req: Request, res: Response) => {
-  const result = await ch.query({
-    query: `
-      SELECT
-        countIf(block_height IS NOT NULL)                                AS confirmed_count,
-        toString(sumIf(research_subsidy, block_height IS NOT NULL))      AS confirmed_research_total,
-        toString(sumIf(fee_offered, block_height IS NOT NULL))           AS confirmed_fee_total,
-        countIf(first_seen >= now() - 86400)                             AS recent_count,
-        toString(sumIf(research_subsidy, first_seen >= now() - 86400))   AS recent_research_total,
-        uniqIf(cpid, block_height IS NOT NULL)                           AS distinct_cpids
-      FROM mrc_requests FINAL
-    `,
-    format: 'JSONEachRow',
-  });
+  // "Last 24h" is anchored on the indexer cursor, not wall-clock —
+  // during a deep backfill the freshest block_time may be months behind
+  // now(), and the wall-clock window would always read zero.
+  const anchor = await getTipAnchor();
+  // Two independent CH queries — pending/evicted breakdown needs the
+  // mempool_txs JOIN, totals don't. Run in parallel to save a round trip.
+  const [result, statusResult] = await Promise.all([
+    ch.query({
+      query: `
+        SELECT
+          toUInt32(countIf(block_height IS NOT NULL))                                            AS confirmed_count,
+          toString(sumIf(research_subsidy, block_height IS NOT NULL))                            AS confirmed_research_total,
+          toString(sumIf(fee_offered, block_height IS NOT NULL))                                 AS confirmed_fee_total,
+          toUInt32(countIf(first_seen >= toDateTime({anchor: UInt64}) - 86400))                  AS recent_count,
+          toString(sumIf(research_subsidy, first_seen >= toDateTime({anchor: UInt64}) - 86400))  AS recent_research_total,
+          toUInt32(uniqIf(cpid, block_height IS NOT NULL))                                       AS distinct_cpids
+        FROM mrc_requests FINAL
+      `,
+      query_params: { anchor },
+      format: 'JSONEachRow',
+    }),
+    ch.query({
+      query: `
+        SELECT
+          toUInt32(countIf(m.block_height IS NULL AND mt.evicted_at IS NULL))     AS pending,
+          toUInt32(countIf(m.block_height IS NULL AND mt.evicted_at IS NOT NULL)) AS evicted
+        FROM mrc_requests AS m FINAL
+        ANY LEFT JOIN mempool_txs AS mt FINAL ON mt.tx_id = m.tx_id
+      `,
+      format: 'JSONEachRow',
+    }),
+  ]);
   const rows = await result.json<{
     confirmed_count: number;
     confirmed_research_total: string;
@@ -159,19 +210,6 @@ mrcRequestsRouter.get('/summary', async (_req: Request, res: Response) => {
     recent_research_total: '0',
     distinct_cpids: 0,
   };
-
-  // Pending / evicted breakdown lives in mempool_txs JOIN — separate
-  // query keeps both grouping shapes simple.
-  const statusResult = await ch.query({
-    query: `
-      SELECT
-        countIf(m.block_height IS NULL AND mt.evicted_at IS NULL)     AS pending,
-        countIf(m.block_height IS NULL AND mt.evicted_at IS NOT NULL) AS evicted
-      FROM mrc_requests AS m FINAL
-      ANY LEFT JOIN mempool_txs AS mt FINAL ON mt.tx_id = m.tx_id
-    `,
-    format: 'JSONEachRow',
-  });
   const status = (await statusResult.json<{ pending: number; evicted: number }>())[0]
     ?? { pending: 0, evicted: 0 };
 
@@ -198,23 +236,24 @@ mrcRequestsRouter.get('/summary', async (_req: Request, res: Response) => {
 //   Counts confirmed MRCs only — pending/evicted shouldn't smear the
 //   "throughput" view.
 mrcRequestsRouter.get('/timeline', async (req: Request, res: Response) => {
-  const days = Math.min(Math.max(parseInt(String(req.query.days ?? '30'), 10) || 30, 1), 365);
+  const days = clampedQueryInt(req, 'days', { def: 30, min: 1, max: 365 });
+  const anchor = await getTipAnchor();
 
   const result = await ch.query({
     query: `
       SELECT
         toUnixTimestamp(toStartOfDay(block_time)) AS bucket_ts,
-        count()                                   AS count,
+        toUInt32(count())                         AS count,
         toString(sum(research_subsidy))           AS research_total,
         toString(sum(fee_offered))                AS fee_total,
-        uniq(cpid)                                AS distinct_cpids
+        toUInt32(uniq(cpid))                      AS distinct_cpids
       FROM mrc_requests FINAL
       WHERE block_height IS NOT NULL
-        AND block_time >= now() - {seconds: UInt32}
+        AND block_time >= toDateTime({anchor: UInt64}) - {seconds: UInt32}
       GROUP BY bucket_ts
       ORDER BY bucket_ts ASC
     `,
-    query_params: { seconds: days * 86400 },
+    query_params: { anchor, seconds: days * 86400 },
     format: 'JSONEachRow',
   });
   const samples = (await result.json<{
@@ -242,22 +281,22 @@ mrcRequestsRouter.get('/timeline', async (req: Request, res: Response) => {
 //   confirmed MRCs the watcher actually saw enter the mempool. Excludes
 //   historical replay rows where first_seen == block_time.
 mrcRequestsRouter.get('/wait-distribution', async (req: Request, res: Response) => {
-  const days = Math.min(Math.max(parseInt(String(req.query.days ?? '90'), 10) || 90, 1), 730);
+  const days = clampedQueryInt(req, 'days', { def: 90, min: 1, max: 730 });
 
   // Buckets in seconds: < 30s, 30–60s, 1–5m, 5–15m, 15m–1h, 1–6h, > 6h.
   const result = await ch.query({
     query: `
       WITH (toUnixTimestamp(block_time) - toUnixTimestamp(first_seen)) AS wait_s
       SELECT
-        countIf(wait_s < 30)                       AS b_lt30s,
-        countIf(wait_s >= 30 AND wait_s < 60)      AS b_30s_1m,
-        countIf(wait_s >= 60 AND wait_s < 300)     AS b_1m_5m,
-        countIf(wait_s >= 300 AND wait_s < 900)    AS b_5m_15m,
-        countIf(wait_s >= 900 AND wait_s < 3600)   AS b_15m_1h,
-        countIf(wait_s >= 3600 AND wait_s < 21600) AS b_1h_6h,
-        countIf(wait_s >= 21600)                   AS b_gt6h,
-        quantile(0.5)(wait_s)                      AS p50,
-        quantile(0.95)(wait_s)                     AS p95
+        toUInt32(countIf(wait_s < 30))                       AS b_lt30s,
+        toUInt32(countIf(wait_s >= 30 AND wait_s < 60))      AS b_30s_1m,
+        toUInt32(countIf(wait_s >= 60 AND wait_s < 300))     AS b_1m_5m,
+        toUInt32(countIf(wait_s >= 300 AND wait_s < 900))    AS b_5m_15m,
+        toUInt32(countIf(wait_s >= 900 AND wait_s < 3600))   AS b_15m_1h,
+        toUInt32(countIf(wait_s >= 3600 AND wait_s < 21600)) AS b_1h_6h,
+        toUInt32(countIf(wait_s >= 21600))                   AS b_gt6h,
+        quantile(0.5)(wait_s)                                AS p50,
+        quantile(0.95)(wait_s)                               AS p95
       FROM mrc_requests FINAL
       WHERE block_height IS NOT NULL
         AND block_time > first_seen
@@ -309,8 +348,9 @@ mrcRequestsRouter.get('/wait-distribution', async (req: Request, res: Response) 
 //   Caps row count so the scatter doesn't ship megabytes — uses a
 //   deterministic sample so chart fidelity is preserved across reloads.
 mrcRequestsRouter.get('/bid-vs-payout', async (req: Request, res: Response) => {
-  const days = Math.min(Math.max(parseInt(String(req.query.days ?? '30'), 10) || 30, 1), 365);
-  const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? '500'), 10) || 500, 1), 5000);
+  const days = clampedQueryInt(req, 'days', { def: 30, min: 1, max: 365 });
+  const limit = clampedQueryInt(req, 'limit', { def: 500, min: 1, max: 5000 });
+  const anchor = await getTipAnchor();
 
   const result = await ch.query({
     query: `
@@ -321,11 +361,11 @@ mrcRequestsRouter.get('/bid-vs-payout', async (req: Request, res: Response) => {
         cpid
       FROM mrc_requests FINAL
       WHERE block_height IS NOT NULL
-        AND block_time >= now() - {seconds: UInt32}
+        AND block_time >= toDateTime({anchor: UInt64}) - {seconds: UInt32}
       ORDER BY block_time DESC
       LIMIT {limit: UInt32}
     `,
-    query_params: { seconds: days * 86400, limit },
+    query_params: { anchor, seconds: days * 86400, limit },
     format: 'JSONEachRow',
   });
   const points = (await result.json<{
@@ -353,7 +393,8 @@ mrcRequestsRouter.get('/bid-vs-payout', async (req: Request, res: Response) => {
 //   Source is `claims` (block-level), not `mrc_requests` — these are the
 //   chain's own accounting, not derivable from per-request fee_offered.
 mrcRequestsRouter.get('/staker-take', async (req: Request, res: Response) => {
-  const days = Math.min(Math.max(parseInt(String(req.query.days ?? '30'), 10) || 30, 1), 365);
+  const days = clampedQueryInt(req, 'days', { def: 30, min: 1, max: 365 });
+  const anchor = await getTipAnchor();
 
   const result = await ch.query({
     query: `
@@ -361,14 +402,14 @@ mrcRequestsRouter.get('/staker-take', async (req: Request, res: Response) => {
         toUnixTimestamp(toStartOfDay(block_time)) AS bucket_ts,
         toString(sum(mrc_staker_fees))            AS staker_total,
         toString(sum(mrc_foundation_fees))        AS foundation_total,
-        countIf(mrc_staker_fees > 0)              AS mrc_blocks
+        toUInt32(countIf(mrc_staker_fees > 0))    AS mrc_blocks
       FROM claims FINAL
-      WHERE block_time >= now() - {seconds: UInt32}
+      WHERE block_time >= toDateTime({anchor: UInt64}) - {seconds: UInt32}
         AND (mrc_staker_fees > 0 OR mrc_foundation_fees > 0)
       GROUP BY bucket_ts
       ORDER BY bucket_ts ASC
     `,
-    query_params: { seconds: days * 86400 },
+    query_params: { anchor, seconds: days * 86400 },
     format: 'JSONEachRow',
   });
   const samples = (await result.json<{

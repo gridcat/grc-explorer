@@ -3,10 +3,11 @@ import { StatusCodes } from 'http-status-codes';
 import { ch } from '../lib/ch';
 import { getTipAnchor } from '../lib/indexerTip';
 import { getCursor } from '../lib/redis';
+import { clampedQueryInt, parseYearRange } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
 import { parseAt } from '../lib/timeMachine';
 import { NetworkStatsPoller, NetworkStatsPayload } from '../services/network/NetworkStatsPoller';
-import { resolveChainForks } from '../services/network/ChainForks';
+import { forksActivated, resolveChainForks } from '../services/network/ChainForks';
 import { tsToUnix } from '../lib/time';
 
 export const networkRouter = Router();
@@ -119,7 +120,17 @@ networkRouter.get('/', async (req: Request, res: Response) => {
       data: {
         type: 'network_stats',
         id: at !== undefined ? `at:${at}` : `tip:${anchor}`,
-        attributes: attrs,
+        // `forks` reflects the at-anchored indexed height, so a
+        // time-machine scrub to a pre-V13 block correctly tells the
+        // frontend to hide V13 UI even though the live tip is past.
+        attributes: attrs
+          ? {
+            ...attrs,
+            forks: forksActivated(
+              typeof attrs.indexed_height === 'number' ? attrs.indexed_height : null,
+            ),
+          }
+          : attrs,
       },
       meta: {
         anchorTs: anchor,
@@ -129,23 +140,47 @@ networkRouter.get('/', async (req: Request, res: Response) => {
     }));
     return;
   }
-  const cached = await NetworkStatsPoller.readCache();
+  const cached = await NetworkStatsPoller.readCache() as Partial<NetworkStatsPayload> | null;
   if (cached) {
     res.status(StatusCodes.OK).send(withMeta({
-      data: { type: 'network_stats', id: 'now', attributes: cached },
+      data: {
+        type: 'network_stats',
+        id: 'now',
+        attributes: {
+          ...cached,
+          // Fork-activation flags computed from the indexer's tip
+          // height. Lets the frontend gate V13/V14 UI panels so they
+          // appear automatically the moment the chain crosses the
+          // activation height — no manual deploy needed.
+          forks: forksActivated(
+            typeof cached.indexed_height === 'number' ? cached.indexed_height : null,
+          ),
+        },
+      },
       meta: { anchorKind: 'live' },
     }));
     return;
   }
   const attrs = await buildFallbackAttrs();
   res.status(StatusCodes.OK).send(withMeta({
-    data: { type: 'network_stats', id: 'now', attributes: attrs },
+    data: {
+      type: 'network_stats',
+      id: 'now',
+      attributes: attrs
+        ? {
+          ...attrs,
+          forks: forksActivated(
+            typeof attrs.indexed_height === 'number' ? attrs.indexed_height : null,
+          ),
+        }
+        : attrs,
+    },
     meta: { anchorKind: 'live', stale: true },
   }));
 });
 
 networkRouter.get('/history', async (req: Request, res: Response) => {
-  const hours = Math.min(Math.max(parseInt(String(req.query.hours ?? '1'), 10) || 1, 1), 168);
+  const hours = clampedQueryInt(req, 'hours', { def: 1, min: 1, max: 168 });
   const step = Math.max(0, parseInt(String(req.query.step ?? '0'), 10) || 0);
   const endAtRaw = parseInt(String(req.query.endAt ?? ''), 10);
   const endAt = Number.isFinite(endAtRaw) && endAtRaw > 0
@@ -245,18 +280,12 @@ networkRouter.get('/history', async (req: Request, res: Response) => {
 // chart; the loss is invisible) but raw JSON.parse'ing them as numbers
 // would silently truncate the long tail. Strings stay honest.
 networkRouter.get('/difficulty', async (req: Request, res: Response) => {
-  const range = String(req.query.range ?? 'all').toLowerCase();
-  const yearRaw = parseInt(String(req.query.year ?? ''), 10);
-  const isYear = range === 'year';
-  if (isYear && (!Number.isInteger(yearRaw) || yearRaw < 2000 || yearRaw > 2999)) {
-    res.status(StatusCodes.BAD_REQUEST).send({
-      errors: [{ status: '400', title: 'Bad Request', detail: 'range=year requires year=YYYY' }],
-    });
-    return;
-  }
+  const yr = parseYearRange(req, res);
+  if (!yr) return;
+  const { isYear, year } = yr;
 
   const where = isYear ? 'WHERE bucket_date >= toDate({y0: String}) AND bucket_date < toDate({y1: String})' : '';
-  const params = isYear ? { y0: `${yearRaw}-01-01`, y1: `${yearRaw + 1}-01-01` } : {};
+  const params = isYear ? { y0: `${year}-01-01`, y1: `${(year ?? 0) + 1}-01-01` } : {};
 
   const result = await ch.query({
     query: `
@@ -268,7 +297,7 @@ networkRouter.get('/difficulty', async (req: Request, res: Response) => {
         toString(argMinMerge(difficulty_open))     AS dopen,
         toString(argMaxMerge(difficulty_close))    AS dclose,
         sumMerge(difficulty_sum) / countMerge(difficulty_count) AS davg,
-        countMerge(difficulty_count)               AS samples
+        toUInt32(countMerge(difficulty_count))     AS samples
       FROM difficulty_daily
       ${where}
       GROUP BY bucket_date
@@ -286,10 +315,10 @@ networkRouter.get('/difficulty', async (req: Request, res: Response) => {
   res.status(StatusCodes.OK).send(withMeta({
     data: {
       type: 'difficulty_history',
-      id: isYear ? `year:${yearRaw}` : 'all',
+      id: isYear ? `year:${year}` : 'all',
       attributes: {
         range: isYear ? 'year' : 'all',
-        year: isYear ? yearRaw : null,
+        year,
         points: rows.map((r) => ({
           ts: r.ts,
           date: r.date,
@@ -419,18 +448,12 @@ networkRouter.get('/forks', async (_req: Request, res: Response) => {
 // emitted as a string to dodge JSON's 2^53 precision cliff in case
 // future supply expansion ever pushes a daily mint past it.
 networkRouter.get('/stakers', async (req: Request, res: Response) => {
-  const range = String(req.query.range ?? 'all').toLowerCase();
-  const yearRaw = parseInt(String(req.query.year ?? ''), 10);
-  const isYear = range === 'year';
-  if (isYear && (!Number.isInteger(yearRaw) || yearRaw < 2000 || yearRaw > 2999)) {
-    res.status(StatusCodes.BAD_REQUEST).send({
-      errors: [{ status: '400', title: 'Bad Request', detail: 'range=year requires year=YYYY' }],
-    });
-    return;
-  }
+  const yr = parseYearRange(req, res);
+  if (!yr) return;
+  const { isYear, year } = yr;
 
   const where = isYear ? 'WHERE bucket_date >= toDate({y0: String}) AND bucket_date < toDate({y1: String})' : '';
-  const params = isYear ? { y0: `${yearRaw}-01-01`, y1: `${yearRaw + 1}-01-01` } : {};
+  const params = isYear ? { y0: `${year}-01-01`, y1: `${(year ?? 0) + 1}-01-01` } : {};
 
   const result = await ch.query({
     query: `
@@ -468,10 +491,10 @@ networkRouter.get('/stakers', async (req: Request, res: Response) => {
   res.status(StatusCodes.OK).send(withMeta({
     data: {
       type: 'stakers_history',
-      id: isYear ? `year:${yearRaw}` : 'all',
+      id: isYear ? `year:${year}` : 'all',
       attributes: {
         range: isYear ? 'year' : 'all',
-        year: isYear ? yearRaw : null,
+        year,
         points: rows.map((r) => ({
           ts: r.ts,
           date: r.date,

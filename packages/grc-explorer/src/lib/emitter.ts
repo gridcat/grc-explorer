@@ -13,6 +13,7 @@ import { EventEmitter } from 'events';
 export type ExplorerEvent =
   | { topic: 'block.new'; payload: BlockNewPayload }
   | { topic: 'block.tip'; payload: { tip_height: number; tip_hash: string } }
+  | { topic: 'superblock.new'; payload: SuperblockNewPayload }
   | { topic: 'chain.reorg'; payload: ReorgPayload }
   | { topic: 'mempool.entered'; payload: MempoolEntryPayload }
   | { topic: 'mempool.exited'; payload: { tx_id: string; reason: 'confirmed' | 'evicted' } }
@@ -26,7 +27,11 @@ export type ExplorerEvent =
   | { topic: 'metrics.daily'; payload: MetricsDailyPayload }
   | { topic: 'backfill.progress'; payload: { height: number; tip: number; pct: number } }
   | { topic: 'project.added'; payload: ProjectContractPayload }
-  | { topic: 'project.removed'; payload: ProjectContractPayload };
+  | { topic: 'project.removed'; payload: ProjectContractPayload }
+  | { topic: 'wealth.snapshot'; payload: WealthSnapshotPayload }
+  | { topic: 'beacon.update'; payload: BeaconUpdatePayload }
+  | { topic: 'sidestake.update'; payload: SidestakeUpdatePayload }
+  | { topic: 'sidestake.payout'; payload: SidestakePayoutPayload };
 
 export interface ProjectContractPayload {
   name: string;
@@ -46,6 +51,17 @@ export interface BlockNewPayload {
   is_superblock: boolean;
   miner_address: string | null;
   staker_cpid: string | null;
+}
+
+// Fired in addition to `block.new` when an indexed block is a
+// superblock. The two are siblings, not a replacement: dashboards that
+// only care about per-superblock data (magnitude leaderboard, top
+// movers) subscribe to this and skip the ~1440 block.new events
+// between superblocks where their endpoint response is byte-identical.
+export interface SuperblockNewPayload {
+  height: number;
+  hash: string;
+  time: number;
 }
 
 export interface ReorgPayload {
@@ -98,6 +114,58 @@ export interface MetricsTickPayload {
   block_subsidy_total: string;
 }
 
+// Fired by WealthSnapshotJob after each batch write. Payload carries
+// the latest bucket the batch produced, so dashboards listening for
+// "the wealth chart has new data" can refresh exactly when there's
+// something new to render (instead of polling at block cadence).
+export interface WealthSnapshotPayload {
+  bucket_ts: number;
+}
+
+// Fired by BlockWriter when a beacon contract lands in an indexed
+// block. Powers beacon-shape dashboards (flux, survival) so they
+// stop refreshing on every block.new and instead refresh only when
+// the underlying beacon set changes. Action enum matches the on-chain
+// contract action: 'advertise' = new/renewed beacon ('A'), 'revoke'
+// = explicit removal ('D'). Passive 180-day MAX_AGE expiry is NOT an
+// on-chain event and produces no SSE; consumers that care about it
+// must keep a slow safety poll to catch the window drift.
+// Emitted once per block that carries any beacon contract; per-contract
+// granularity isn't needed by today's consumers.
+export interface BeaconUpdatePayload {
+  height: number;
+  time: number;
+  action: 'advertise' | 'revoke' | 'mixed';
+}
+
+// Fired by BlockWriter when a mandatory-sidestake contract lands —
+// the protocol-driven registry of MSS destinations changed (an
+// address was added, allocation was updated, or an entry was
+// deleted). MSS-aware dashboards refresh on this instead of
+// block.new so they only fetch when the registry actually moves.
+export interface SidestakeUpdatePayload {
+  address: string;
+  action: 'A' | 'D';
+  status: 'MANDATORY' | 'DELETED';
+  allocation_pct: number;
+  description: string;
+  height: number;
+  time: number;
+}
+
+// Fired by BlockWriter for each V13+ PoS block whose coinstake had
+// any extra outputs (vout idx >= 2). One event per block, summarising
+// the recipients. MSS-aware dashboards refresh on this to bump the
+// per-recipient running totals + 24h counts without rescanning the
+// whole block range. `count` is the number of extras on the block;
+// `total` is the summed payout amount across all extras in halford.
+export interface SidestakePayoutPayload {
+  height: number;
+  time: number;
+  count: number;
+  total: string; // halford as string for JSON safety
+}
+
 export interface MetricsDailyPayload {
   research_subsidy_24h: string;
   block_subsidy_24h: string;
@@ -124,3 +192,30 @@ export const events = new TypedEmitter();
 
 // Don't crash the process if a listener forgets to attach.
 events.setMaxListeners(0);
+
+// Single source of truth for the static topics SSE + cross-process
+// fanout need to hook by name. Per-key channels (address.<addr>,
+// cpid.<cpid>) are handled via the `<root>.*` wildcards in `publish`
+// above and so don't appear here. Adding a new ExplorerEvent topic
+// requires adding it here too; the cast keeps the array typed
+// against the discriminated-union so a typo is a TS error.
+export const STATIC_TOPICS: ReadonlyArray<ExplorerEvent['topic']> = [
+  'block.new',
+  'block.tip',
+  'superblock.new',
+  'chain.reorg',
+  'mempool.entered',
+  'mempool.exited',
+  'mempool.tick',
+  'mempool.fee_histogram',
+  'network.stats',
+  'metrics.tick',
+  'metrics.daily',
+  'backfill.progress',
+  'project.added',
+  'project.removed',
+  'wealth.snapshot',
+  'beacon.update',
+  'sidestake.update',
+  'sidestake.payout',
+];

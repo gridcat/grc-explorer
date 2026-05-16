@@ -6,15 +6,17 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { useEffect, useMemo, useState } from 'react';
+import {
+  useEffect, useMemo, useRef, useState,
+} from 'react';
 import { JsonTree } from '../../components/JsonTree';
 import { Layout } from '../../layouts/Layout';
-import { api } from '../../lib/api';
+import { api, notFoundOrRethrow } from '../../lib/api';
 import { formatGrc, formatTime } from '../../lib/format';
 import { HashTrim } from '../../components/HashTrim';
 import { Crumbs } from '../../components/Crumbs';
 import { CpidLabel } from '../../components/CpidLabel';
-import { useCpidNames } from '../../hooks/useCpidNames';
+import { fetchCpidNames, useCpidNames } from '../../hooks/useCpidNames';
 import { formatNumber, shortHash } from '../../lib/format';
 
 interface Tx {
@@ -29,7 +31,22 @@ interface Tx {
   isCoinbase: boolean;
   isCoinstake: boolean;
 }
-interface Vin { vinN: number; prevTx: string; prevVout: number; address: string | null; value: string | null }
+interface Vin {
+  vinN: number;
+  prevTx: string;
+  prevVout: number;
+  address: string | null;
+  value: string | null;
+  /** True when this input's scriptSig contains OP_CLTV (0xb1) or
+   *  OP_CSV (0xb2), meaning the redeemScript was an HTLC. Both
+   *  opcodes are V14 features — earlier blocks won't have them. */
+  isHtlcRedemption?: boolean;
+  /** Per-vin nSequence. 0xffffffff = no sequence lock (default). */
+  sequence?: number;
+  /** Convenience: sequence !== 0xffffffff. Surfaces BIP68
+   *  sequence-locked inputs at V14+. */
+  isSequenceLocked?: boolean;
+}
 interface Vout { voutN: number; value: string; address: string | null; scriptType: string; isSpent: boolean; spentInTx: string | null }
 interface RawTx { hex: string; decoded: unknown }
 interface MrcInfo {
@@ -63,10 +80,12 @@ interface TxDetailProps {
   initialConfirmations: number;
   initialPending: PendingState;
   initialMrc: MrcInfo | null;
+  initialCpidNames: Record<string, string>;
 }
 
 export default function TxDetail({
   initialTx, initialVins, initialVouts, initialConfirmations, initialPending, initialMrc,
+  initialCpidNames,
 }: TxDetailProps) {
   const router = useRouter();
   const { tx_id: txId } = router.query;
@@ -87,9 +106,12 @@ export default function TxDetail({
   const [rawLoading, setRawLoading] = useState(false);
   const [rawError, setRawError] = useState<string | null>(null);
 
+  // Ref guard so the post-fetch setTx doesn't re-fire the effect.
+  const lastFetchedRef = useRef<string | null>(initialTx?.txId ?? null);
   useEffect(() => {
-    if (!txId) return;
-    if (tx && tx.txId === txId) return;
+    if (typeof txId !== 'string' || !txId) return;
+    if (lastFetchedRef.current === txId) return;
+    lastFetchedRef.current = txId;
     api.get(`/transactions/${txId}`).then((r) => {
       setTx(r.data?.data?.attributes ?? null);
       setVins(r.data?.vins ?? []);
@@ -98,7 +120,7 @@ export default function TxDetail({
       setPending((r.data?.pending as PendingState | undefined) ?? null);
       setMrc((r.data?.mrc as MrcInfo | undefined) ?? null);
     }).catch(() => { /* ignore */ });
-  }, [txId, tx]);
+  }, [txId]);
 
   useEffect(() => {
     if (typeof txId !== 'string' || !txId) return;
@@ -130,7 +152,7 @@ export default function TxDetail({
 
   // Hook must run before the early-return below (rules of hooks).
   const mrcCpidList: string[] = mrc?.cpid ? [mrc.cpid] : [];
-  const names = useCpidNames(mrcCpidList);
+  const names = useCpidNames(mrcCpidList, initialCpidNames);
 
   if (!tx) return <Layout><Typography>Loading…</Typography></Layout>;
 
@@ -278,11 +300,31 @@ export default function TxDetail({
                   <TableRow key={v.vinN}>
                     <TableCell>{v.vinN}</TableCell>
                     <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>
-                      {v.address ? (
-                        <Link href={`/addresses/${v.address}`} style={{ color: 'inherit' }}><HashTrim text={v.address} head={8} tail={6} /></Link>
-                      ) : (
-                        <span style={{ opacity: 0.6 }}>—</span>
-                      )}
+                      <Stack direction="row" spacing={0.75} sx={{ alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>
+                        {v.address ? (
+                          <Link href={`/addresses/${v.address}`} style={{ color: 'inherit' }}><HashTrim text={v.address} head={8} tail={6} /></Link>
+                        ) : (
+                          <span style={{ opacity: 0.6 }}>—</span>
+                        )}
+                        {v.isHtlcRedemption && (
+                          <Chip
+                            size="small"
+                            label="HTLC"
+                            color="secondary"
+                            variant="outlined"
+                            title="This input's scriptSig contains OP_CLTV / OP_CSV — the spent output was almost certainly an HTLC (V14 feature)."
+                          />
+                        )}
+                        {v.isSequenceLocked && (
+                          <Chip
+                            size="small"
+                            label="sequence-locked"
+                            color="warning"
+                            variant="outlined"
+                            title={`BIP68 sequence lock (nSequence = ${v.sequence}). V14 feature.`}
+                          />
+                        )}
+                      </Stack>
                     </TableCell>
                     <TableCell align="right">{formatGrc(v.value)}</TableCell>
                   </TableRow>
@@ -472,6 +514,8 @@ export const getServerSideProps: GetServerSideProps<TxDetailProps> = async (ctx)
     const r = await api.get(`/transactions/${txId}`);
     const attrs = r.data?.data?.attributes as Tx | undefined;
     if (!attrs) return { notFound: true };
+    const mrc = (r.data?.mrc as MrcInfo | undefined) ?? null;
+    const initialCpidNames = mrc?.cpid ? await fetchCpidNames([mrc.cpid]) : {};
     return {
       props: {
         initialTx: attrs,
@@ -479,10 +523,11 @@ export const getServerSideProps: GetServerSideProps<TxDetailProps> = async (ctx)
         initialVouts: r.data?.vouts ?? [],
         initialConfirmations: r.data?.confirmations ?? 0,
         initialPending: (r.data?.pending as PendingState | undefined) ?? null,
-        initialMrc: (r.data?.mrc as MrcInfo | undefined) ?? null,
+        initialMrc: mrc,
+        initialCpidNames,
       },
     };
-  } catch {
-    return { notFound: true };
+  } catch (err) {
+    return notFoundOrRethrow(err);
   }
 };

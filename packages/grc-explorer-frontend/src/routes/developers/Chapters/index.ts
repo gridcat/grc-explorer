@@ -13,4 +13,5 @@ export { Beacons } from './Beacons';
 export { MrcRequests } from './MrcRequests';
 export { Network } from './Network';
 export { Metrics } from './Metrics';
+export { MandatorySidestakes } from './MandatorySidestakes';
 export { Search } from './Search';

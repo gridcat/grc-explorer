@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { ch } from '../lib/ch';
+import { ch, hasColumns } from '../lib/ch';
 import { getTipAnchor, getV11BlockTimestamp } from '../lib/indexerTip';
 import { getPagination } from '../lib/pagination';
 import { param } from '../lib/req';
@@ -10,6 +10,8 @@ import { BeaconPresenter } from '../presenters';
 import { registerParamValidators } from '../lib/validators';
 import { BEACON_RENEWAL_AGE_SEC } from '../services/indexer/ContractParser';
 import { tsToUnix } from '../lib/time';
+
+const hasAuthMethodColumn = () => hasColumns('beacons', ['auth_method']);
 
 export const beaconsRouter = Router();
 registerParamValidators(beaconsRouter);
@@ -23,6 +25,7 @@ interface BeaconRow {
   timestamp: number | string;
   expiration: number | string;
   superseded_at_height: number | null;
+  auth_method?: string;
 }
 
 function presentBeacon(b: BeaconRow): BeaconRow & { timestamp: number; expiration: number } {
@@ -123,6 +126,8 @@ beaconsRouter.get('/', async (req: Request, res: Response) => {
     }
   }
   const whereSql = conditions.length === 0 ? '' : `WHERE ${conditions.join(' AND ')}`;
+  const hasAuth = await hasAuthMethodColumn();
+  const authSelect = hasAuth ? ', auth_method' : '';
 
   const [rowsResult, countResult] = await Promise.all([
     ch.query({
@@ -131,6 +136,7 @@ beaconsRouter.get('/', async (req: Request, res: Response) => {
                toUnixTimestamp(timestamp)  AS timestamp,
                toUnixTimestamp(expiration) AS expiration,
                superseded_at_height
+               ${authSelect}
         FROM beacons FINAL
         ${whereSql}
         ORDER BY block_height DESC, tx_id DESC
@@ -172,12 +178,14 @@ beaconsRouter.get('/:cpid', async (req: Request, res: Response) => {
     whereParts.push('block_height <= {h: UInt32}');
     params.h = atHeight;
   }
+  const authSelect = (await hasAuthMethodColumn()) ? ', auth_method' : '';
   const result = await ch.query({
     query: `
       SELECT cpid, address, status, tx_id, block_height,
              toUnixTimestamp(timestamp)  AS timestamp,
              toUnixTimestamp(expiration) AS expiration,
              superseded_at_height
+             ${authSelect}
       FROM beacons FINAL
       WHERE ${whereParts.join(' AND ')}
       ORDER BY block_height DESC

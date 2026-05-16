@@ -131,6 +131,44 @@ export const CHAIN_FORKS: ChainFork[] = [
   },
 ];
 
+/**
+ * Activation height for one fork on the active network, or null if
+ * the fork doesn't apply to this network (Halford patches on testnet,
+ * for example). Lets callers reach for one canonical height without
+ * each one re-encoding the `config.NETWORK === 'testnet'` switch.
+ */
+export function forkHeight(key: string): number | null {
+  const fork = CHAIN_FORKS.find((f) => f.key === key);
+  if (!fork) return null;
+  return config.NETWORK === 'testnet' ? fork.testnet : fork.mainnet;
+}
+
+/**
+ * Per-fork activation status keyed off the indexer's tip height on
+ * the active network. Used by the home dashboard to hide V13/V14 UI
+ * panels (mandatory sidestakes, v3 beacons, HTLC) until the fork
+ * actually lands on chain — so a pre-V13 view doesn't show a row of
+ * zeroes or empty cards for functionality that's still pending.
+ *
+ * Returns one boolean per known consensus fork (v8 through v14).
+ * Non-consensus / informational forks are not exposed here.
+ */
+export function forksActivated(indexedHeight: number | null): Record<string, boolean> {
+  const isTestnet = config.NETWORK === 'testnet';
+  const heightOf = (f: ChainFork) => (isTestnet ? f.testnet : f.mainnet);
+  const out: Record<string, boolean> = {};
+  for (const f of CHAIN_FORKS) {
+    if (f.category !== 'consensus') continue;
+    const h = heightOf(f);
+    if (h === null) {
+      out[f.key] = false;
+      continue;
+    }
+    out[f.key] = typeof indexedHeight === 'number' && indexedHeight >= h;
+  }
+  return out;
+}
+
 export interface ResolvedFork extends ChainFork {
   /** Activation height on the *current* network only (the one this
    *  indexer is following). Other-network height stripped to keep the

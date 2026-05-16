@@ -1,6 +1,7 @@
 import {
-  Box, Card, CardContent, Chip, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography,
+  Card, CardContent, Chip, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Tooltip, Typography,
 } from '@mui/material';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import { useTheme } from '@mui/material/styles';
 import type { GetServerSideProps } from 'next';
@@ -11,8 +12,25 @@ import {
 } from '../../components/charts/SvgChart';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { Layout } from '../../layouts/Layout';
-import { api } from '../../lib/api';
+import { api, notFoundOrRethrow } from '../../lib/api';
 import { formatNumber, formatTime } from '../../lib/format';
+
+// Validate that the on-chain `base_url` is something we can safely
+// render as an `<a href>`. Delisted/legacy projects carry junk like
+// "1" in this field; without the http(s) prefix check the browser
+// resolves it as a same-origin path and the user lands on our own
+// 404 page. Reject anything that isn't an absolute http(s) URL.
+function isHttpUrl(s: string | null | undefined): s is string {
+  if (typeof s !== 'string') return false;
+  const trimmed = s.trim();
+  if (!trimmed) return false;
+  try {
+    const u = new URL(trimmed);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 interface ContractEvent {
   action: 'add' | 'remove' | string;
@@ -44,9 +62,6 @@ interface ProjectAttributes {
   baseUrl: string | null;
   gdprControls: boolean | null;
   requiresExternalAdapter: boolean | null;
-  zcd: number | null;
-  was: number | null;
-  meetsGreylistCriteria: boolean | null;
   contractEvents: ContractEvent[];
   racHistory: RacSample[];
   relatedPolls: RelatedPoll[];
@@ -65,7 +80,10 @@ export default function ProjectPage({ attrs }: ProjectPageProps) {
     );
   }
 
-  const cleanUrl = attrs.baseUrl ? attrs.baseUrl.replace(/@$/, '') : null;
+  // Reject on-chain garbage like "1" that delisted projects sometimes
+  // carry; we'd otherwise render a same-origin link that 404s. Only
+  // accept absolute http(s) URLs.
+  const cleanUrl = isHttpUrl(attrs.baseUrl) ? attrs.baseUrl.replace(/@$/, '') : null;
   const tone = statusTone(attrs.status);
 
   return (
@@ -108,27 +126,20 @@ export default function ProjectPage({ attrs }: ProjectPageProps) {
           )}
         </Stack>
 
-        {/* Auto-greylist criteria stat strip — only renders for projects
-            the daemon has computed criteria for (i.e. on or near the
-            whitelist). zcd / was are the raw numbers behind the auto-
-            greylist decision; meetsGreylistCriteria flips when the
-            project crosses the threshold either direction. */}
-        {(attrs.zcd !== null || attrs.was !== null) && (
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ flexWrap: 'wrap' }} useFlexGap>
-            <Stat label="Zero-credit days" value={attrs.zcd === null ? '—' : String(attrs.zcd)} />
-            <Stat label="Whitelist activity score" value={attrs.was === null ? '—' : attrs.was.toFixed(2)} />
-            <Stat
-              label="Meets greylist criteria?"
-              value={attrs.meetsGreylistCriteria === null ? '—' : (attrs.meetsGreylistCriteria ? 'yes' : 'no')}
-            />
-          </Stack>
-        )}
-
         <Card variant="outlined">
           <CardContent>
-            <Typography variant="subtitle2" component="h2" sx={{ fontWeight: 700, mb: 0.5 }}>
-              RAC over time
-            </Typography>
+            <Stack direction="row" sx={{ alignItems: 'center', gap: 0.5, mb: 0.5 }}>
+              <Typography variant="subtitle2" component="h2" sx={{ fontWeight: 700 }}>
+                RAC over time
+              </Typography>
+              <Tooltip
+                title="RAC — Recent Average Credit. A BOINC project-side rolling average of the credit awarded across all contributors, decaying with a 1-week half-life. Higher RAC means more compute was being thrown at the project around that superblock."
+                placement="top"
+                arrow
+              >
+                <InfoOutlinedIcon sx={{ fontSize: 14, color: 'text.disabled', cursor: 'help' }} />
+              </Tooltip>
+            </Stack>
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
               {attrs.racHistory.length === 0
                 ? 'No superblock samples for this project yet.'
@@ -180,7 +191,9 @@ export default function ProjectPage({ attrs }: ProjectPageProps) {
                         </TableCell>
                         <TableCell>{formatTime(ev.time)}</TableCell>
                         <TableCell sx={{ fontFamily: 'monospace', fontSize: 12, wordBreak: 'break-all' }}>
-                          {ev.baseUrl || <span style={{ opacity: 0.5 }}>—</span>}
+                          {isHttpUrl(ev.baseUrl)
+                            ? ev.baseUrl
+                            : <span style={{ opacity: 0.5 }}>—</span>}
                         </TableCell>
                         <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>
                           <Link href={`/transactions/${ev.txId}`} style={{ color: 'inherit' }}>
@@ -240,25 +253,9 @@ export default function ProjectPage({ attrs }: ProjectPageProps) {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <Card variant="outlined" sx={{ flex: 1, minWidth: 160 }}>
-      <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
-        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-          {label}
-        </Typography>
-        <Typography variant="h6" sx={{ fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
-          {value}
-        </Typography>
-      </CardContent>
-    </Card>
-  );
-}
-
-function statusTone(status: string | null): 'success' | 'warning' | 'default' {
+function statusTone(status: string | null): 'success' | 'default' {
   if (!status) return 'default';
   if (status === 'Active') return 'success';
-  if (/greylist/i.test(status)) return 'warning';
   return 'default';
 }
 
@@ -348,7 +345,7 @@ export const getServerSideProps: GetServerSideProps<ProjectPageProps> = async (c
     const attrs = (r.data?.data?.attributes ?? null) as ProjectAttributes | null;
     if (!attrs) return { notFound: true };
     return { props: { attrs } };
-  } catch {
-    return { notFound: true };
+  } catch (err) {
+    return notFoundOrRethrow(err);
   }
 };

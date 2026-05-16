@@ -47,3 +47,35 @@ export const ch: Ch = {
   command: (params) => rawCh.command(withSignal(params)),
   insert: ((params) => rawCh.insert(withSignal(params))) as Ch['insert'],
 };
+
+// Memoised "are these columns present?" probe. Routes that read
+// columns from a later migration call this so the page keeps
+// rendering when a fresh container is deployed before the migration
+// runner has caught up. True is cached; false is not (false negatives
+// self-heal on the next request after the migration lands).
+const columnsPresenceCache = new Map<string, true>();
+export async function hasColumns(table: string, names: readonly string[]): Promise<boolean> {
+  const key = `${table}:${[...names].sort().join(',')}`;
+  if (columnsPresenceCache.has(key)) return true;
+  try {
+    const r = await ch.query({
+      query: `
+        SELECT count() AS c FROM system.columns
+        WHERE database = currentDatabase()
+          AND table = {table: String}
+          AND name IN {names: Array(String)}
+      `,
+      query_params: { table, names: [...names] },
+      format: 'JSONEachRow',
+    });
+    const row = (await r.json<{ c: number | string }>())[0];
+    if (Number(row?.c ?? 0) >= names.length) {
+      columnsPresenceCache.set(key, true);
+      return true;
+    }
+  } catch {
+    // Probe failure → "not present"; caller falls back to the
+    // pre-migration shape.
+  }
+  return false;
+}

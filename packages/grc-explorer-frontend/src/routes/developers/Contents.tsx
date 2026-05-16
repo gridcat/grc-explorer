@@ -52,6 +52,7 @@ const entries: PageContentsEntry[] = [
   { id: 'metrics', label: 'Metrics' },
   { id: 'metrics-buckets', label: 'Bucketed time series', indent: true },
   { id: 'metrics-leaderboard-magnitude', label: 'Magnitude leaderboard', indent: true },
+  { id: 'metrics-researchers-history', label: 'Researcher history', indent: true },
   { id: 'metrics-research-split', label: 'Research / block split', indent: true },
   { id: 'metrics-beacon-flux', label: 'Beacon flux', indent: true },
   { id: 'metrics-staker-mix', label: 'Staker mix', indent: true },
@@ -59,6 +60,12 @@ const entries: PageContentsEntry[] = [
   { id: 'metrics-wealth', label: 'Wealth distribution', indent: true },
   { id: 'metrics-cohort-retention', label: 'Cohort retention', indent: true },
   { id: 'metrics-beacon-survival', label: 'Beacon survival', indent: true },
+  { id: 'mandatory-sidestakes', label: 'Mandatory sidestakes' },
+  { id: 'mss-list', label: 'Active registry', indent: true },
+  { id: 'mss-detail', label: 'Per-recipient detail', indent: true },
+  { id: 'mss-metrics', label: 'Aggregate metrics', indent: true },
+  { id: 'mss-block', label: 'Per-block payouts', indent: true },
+  { id: 'mss-sse', label: 'Live updates', indent: true },
   { id: 'search', label: 'Search' },
 ];
 

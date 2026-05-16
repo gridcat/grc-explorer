@@ -166,6 +166,6 @@ export class ChainReorgHandler {
   }
 
   private async getBlockHash(height: number): Promise<string> {
-    return (liveRpc as unknown as { getBlockHash: (h: number) => Promise<string> }).getBlockHash(height);
+    return liveRpc.getBlockHash(height);
   }
 }

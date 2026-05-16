@@ -1,5 +1,5 @@
 import {
-  Card, CardContent, Stack, Typography,
+  Card, CardContent, CircularProgress, Stack, Typography,
 } from '@mui/material';
 import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
@@ -59,11 +59,23 @@ export default function SearchPage({ initialQ, initialResults, initialLoaded }: 
         <Typography variant="body1" color="text.secondary">
           Results for <strong>{q || '(none)'}</strong>
         </Typography>
-        {nonEmpty.map((r) => (
+        {q && !loaded && (
+          <Card variant="outlined">
+            <CardContent>
+              <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center' }}>
+                <CircularProgress size={18} thickness={5} />
+                <Typography variant="body2" color="text.secondary">
+                  Searching the chain for <strong>{q}</strong>…
+                </Typography>
+              </Stack>
+            </CardContent>
+          </Card>
+        )}
+        {loaded && nonEmpty.map((r) => (
           <Card key={r.index} variant="outlined">
             <CardContent>
               <Typography variant="subtitle2" color="text.secondary" sx={{ textTransform: 'capitalize' }}>
-                {r.index} ({r.estimatedTotalHits ?? r.hits.length})
+                {prettyIndex(r.index)} ({r.estimatedTotalHits ?? r.hits.length})
               </Typography>
               <Stack spacing={1} sx={{ mt: 1 }}>
                 {r.hits.map((hit, i) => (
@@ -87,6 +99,16 @@ export default function SearchPage({ initialQ, initialResults, initialLoaded }: 
   );
 }
 
+// Maps the Meili index name to a human-readable section heading.
+// Most index names work as-is once title-cased (capitalize CSS does
+// the lifting), but multi-word internal names like `cpid_names` need
+// an explicit override so the user doesn't see "Cpid_names" as a
+// section label.
+function prettyIndex(index: string): string {
+  if (index === 'cpid_names') return 'Researchers (by name)';
+  return index;
+}
+
 function linkFor(index: string, hit: Record<string, unknown>): string {
   switch (index) {
     case 'blocks': return `/block/${hit.height}`;
@@ -96,7 +118,11 @@ function linkFor(index: string, hit: Record<string, unknown>): string {
     case 'superblocks': return `/superblocks/${hit.height}`;
     case 'polls': return `/polls/${hit.id}`;
     case 'beacons': return `/cpids/${hit.cpid}`;
-    case 'messages': return `/transactions/${hit.tx_id}`;
+    // messages docs key the tx id as `id` (BlockWriter writes
+    // `id: msg.txId`); there is no `tx_id` field — using it gave
+    // `/transactions/undefined`.
+    case 'messages': return `/transactions/${hit.tx_id ?? hit.id}`;
+    case 'cpid_names': return `/cpids/${hit.cpid}`;
     default: return '#';
   }
 }
@@ -119,6 +145,17 @@ function Hit({ index, hit }: { index: string; hit: Record<string, unknown> }) {
         const firstLine = raw.split(/\r?\n/, 1)[0] ?? '';
         const snippet = firstLine.length > 80 ? `${firstLine.slice(0, 77)}…` : firstLine;
         return `"${snippet}" · #${hit.block_height ?? '?'}`;
+      }
+      case 'cpid_names': {
+        // BOINC display-name match. Show the name + CPID + which project
+        // attested it, so the user can tell apart users with the same
+        // alias across projects. CPID is the resolution target — the
+        // link lands on /cpids/<cpid>.
+        const name = String(hit.name ?? '');
+        const cpid = String(hit.cpid ?? '');
+        const project = String(hit.project_name ?? '');
+        const tail = project ? ` · ${project}` : '';
+        return `${name} · ${cpid}${tail}`;
       }
       default: return JSON.stringify(hit);
     }
@@ -176,6 +213,11 @@ export const getServerSideProps: GetServerSideProps<SearchPageProps> = async (ct
       },
     };
   } catch {
-    return { props: { initialQ: q, initialResults: [], initialLoaded: true } };
+    // SSR /search failed (timeout / transient). Do NOT claim it
+    // loaded: the client guard `q === initialQ && initialLoaded`
+    // would then skip its own fetch and the page would show a
+    // permanent "Nothing matched" even though the API is healthy.
+    // initialLoaded:false lets the client retry and recover.
+    return { props: { initialQ: q, initialResults: [], initialLoaded: false } };
   }
 };

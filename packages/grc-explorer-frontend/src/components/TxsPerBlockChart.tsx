@@ -6,22 +6,29 @@ import { BarChartCanvas, ChartFrameProvider } from './charts/SvgChart';
 import { useSSE } from '../hooks/useSSE';
 import { atParam, useTimeMachine } from '../hooks/useTimeMachine';
 
-interface Point {
+export interface Point {
   height: number;
   txCount: number;
 }
 
 const WINDOW = 90;
 
-export function TxsPerBlockChart() {
+export function TxsPerBlockChart({
+  initialPoints = [],
+}: {
+  initialPoints?: Point[];
+} = {}) {
   const theme = useTheme();
   const tm = useTimeMachine();
-  const [points, setPoints] = useState<Point[]>([]);
+  const [points, setPoints] = useState<Point[]>(initialPoints);
 
   // SSE-aware fallback fetch — same pattern as LiveBlockTicker. SSE
   // `block.new` is the primary channel; we only re-fetch if nothing
   // has arrived in `STALE_MS`. Initial fetch on mount seeds the chart
-  // with a real tail instead of waiting for the next live block.
+  // with a real tail instead of waiting for the next live block, except
+  // when SSR has already primed the points — then we skip the first
+  // fetch and let SSE / the stale-check take over.
+  const skipFirstFetchRef = useRef(initialPoints.length > 0);
   const lastEventAtRef = useRef<number>(Date.now());
   useEffect(() => {
     let cancelled = false;
@@ -50,7 +57,11 @@ export function TxsPerBlockChart() {
         return merged;
       });
     }).catch(() => { /* ignore */ });
-    fetchOnce();
+    if (skipFirstFetchRef.current) {
+      skipFirstFetchRef.current = false;
+    } else {
+      fetchOnce();
+    }
     lastEventAtRef.current = Date.now();
     if (tm.isReplay) return () => { cancelled = true; };
     const STALE_MS = 3 * 60 * 1000;

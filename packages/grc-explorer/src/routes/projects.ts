@@ -2,10 +2,14 @@ import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { ch } from '../lib/ch';
 import { ErrorModel } from '../lib/errors';
+import { liveRpc } from '../lib/gridcoin';
 import { log } from '../lib/log';
 import { getCursor } from '../lib/redis';
-import { param } from '../lib/req';
+import { param, parseYearRange } from '../lib/req';
+import { normalizeProjectName } from '../lib/projectName';
 import { withMeta } from '../lib/responseMeta';
+import { swrCached } from '../lib/swrCache';
+import { forkHeight } from '../services/network/ChainForks';
 
 export const projectsRouter = Router();
 
@@ -18,12 +22,6 @@ export const projectsRouter = Router();
 // blocks shown, RAC shown, and project state shown all reflect the
 // same chain state at the indexer's cursor.
 //
-// Greylisted is intentionally NOT computed here yet. Auto-greylist is
-// derived state — ZCD ≥ 7 OR red WAS recomputed each superblock from
-// `superblock_projects.total_credit` history — that needs the daemon's
-// algorithm reimplemented against our indexed data. That's queued as a
-// follow-up; for now the column stays empty with a clear placeholder.
-//
 // Cache key is the cursor height: same height → same answer. The board
 // only refreshes when the indexer advances, which is what we want.
 
@@ -32,30 +30,33 @@ const SNAPSHOT_TTL_MS = 30_000;
 interface ProjectEntry {
   /** Verbatim project name from the chain contract body. */
   name: string;
-  /** Same as `name` for now — daemon's `display_name` was nicer (Title
-   *  Case, spaces) but lived only in the RPC view. We can derive
-   *  display from the on-chain name later if needed. */
+  /** Daemon's prettified `display_name` when available (Title Case
+   *  + spaces); falls back to the chain `name`. Only present when
+   *  the listprojects overlay below ran successfully. */
   displayName: string;
   /** Base URL from the most recent ADD event for this project. */
   baseUrl: string;
   /** 'Active' | 'Deleted' — derived from latest `project_contracts`
-   *  action ≤ cursor. 'Manually/Automatically Greylisted' will be
-   *  filled in when Stage 4 lands. */
-  status: 'Active' | 'Deleted' | 'Manually Greylisted' | 'Automatically Greylisted';
+   *  action ≤ cursor. */
+  status: 'Active' | 'Deleted';
   /** Block height where the latest add/remove for this project landed. */
   asOfBlock: number;
   /** Chain-time at that latest event. */
   asOfTime: number;
-  // Auto-greylist criteria are null until the algorithm is ported.
-  zcd: number | null;
-  was: number | null;
-  meetsGreylistCriteria: boolean | null;
-  // GDPR / requires-external-adapter come only from the daemon's view —
-  // the on-chain ProjectToJson body is just `{ version, name, url }`.
-  // Null for now; can be enriched separately if a per-project page
-  // wants the daemon's current take.
+  /** Daemon-overlay fields. Live from listprojects when the indexer
+   *  is caught up to the daemon's tip; null when backfilling so the
+   *  page stays consistent with what the rest of the explorer shows
+   *  at-cursor. The daemon's ProjectToJson strips `m_status` and
+   *  `m_gdpr_controls` from contract bodies, so this overlay is the
+   *  only way to surface AutoGreylist Override / Auto-greylisted /
+   *  Manually Greylisted state. */
   gdprControls: boolean | null;
   requiresExternalAdapter: boolean | null;
+  /** Daemon's `project.StatusToString()` — one of "Active",
+   *  "Manually Greylisted", "Automatically Greylisted", "Deleted",
+   *  "Active by Greylist Override", "Unknown". Null when the
+   *  overlay couldn't run (backfill, RPC down). */
+  currentChainStatus: string | null;
 }
 
 interface ProjectSnapshot {
@@ -63,7 +64,6 @@ interface ProjectSnapshot {
   cursorHash: string;
   cursorTime: number | null;
   active: ProjectEntry[];
-  greylisted: ProjectEntry[];
   delisted: ProjectEntry[];
   fetchedAt: number;
 }
@@ -77,6 +77,67 @@ interface LatestEventRow {
   latest_url: string;
   at_height: number;
   at_time: number;
+}
+
+interface ListProjectEntry {
+  displayName: string;
+  status: string;
+  gdprControls: boolean | null;
+  requiresExternalAdapter: boolean | null;
+}
+
+// Call the wallet daemon's `listprojects true` RPC and normalise the
+// response into a `name → daemon fields` map. The `true` argument
+// asks the daemon to include greylisted + deleted entries so we get
+// status for every project we know about, not just the active set.
+//
+// Failure modes (RPC down, timeout, wallet on a different chain)
+// degrade to an empty map — buildSnapshot just doesn't overlay the
+// optional fields and the page renders the at-cursor derived state.
+async function fetchListProjectsOverlay(): Promise<Map<string, ListProjectEntry>> {
+  const out = new Map<string, ListProjectEntry>();
+  try {
+    interface ListProjectsRpcRow {
+      version: number;
+      displayName?: string;
+      display_name?: string;
+      baseUrl?: string;
+      base_url?: string;
+      status?: string;
+      gdprControls?: boolean;
+      gdpr_controls?: boolean;
+      requiresExternalAdapter?: boolean;
+      requires_external_adapter?: boolean;
+    }
+    type ListProjectsRpcResp = Record<string, ListProjectsRpcRow>;
+    const raw = await (liveRpc as unknown as {
+      listProjects: (showAll: boolean) => Promise<ListProjectsRpcResp>;
+    }).listProjects(true);
+    if (raw && typeof raw === 'object') {
+      // Accept both camelCase (gridcoin-rpc applies camelcase-keys
+      // globally) and snake_case (raw daemon output) on every optional
+      // boolean — same defensive pattern the beacon parser uses.
+      const firstBool = (a: unknown, b: unknown): boolean | null => {
+        if (typeof a === 'boolean') return a;
+        if (typeof b === 'boolean') return b;
+        return null;
+      };
+      for (const [name, info] of Object.entries(raw)) {
+        out.set(name, {
+          displayName: info.displayName ?? info.display_name ?? name,
+          status: typeof info.status === 'string' ? info.status : 'Unknown',
+          gdprControls: firstBool(info.gdprControls, info.gdpr_controls),
+          requiresExternalAdapter: firstBool(
+            info.requiresExternalAdapter,
+            info.requires_external_adapter,
+          ),
+        });
+      }
+    }
+  } catch (err) {
+    log.warn('projects snapshot: listprojects RPC failed; snapshot proceeding without overlay', err);
+  }
+  return out;
 }
 
 async function buildSnapshot(): Promise<ProjectSnapshot> {
@@ -96,15 +157,38 @@ async function buildSnapshot(): Promise<ProjectSnapshot> {
   try {
     const result = await ch.query({
       query: `
+        -- Group case-INSENSITIVELY: project_contracts stores the name
+        -- verbatim as submitted, so the same project recurs under
+        -- several casings over time (asteroids@home vs Asteroids@home,
+        -- einstein@home vs Einstein@Home, ...). Case-sensitive
+        -- grouping split each into separate rows, so a project re-added
+        -- under a new casing showed BOTH an Active entry and a phantom
+        -- "Deleted" twin from its old casing. Collapse on
+        -- lower(project_name); status = the newest action across all
+        -- casings; display name = the casing of that newest contract.
+        -- Inner alias is canonical_name (NOT project_name): aliasing
+        -- the argMax to project_name would shadow the column, so
+        -- GROUP BY lower(project_name) binds to the aggregate →
+        -- ILLEGAL_AGGREGATION, the catch swallows it, and the page
+        -- shows 0/0. Rename back in the outer SELECT so consumers and
+        -- LatestEventRow stay unchanged.
         SELECT
-          project_name,
-          argMax(action, block_height)   AS latest_action,
-          argMax(base_url, block_height) AS latest_url,
-          max(block_height)              AS at_height,
-          toUnixTimestamp(argMax(time, block_height)) AS at_time
-        FROM project_contracts FINAL
-        WHERE block_height <= {cursor: UInt32}
-        GROUP BY project_name
+          canonical_name AS project_name,
+          latest_action,
+          latest_url,
+          at_height,
+          at_time
+        FROM (
+          SELECT
+            argMax(project_name, block_height) AS canonical_name,
+            argMax(action, block_height)       AS latest_action,
+            argMax(base_url, block_height)     AS latest_url,
+            max(block_height)                  AS at_height,
+            toUnixTimestamp(argMax(time, block_height)) AS at_time
+          FROM project_contracts FINAL
+          WHERE block_height <= {cursor: UInt32}
+          GROUP BY lower(project_name)
+        )
       `,
       query_params: { cursor: cursorHeight },
       format: 'JSONEachRow',
@@ -130,24 +214,46 @@ async function buildSnapshot(): Promise<ProjectSnapshot> {
     }
   }
 
+  // Daemon overlay — fetch listprojects only when the indexer's
+  // cursor is in 'live' mode. During backfill we deliberately don't
+  // overlay because the daemon's view is at-chain-tip (possibly 3M
+  // blocks past our cursor), and applying that to an at-cursor
+  // snapshot reintroduces the "live row shows status that the rest
+  // of the page can't justify" inconsistency the route fought off
+  // earlier. When backfilling, currentChainStatus / gdprControls /
+  // requiresExternalAdapter come back null and the frontend simply
+  // doesn't show those chips.
+  const indexerLive = (cursor?.status ?? 'backfilling') === 'live';
+  const overlay = indexerLive ? await fetchListProjectsOverlay() : new Map<string, ListProjectEntry>();
+
   const active: ProjectEntry[] = [];
   const delisted: ProjectEntry[] = [];
-  const greylisted: ProjectEntry[] = []; // Stage 4 follow-up.
+
+  // The modern binary-contract project whitelist was re-established at
+  // the V11 (Fern) fork. A project whose most recent project_contract
+  // action predates V11 and was never refreshed afterwards is a stale
+  // legacy entry (e.g. the 2015 `grid1`/`grid2`/`rosetta2` bulk-adds at
+  // block ~164k) — argMax(action) reads its last 'add' and would
+  // wrongly mark it Active even though it is not on the current
+  // whitelist (the daemon's listprojects, authoritative when live,
+  // doesn't carry these). Require post-Fern contract activity so the
+  // count matches reality (real projects were re-added at block 3.1M+).
+  const v11Height = forkHeight('v11');
 
   for (const r of rows) {
-    const isActive = r.latest_action === 'add';
+    const isActive = r.latest_action === 'add'
+      && (v11Height === null || r.at_height >= v11Height);
+    const daemon = overlay.get(r.project_name);
     const entry: ProjectEntry = {
       name: r.project_name,
-      displayName: r.project_name,
+      displayName: daemon?.displayName ?? r.project_name,
       baseUrl: r.latest_url,
       status: isActive ? 'Active' : 'Deleted',
       asOfBlock: r.at_height,
       asOfTime: r.at_time,
-      zcd: null,
-      was: null,
-      meetsGreylistCriteria: null,
-      gdprControls: null,
-      requiresExternalAdapter: null,
+      gdprControls: daemon?.gdprControls ?? null,
+      requiresExternalAdapter: daemon?.requiresExternalAdapter ?? null,
+      currentChainStatus: daemon?.status ?? null,
     };
     if (isActive) active.push(entry);
     else delisted.push(entry);
@@ -155,7 +261,6 @@ async function buildSnapshot(): Promise<ProjectSnapshot> {
 
   const byName = (a: ProjectEntry, b: ProjectEntry) => a.name.localeCompare(b.name);
   active.sort(byName);
-  greylisted.sort(byName);
   delisted.sort(byName);
 
   return {
@@ -163,7 +268,6 @@ async function buildSnapshot(): Promise<ProjectSnapshot> {
     cursorHash,
     cursorTime,
     active,
-    greylisted,
     delisted,
     fetchedAt: Math.floor(Date.now() / 1000),
   };
@@ -209,12 +313,10 @@ projectsRouter.get('/', async (_req: Request, res: Response) => {
           cursorTime: snap.cursorTime,
           counts: {
             active: snap.active.length,
-            greylisted: snap.greylisted.length,
             delisted: snap.delisted.length,
-            total: snap.active.length + snap.greylisted.length + snap.delisted.length,
+            total: snap.active.length + snap.delisted.length,
           },
           active: snap.active,
-          greylisted: snap.greylisted,
           delisted: snap.delisted,
         },
       },
@@ -231,12 +333,6 @@ projectsRouter.get('/', async (_req: Request, res: Response) => {
 // cumulative de-listed count over time, plus per-day delisting events
 // so the chart can show the "spikes" researchers care about.
 //
-// Greylisted is intentionally NOT computed here (yet). Auto-greylist
-// is a derived per-superblock state — ZCD ≥ 7 OR red WAS — that needs
-// the daemon's algorithm reimplemented against `superblock_projects`.
-// That's queued as a follow-up; for now the route emits a flat
-// greylisted=null and the frontend hides the line.
-//
 // Caching: the underlying data only changes when backfill rolls over
 // a project ADD/REMOVE event (rare; <100 events ever). 1h cache is
 // generous and effectively free for the API path.
@@ -251,14 +347,13 @@ interface HistoryPoint {
 }
 
 const HISTORY_TTL_MS = 60 * 60 * 1000;
-let historyCached: { value: HistoryPoint[]; expiresAt: number } | null = null;
-let historyInflight: Promise<HistoryPoint[]> | null = null;
 
 interface ProjectEventRow {
   project_name: string;
   action: string;
   date: string;
   ts: number;
+  block_height: number;
 }
 
 function dayKey(d: Date): string {
@@ -283,7 +378,7 @@ async function buildHistory(): Promise<HistoryPoint[]> {
   try {
     const result = await ch.query({
       query: `
-        SELECT project_name, action,
+        SELECT project_name, action, block_height,
                toString(toDate(time)) AS date,
                toUnixTimestamp(time)  AS ts
         FROM project_contracts FINAL
@@ -302,6 +397,25 @@ async function buildHistory(): Promise<HistoryPoint[]> {
   const today = dayKey(new Date());
   const lastDate = today >= firstDate ? today : firstDate;
 
+  // Same normalization as the /projects snapshot, applied to the
+  // timeline: collapse case-variant names, and exclude legacy
+  // pre-Fern-only projects (the 2015 grid1/grid2/rosetta2 bulk-adds
+  // that were never re-added at/after V11 when the modern binary-
+  // contract whitelist was re-established). Without this they linger
+  // as phantom "active" forever and the case twins double-count.
+  const v11Height = forkHeight('v11');
+  const maxHeightByLc = new Map<string, number>();
+  const canonicalByLc = new Map<string, string>();
+  for (const e of events) {
+    const lc = e.project_name.toLowerCase();
+    if (e.block_height >= (maxHeightByLc.get(lc) ?? -1)) {
+      maxHeightByLc.set(lc, e.block_height);
+      canonicalByLc.set(lc, e.project_name);
+    }
+  }
+  const isLegacy = (lc: string): boolean => v11Height !== null
+    && (maxHeightByLc.get(lc) ?? 0) < v11Height;
+
   const active = new Set<string>();
   const delisted = new Set<string>();
   const points: HistoryPoint[] = [];
@@ -313,15 +427,18 @@ async function buildHistory(): Promise<HistoryPoint[]> {
     const todayEvents: HistoryPoint['events'] = [];
     while (evIdx < events.length && events[evIdx].date === day) {
       const e = events[evIdx];
-      todayEvents.push({ project: e.project_name, action: e.action });
-      if (e.action === 'add') {
-        active.add(e.project_name);
-        delisted.delete(e.project_name);
-      } else if (e.action === 'remove') {
-        if (active.delete(e.project_name)) delistedToday += 1;
-        delisted.add(e.project_name);
-      }
       evIdx += 1;
+      const lc = e.project_name.toLowerCase();
+      if (isLegacy(lc)) continue;
+      const name = canonicalByLc.get(lc) ?? e.project_name;
+      todayEvents.push({ project: name, action: e.action });
+      if (e.action === 'add') {
+        active.add(lc);
+        delisted.delete(lc);
+      } else if (e.action === 'remove') {
+        if (active.delete(lc)) delistedToday += 1;
+        delisted.add(lc);
+      }
     }
     points.push({
       ts: dayToTs(day),
@@ -337,45 +454,25 @@ async function buildHistory(): Promise<HistoryPoint[]> {
   return points;
 }
 
-async function getHistory(): Promise<HistoryPoint[]> {
-  const now = Date.now();
-  if (historyCached && historyCached.expiresAt > now) return historyCached.value;
-  if (historyInflight) return historyInflight;
-  historyInflight = (async () => {
-    try {
-      const v = await buildHistory();
-      historyCached = { value: v, expiresAt: Date.now() + HISTORY_TTL_MS };
-      return v;
-    } finally {
-      historyInflight = null;
-    }
-  })();
-  return historyInflight;
-}
+const getHistory = swrCached(buildHistory, HISTORY_TTL_MS);
 
 projectsRouter.get('/history', async (req: Request, res: Response) => {
-  const range = String(req.query.range ?? 'all').toLowerCase();
-  const yearRaw = parseInt(String(req.query.year ?? ''), 10);
-  const isYear = range === 'year';
-  if (isYear && (!Number.isInteger(yearRaw) || yearRaw < 2000 || yearRaw > 2999)) {
-    res.status(StatusCodes.BAD_REQUEST).send({
-      errors: [{ status: '400', title: 'Bad Request', detail: 'range=year requires year=YYYY' }],
-    });
-    return;
-  }
+  const yr = parseYearRange(req, res);
+  if (!yr) return;
+  const { isYear, year } = yr;
 
   const all = await getHistory();
   const points = isYear
-    ? all.filter((p) => p.date.startsWith(`${yearRaw}-`))
+    ? all.filter((p) => p.date.startsWith(`${year}-`))
     : all;
 
   res.status(StatusCodes.OK).send(withMeta({
     data: {
       type: 'projects_history',
-      id: isYear ? `year:${yearRaw}` : 'all',
+      id: isYear ? `year:${year}` : 'all',
       attributes: {
         range: isYear ? 'year' : 'all',
-        year: isYear ? yearRaw : null,
+        year,
         points,
       },
     },
@@ -425,18 +522,21 @@ interface PollMatchRow {
 }
 
 projectsRouter.get('/:name', async (req: Request, res: Response) => {
-  const name = param(req, 'name');
+  // Canonicalised to match the stored key — project_name is written
+  // trimmed-lowercase everywhere (see lib/projectName + migration
+  // 0035), so an old mixed-case URL still resolves to the one project.
+  const name = normalizeProjectName(param(req, 'name'));
   try {
     const snap = await getSnapshot();
-    const status = [...snap.active, ...snap.greylisted, ...snap.delisted]
+    const status = [...snap.active, ...snap.delisted]
       .find((p) => p.name === name) ?? null;
 
     // Per-project history pulls from three CH tables we already index:
     //   • project_contracts: ADD / REMOVE events from chain.
     //   • superblock_projects: every superblock's RAC / total_credit.
-    //   • polls (filtered by title) for community-driven listing /
-    //     greylist proposals — best-effort string-match since Gridcoin
-    //     doesn't tag polls with a structured "subject project" field.
+    //   • polls (filtered by title) for community-driven listing
+    //     proposals — best-effort string-match since Gridcoin doesn't
+    //     tag polls with a structured "subject project" field.
     //
     // Each query is independently wrapped: one section's CH failure
     // (e.g. project_contracts table absent before migration 0009 has
@@ -497,9 +597,6 @@ projectsRouter.get('/:name', async (req: Request, res: Response) => {
           baseUrl: status?.baseUrl ?? contracts[contracts.length - 1]?.base_url ?? null,
           gdprControls: status?.gdprControls ?? null,
           requiresExternalAdapter: status?.requiresExternalAdapter ?? null,
-          zcd: status?.zcd ?? null,
-          was: status?.was ?? null,
-          meetsGreylistCriteria: status?.meetsGreylistCriteria ?? null,
           asOfBlock: status?.asOfBlock ?? null,
           asOfTime: status?.asOfTime ?? null,
           contractEvents: contracts.map((c) => ({

@@ -1,4 +1,5 @@
 import { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { PUBLIC_BASE } from '../lib/api';
 
 interface SubscriptionHandle {
   topics: string[];
@@ -14,9 +15,20 @@ interface SSEContextValue {
 
 const SSEContext = createContext<SSEContextValue | null>(null);
 
-// See lib/api.ts — same rationale: fall back to '/api' so a prod build
-// without the env never leaks dev localhost into the EventSource URL.
-const PUBLIC_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api';
+// Static topic list the server publishes by name. Wildcard per-key
+// topics (`address.<addr>.balance`, `cpid.<cpid>.magnitude`) ride on
+// the default `onmessage` channel since their event names aren't
+// statically knowable. Hoisted to module scope so it's allocated once,
+// not per provider mount.
+const KNOWN_TOPICS = [
+  'block.new', 'block.tip', 'superblock.new', 'chain.reorg',
+  'mempool.entered', 'mempool.exited', 'mempool.tick', 'mempool.fee_histogram',
+  'network.stats', 'metrics.tick', 'metrics.daily', 'backfill.progress',
+  'project.added', 'project.removed',
+  'wealth.snapshot', 'beacon.update',
+  'sidestake.update', 'sidestake.payout',
+] as const;
+export type SseTopic = typeof KNOWN_TOPICS[number] | `${string}.*` | string;
 
 /**
  * One shared EventSource per browser tab. Components register topic
@@ -92,18 +104,10 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       setConnected(false);
     };
 
-    // The server fires custom events named after the topic. We attach
-    // a generic listener via `onmessage` (the default channel) plus a
-    // wildcard via `addEventListener('topic', ...)` only for known
-    // topics — but EventSource doesn't support wildcards, so we
-    // register listeners for every topic the indexer publishes.
-    const KNOWN = [
-      'block.new', 'block.tip', 'chain.reorg',
-      'mempool.entered', 'mempool.exited', 'mempool.tick', 'mempool.fee_histogram',
-      'network.stats', 'metrics.tick', 'metrics.daily', 'backfill.progress',
-      'project.added', 'project.removed',
-    ];
-    KNOWN.forEach((topic) => {
+    // EventSource doesn't support wildcards, so we register a listener
+    // per statically-known topic. Per-key topics use the default
+    // `onmessage` channel below.
+    KNOWN_TOPICS.forEach((topic) => {
       source.addEventListener(topic, (e) => {
         if (!visibleRef.current) return;
         try {
@@ -179,4 +183,47 @@ export function useSSE(topics: string[], cb: (topic: string, payload: unknown) =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx, key]);
   return ctx?.connected ?? false;
+}
+
+/**
+ * Subscribe to SSE topics and run `refresh` at most once per
+ * `debounceMs`. The canonical "panel re-fetches on SSE tick, but not
+ * faster than this" pattern that ~10 dashboard widgets re-implement.
+ *
+ * `skip` is honoured before scheduling so the time-machine replay
+ * path (where SSE is irrelevant) doesn't pile up timers that fire
+ * after replay exits.
+ */
+export function useSSEDebounced(
+  topics: string[],
+  refresh: () => void,
+  debounceMs: number,
+  options: {
+    skip?: boolean;
+    /** Optional gate on the incoming event — returning false skips
+     *  scheduling. Use for "only this granularity / only this action"
+     *  filters (e.g. `(_t, p) => (p as { granularity?: string }).granularity === '1h'`). */
+    predicate?: (topic: string, payload: unknown) => boolean;
+  } = {},
+): void {
+  const { skip = false, predicate } = options;
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const skipRef = useRef(skip);
+  skipRef.current = skip;
+  const predicateRef = useRef(predicate);
+  predicateRef.current = predicate;
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useSSE(topics, (topic, payload) => {
+    if (skipRef.current) return;
+    if (predicateRef.current && !predicateRef.current(topic, payload)) return;
+    if (timerRef.current) return;
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      refreshRef.current();
+    }, debounceMs);
+  });
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
 }

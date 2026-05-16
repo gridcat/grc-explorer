@@ -1,4 +1,6 @@
-import { Box, Container, InputBase, alpha } from '@mui/material';
+import {
+  Box, CircularProgress, Container, InputBase, alpha,
+} from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import { useTheme } from '@mui/material/styles';
 import { useRouter } from 'next/router';
@@ -29,9 +31,16 @@ export function Layout({ children, showSearch = false, showTimeMachine = true }:
   const router = useRouter();
   const tm = useTimeMachine();
   const [query, setQuery] = useState('');
+  // The /search route is SSR — getServerSideProps awaits Meili before
+  // the navigation resolves, and with the trimmed Meili tiers that can
+  // take a few seconds during which the home page sits unchanged. Track
+  // the in-flight submit so we can show a spinner, freeze the input,
+  // and ignore repeat Enter presses instead of stacking navigations.
+  const [submitting, setSubmitting] = useState(false);
 
   const submitSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     const q = query.trim();
     if (!q) return;
     // Don't ship the query string itself to analytics — only the
@@ -39,7 +48,12 @@ export function Layout({ children, showSearch = false, showTimeMachine = true }:
     // hashes vs short keywords without storing what they searched.
     const lengthBucket = q.length <= 8 ? '1-8' : q.length <= 32 ? '9-32' : '33+';
     track('Search', { length: lengthBucket });
-    router.push(`/search?q=${encodeURIComponent(q)}`);
+    setSubmitting(true);
+    // router.push resolves once the SSR fetch completes and the route
+    // transition is done (or it redirected — single-hit shortcut). The
+    // home Layout unmounts on success so this state mostly matters on
+    // the rare push-rejected path; reset either way.
+    router.push(`/search?q=${encodeURIComponent(q)}`).finally(() => setSubmitting(false));
   };
 
   // The dock + its padding are gated on a global feature flag so we
@@ -78,12 +92,15 @@ export function Layout({ children, showSearch = false, showTimeMachine = true }:
               },
             }}
           >
-            <SearchIcon fontSize="small" sx={{ color: 'text.secondary', mr: 1 }} />
+            {submitting
+              ? <CircularProgress size={18} thickness={5} sx={{ color: 'text.secondary', mr: 1 }} />
+              : <SearchIcon fontSize="small" sx={{ color: 'text.secondary', mr: 1 }} />}
             <InputBase
               fullWidth
               placeholder="Block height, tx hash, address, CPID, organisation…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              disabled={submitting}
               inputProps={{ 'aria-label': 'search the chain' }}
             />
           </Box>

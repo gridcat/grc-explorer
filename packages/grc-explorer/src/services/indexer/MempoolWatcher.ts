@@ -4,6 +4,7 @@ import { liveRpc } from '../../lib/gridcoin';
 import { grc2halford, halford2grc, sumHalford } from '../../lib/halford';
 import { log } from '../../lib/log';
 import { nextSeq } from '../../lib/redis';
+import { tsToUnix } from '../../lib/time';
 import { parseMrcContract } from './ContractParser';
 import { ContractEnvelope } from './types';
 
@@ -175,8 +176,16 @@ export class MempoolWatcher {
     const txIds = Array.from(new Set(refs.map((r) => r.txid)));
     const vouts = Array.from(new Set(refs.map((r) => r.vout)));
     const result = await ch.query({
+      // No FINAL: ClickHouse can't serve a FINAL (read-time dedup)
+      // query from a projection and won't prune the scan, so FINAL
+      // here was a ~1.1s full-table scan that ignored proj_by_outpoint
+      // (vs ~9ms with the projection). It isn't needed anyway — an
+      // output's `value` is immutable for a given (tx_id, vout_n), so
+      // a stale pre-merge duplicate carries the identical value and the
+      // `found` map (keyed tx_id:vout_n) just overwrites it with the
+      // same number. Same rationale as `prevOutputs.ts`.
       query: `
-        SELECT tx_id, vout_n, value FROM tx_outputs FINAL
+        SELECT tx_id, vout_n, value FROM tx_outputs
         WHERE tx_id IN ({txIds: Array(String)}) AND vout_n IN ({vouts: Array(UInt16)})
       `,
       query_params: { txIds, vouts },
@@ -237,9 +246,7 @@ export class MempoolWatcher {
       // `confirmed_at` once the actual block lands in `transactions`.
       let confirmed = false;
       try {
-        const tx = await (liveRpc as unknown as {
-          getRawTransaction: (id: string, verbose: boolean) => Promise<{ blockhash?: string }>;
-        }).getRawTransaction(txId, true);
+        const tx = await liveRpc.getRawTransaction(txId, true);
         confirmed = typeof tx?.blockhash === 'string';
       } catch (err) {
         const code = (err as { code?: number })?.code;
@@ -284,9 +291,7 @@ export class MempoolWatcher {
         format: 'JSONEachRow',
         values: [{
           tx_id: txId,
-          first_seen: typeof row.first_seen === 'number'
-            ? row.first_seen
-            : Math.floor(new Date(row.first_seen).getTime() / 1000),
+          first_seen: tsToUnix(row.first_seen) ?? 0,
           fee_estimate: row.fee_estimate,
           size: row.size,
           vin_count: row.vin_count,
@@ -349,12 +354,10 @@ export class MempoolWatcher {
   }
 
   private async getRawMempool(): Promise<string[]> {
-    return (liveRpc as unknown as { getRawMemPool: () => Promise<string[]> }).getRawMemPool();
+    return liveRpc.getRawMemPool();
   }
 
   private async getRawTransaction(txId: string): Promise<RawTxInfo> {
-    return (liveRpc as unknown as {
-      getRawTransaction: (id: string, verbose: boolean) => Promise<RawTxInfo>;
-    }).getRawTransaction(txId, true);
+    return liveRpc.getRawTransaction(txId, true) as unknown as Promise<RawTxInfo>;
   }
 }

@@ -1,14 +1,14 @@
 import {
-  Box, Card, CardContent, Chip, Stack, Tooltip, Typography,
+  Box, Button, Card, CardContent, Chip, Stack, Tooltip, Typography,
 } from '@mui/material';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
-import HistoryIcon from '@mui/icons-material/History';
 import Link from 'next/link';
 import {
   useCallback, useEffect, useMemo, useRef, useState,
 } from 'react';
 import { api } from '../lib/api';
 import { useSSE } from '../hooks/useSSE';
+import { SeeMoreButton } from './SeeMoreButton';
 
 interface ProjectEntry {
   name: string;
@@ -17,26 +17,50 @@ interface ProjectEntry {
   status: string;
   asOfBlock: number;
   asOfTime: number;
-  zcd: number | null;
-  was: number | null;
-  meetsGreylistCriteria: boolean | null;
   gdprControls: boolean | null;
   requiresExternalAdapter: boolean | null;
+  /** Daemon's live ProjectEntryStatus, populated by listprojects
+   *  overlay only when the indexer is at-tip. One of "Active",
+   *  "Manually Greylisted", "Automatically Greylisted", "Deleted",
+   *  "Active by Greylist Override", "Unknown". Null when overlay
+   *  couldn't run (backfill, RPC down). */
+  currentChainStatus?: string | null;
 }
 
-interface ProjectsResponse {
+export interface ProjectsResponse {
   fetchedAt: number;
   cursorHeight: number;
   cursorHash: string;
   cursorTime: number | null;
-  counts: { active: number; greylisted: number; delisted: number; total: number };
+  counts: { active: number; delisted: number; total: number };
   active: ProjectEntry[];
-  greylisted: ProjectEntry[];
   delisted: ProjectEntry[];
 }
 
-const POLL_MS = 60_000;
+// Project add/remove events on chain are rare — a handful per year —
+// so the primary refresh is the project.added / project.removed SSE
+// below. This poll is purely a safety net for tabs that sit through
+// an SSE drop or visibility-gated dispatch; 1 h is long enough to
+// stay quiet on idle dashboards while still bounding staleness.
+const POLL_MS = 60 * 60 * 1000;
 const MAX_DELISTED_VISIBLE = 8;
+
+// Validate that the on-chain `base_url` is something we can safely
+// render as an `<a href>`. Delisted/legacy projects carry junk like
+// "1" in this field; without the http(s) prefix check the browser
+// resolves it as a same-origin path and the user lands on our own
+// 404 page. Reject anything that isn't an absolute http(s) URL.
+function isHttpUrl(s: string | null | undefined): s is string {
+  if (typeof s !== 'string') return false;
+  const trimmed = s.trim();
+  if (!trimmed) return false;
+  try {
+    const u = new URL(trimmed);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 function formatCursorTime(unix: number | null): string {
   if (unix === null || !Number.isFinite(unix)) return '';
@@ -46,21 +70,25 @@ function formatCursorTime(unix: number | null): string {
 }
 
 /**
- * Three-column BOINC projects board: Whitelisted, Greylisted, De-listed.
+ * Two-column BOINC projects board: Whitelisted, De-listed.
  * Reconstructs project state from on-chain `project_contracts` events at
  * the indexer's current cursor — NOT the daemon's chain-tip view — so
  * the board stays consistent with the rest of the home page (blocks,
  * RAC, polls all reflect the same chain state).
  *
- * Refreshes on every `block.new` SSE so as backfill rolls forward, the
- * board updates when new project events come into view; SSE-direct
- * `project.added` / `project.removed` give the same effect with lower
- * latency. A 60s poll is the safety-net.
+ * Refreshes on `project.added` / `project.removed` SSE — these events
+ * fire on every relevant chain event with low latency. A 1 h poll is
+ * the safety-net for SSE drops / hidden-tab dispatch gating.
  */
-export function ProjectsBoard() {
-  const [snap, setSnap] = useState<ProjectsResponse | null>(null);
+export function ProjectsBoard({
+  initialSnap = null,
+}: {
+  initialSnap?: ProjectsResponse | null;
+} = {}) {
+  const [snap, setSnap] = useState<ProjectsResponse | null>(initialSnap);
   const [showAllDelisted, setShowAllDelisted] = useState(false);
   const cancelledRef = useRef(false);
+  const skipFirstFetchRef = useRef(initialSnap !== null);
 
   const refresh = useCallback(() => {
     api.get('/projects').then((r) => {
@@ -72,7 +100,11 @@ export function ProjectsBoard() {
 
   useEffect(() => {
     cancelledRef.current = false;
-    refresh();
+    if (skipFirstFetchRef.current) {
+      skipFirstFetchRef.current = false;
+    } else {
+      refresh();
+    }
     return () => { cancelledRef.current = true; };
   }, [refresh]);
 
@@ -87,7 +119,7 @@ export function ProjectsBoard() {
   });
 
   const counts = snap?.counts ?? {
-    active: 0, greylisted: 0, delisted: 0, total: 0,
+    active: 0, delisted: 0, total: 0,
   };
   const cursorLabel = snap
     ? `block #${snap.cursorHeight.toLocaleString()}${snap.cursorTime ? ` · ${formatCursorTime(snap.cursorTime)}` : ''}`
@@ -105,27 +137,11 @@ export function ProjectsBoard() {
               {`${counts.total} total · ${counts.active} earning`}
             </Typography>
           )}
-          <Link
-            href="/projects/history"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 4,
-              color: 'inherit',
-              fontSize: 12,
-              opacity: 0.75,
-              textDecoration: 'none',
-            }}
-          >
-            <HistoryIcon sx={{ fontSize: 14 }} />
-            History
-          </Link>
+          <SeeMoreButton href="/projects/history" label="See history" />
         </Stack>
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
           Reconstructed from on-chain project contracts as the indexer has
-          processed them. Greylist transitions are derived state and not
-          yet computed here — column stays empty until the auto-greylist
-          algorithm is ported.
+          processed them.
         </Typography>
 
 
@@ -133,7 +149,7 @@ export function ProjectsBoard() {
           sx={{
             display: 'grid',
             gap: 2,
-            gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr 1fr' },
+            gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' },
           }}
         >
           <ProjectColumn
@@ -142,13 +158,6 @@ export function ProjectsBoard() {
             count={counts.active}
             entries={snap?.active ?? []}
             renderChip={ActiveChip}
-          />
-          <ProjectColumn
-            label="Greylisted"
-            tone="warning"
-            count={counts.greylisted}
-            entries={snap?.greylisted ?? []}
-            renderChip={GreyChip}
           />
           <ProjectColumn
             label="De-listed"
@@ -283,7 +292,7 @@ function ProjectRow({ entry, chip }: { entry: ProjectEntry; chip: React.ReactNod
         </Typography>
       </Link>
       {chip}
-      {entry.baseUrl ? (
+      {isHttpUrl(entry.baseUrl) ? (
         <Tooltip title={entry.baseUrl} placement="top">
           <a
             href={entry.baseUrl.replace(/@$/, '')}
@@ -302,33 +311,42 @@ function ProjectRow({ entry, chip }: { entry: ProjectEntry; chip: React.ReactNod
   );
 }
 
-function ActiveChip({ gdprControls }: ProjectEntry) {
-  if (!gdprControls) return null;
-  return (
-    <Tooltip title="Project enforces GDPR opt-in">
+function ActiveChip({ gdprControls, currentChainStatus }: ProjectEntry) {
+  // Daemon's live status takes precedence — when the indexer is at
+  // tip we know the actual ProjectEntryStatus. AUTO_GREYLIST_OVERRIDE
+  // is the V13 highlight: the project would have been auto-greylisted
+  // by the algorithm, but a master-signed contract kept it active.
+  // The GDPR chip is independent — orthogonal flag.
+  const gdpr = gdprControls ? (
+    <Tooltip key="gdpr" title="Project enforces GDPR opt-in">
       <Chip label="GDPR" size="small" variant="outlined" sx={{ fontSize: 10, height: 18 }} />
     </Tooltip>
-  );
-}
-
-function GreyChip({ status, zcd, was }: ProjectEntry) {
-  // Daemon emits two greylist sub-states; surface them via different
-  // chip styles so the column tells the operator whether removal was
-  // automatic (criteria flipped) or driven by a community poll.
-  const isManual = /manual/i.test(status);
-  const label = isManual ? 'manual' : 'auto';
-  const tooltip = isManual
-    ? 'Greylisted by community poll'
-    : `Auto-greylisted · zcd=${zcd ?? '?'} was=${was?.toFixed(2) ?? '?'}`;
-  return (
-    <Tooltip title={tooltip}>
-      <Chip
-        label={label}
-        size="small"
-        color={isManual ? 'warning' : 'default'}
-        variant="outlined"
-        sx={{ fontSize: 10, height: 18 }}
-      />
-    </Tooltip>
-  );
+  ) : null;
+  const statusChip = (() => {
+    if (!currentChainStatus) return null;
+    switch (currentChainStatus) {
+      case 'Active by Greylist Override':
+        return (
+          <Tooltip key="status" title="The project would have been auto-greylisted by the algorithm, but a master-signed override contract keeps it active. V13 feature.">
+            <Chip label="Override" size="small" color="primary" variant="filled" sx={{ fontSize: 10, height: 18, fontWeight: 600 }} />
+          </Tooltip>
+        );
+      case 'Manually Greylisted':
+        return (
+          <Tooltip key="status" title="Manually greylisted by master-signed contract.">
+            <Chip label="Greylisted" size="small" color="warning" variant="outlined" sx={{ fontSize: 10, height: 18 }} />
+          </Tooltip>
+        );
+      case 'Automatically Greylisted':
+        return (
+          <Tooltip key="status" title="Auto-greylisted by the V13 algorithm (Zero Credit Days / Whitelist Activity Score).">
+            <Chip label="Auto-greylisted" size="small" color="warning" variant="outlined" sx={{ fontSize: 10, height: 18 }} />
+          </Tooltip>
+        );
+      default:
+        return null; // 'Active', 'Deleted', 'Unknown' — no extra chip
+    }
+  })();
+  if (!gdpr && !statusChip) return null;
+  return <>{statusChip}{gdpr}</>;
 }

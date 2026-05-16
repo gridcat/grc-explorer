@@ -3,7 +3,7 @@ import {
 } from '@mui/material';
 import { styled } from '@mui/material/styles';
 import { useMemo } from 'react';
-import { useScrollSpy } from '../../lib/useScrollSpy';
+import { useScrollSpy } from '../../hooks/useScrollSpy';
 
 export interface PageContentsEntry {
   id: string;

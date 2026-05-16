@@ -4,10 +4,10 @@ import {
 import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Layout } from '../../layouts/Layout';
-import { api } from '../../lib/api';
-import { formatNumber, formatTime } from '../../lib/format';
+import { api, notFoundOrRethrow } from '../../lib/api';
+import { formatCompact, formatNumber, formatTime } from '../../lib/format';
 import { HashTrim } from '../../components/HashTrim';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { CpidLabel } from '../../components/CpidLabel';
@@ -20,7 +20,7 @@ interface Superblock {
   cpidCount: number;
   projectCount: number;
 }
-interface MagnitudeRow { cpid: string; magnitude: number }
+interface MagnitudeRow { cpid: string; magnitude: number; displayName?: string | null }
 interface ProjectRow {
   projectName: string;
   averageRac: number;
@@ -34,10 +34,12 @@ interface SuperblockDetailProps {
   initialProjects: ProjectRow[];
   initialBlockTime: number | null;
   initialActiveBeaconCount: number | null;
+  initialCpidNames: Record<string, string>;
 }
 
 export default function SuperblockDetail({
   initialSb, initialMagnitudes, initialProjects, initialBlockTime, initialActiveBeaconCount,
+  initialCpidNames,
 }: SuperblockDetailProps) {
   const router = useRouter();
   const { height } = router.query;
@@ -47,9 +49,13 @@ export default function SuperblockDetail({
   const [blockTime, setBlockTime] = useState<number | null>(initialBlockTime);
   const [activeBeaconCount, setActiveBeaconCount] = useState<number | null>(initialActiveBeaconCount);
 
+  // Ref guard so post-fetch setSb doesn't re-trigger the effect.
+  const lastFetchedRef = useRef<string | null>(initialSb ? String(initialSb.height) : null);
   useEffect(() => {
     if (!height) return;
-    if (sb && String(sb.height) === String(height)) return;
+    const key = String(height);
+    if (lastFetchedRef.current === key) return;
+    lastFetchedRef.current = key;
     api.get(`/superblocks/${height}`).then((r) => {
       setSb(r.data?.data?.attributes ?? null);
       setMagnitudes(r.data?.magnitudes ?? []);
@@ -57,9 +63,9 @@ export default function SuperblockDetail({
       setBlockTime(r.data?.blockTime ?? null);
       setActiveBeaconCount(r.data?.activeBeaconCount ?? null);
     }).catch(() => { /* ignore */ });
-  }, [height, sb]);
+  }, [height]);
 
-  const names = useCpidNames(magnitudes.map((m) => m.cpid));
+  const names = useCpidNames(magnitudes.map((m) => m.cpid), initialCpidNames);
 
   if (!sb) return <Layout><Typography>Loading…</Typography></Layout>;
 
@@ -107,48 +113,68 @@ export default function SuperblockDetail({
               <Stat label="Block time" value={blockTime ? formatTime(blockTime) : '—'} />
               <Stat label="Quorum hash" value={sb.quorumHash ? <HashTrim text={sb.quorumHash} /> : '—'} mono />
               <Stat label="Total magnitude" value={sb.totalMagnitude.toFixed(2)} />
-              <Stat label="Researchers paid" value={sb.cpidCount.toLocaleString()} />
+              <Stat label="Researchers paid" value={formatNumber(sb.cpidCount)} />
               <Stat label="Projects active" value={String(sb.projectCount)} />
               <Stat
                 label="Verified beacons"
-                value={activeBeaconCount === null ? '—' : activeBeaconCount.toLocaleString()}
+                value={activeBeaconCount === null ? '—' : formatNumber(activeBeaconCount)}
               />
             </Stack>
           </CardContent>
         </Card>
 
-        {projects.length > 0 && (
+        {/* Active projects (4 cols) and User rewards (4 cols) pair
+            naturally — both are per-superblock aggregates and let the
+            operator cross-read project activity against researcher
+            payouts. Grid collapses to one column when projects is
+            empty so the magnitudes table doesn't get squeezed. */}
+        <Box
+          sx={{
+            display: 'grid',
+            gap: 2,
+            gridTemplateColumns: { xs: '1fr', md: projects.length > 0 ? '1fr 1fr' : '1fr' },
+            alignItems: 'start',
+          }}
+        >
+          {projects.length > 0 && (
+            <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
+              <Typography variant="subtitle2" sx={{ p: 2 }} color="text.secondary">
+                Active projects ({projects.length})
+              </Typography>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Project</TableCell>
+                    <TableCell align="right">RAC</TableCell>
+                    <TableCell align="right">Average RAC</TableCell>
+                    <TableCell align="right">Total credit</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {projects.map((p) => (
+                    <TableRow key={p.projectName} hover>
+                      <TableCell sx={{ fontFamily: 'monospace', fontSize: 13 }}>
+                        <Link
+                          href={`/projects/${encodeURIComponent(p.projectName)}`}
+                          style={{ color: 'inherit', textDecoration: 'none' }}
+                        >
+                          {p.projectName}
+                        </Link>
+                      </TableCell>
+                      <TableCell align="right">{compact(p.rac)}</TableCell>
+                      <TableCell align="right">{compact(p.averageRac)}</TableCell>
+                      <TableCell align="right">{compact(p.totalCredit)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Paper>
+          )}
+
           <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
             <Typography variant="subtitle2" sx={{ p: 2 }} color="text.secondary">
-              Active projects ({projects.length})
+              User rewards · per-CPID magnitudes ({magnitudes.length})
             </Typography>
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Project</TableCell>
-                  <TableCell align="right">RAC</TableCell>
-                  <TableCell align="right">Average RAC</TableCell>
-                  <TableCell align="right">Total credit</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {projects.map((p) => (
-                  <TableRow key={p.projectName} hover>
-                    <TableCell sx={{ fontFamily: 'monospace', fontSize: 13 }}>{p.projectName}</TableCell>
-                    <TableCell align="right">{compact(p.rac)}</TableCell>
-                    <TableCell align="right">{compact(p.averageRac)}</TableCell>
-                    <TableCell align="right">{compact(p.totalCredit)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </Paper>
-        )}
-
-        <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
-          <Typography variant="subtitle2" sx={{ p: 2 }} color="text.secondary">
-            User rewards · per-CPID magnitudes ({magnitudes.length})
-          </Typography>
           <Table size="small">
             <TableHead>
               <TableRow>
@@ -185,6 +211,7 @@ export default function SuperblockDetail({
             </TableBody>
           </Table>
         </Paper>
+        </Box>
       </Stack>
     </Layout>
   );
@@ -215,13 +242,7 @@ function Stat({ label, value, mono }: { label: string; value: React.ReactNode; m
   );
 }
 
-function compact(n: number): string {
-  if (!Number.isFinite(n)) return '—';
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(2)}K`;
-  return n.toFixed(0);
-}
+const compact = (n: number) => formatCompact(n, 2);
 
 export const getServerSideProps: GetServerSideProps<SuperblockDetailProps> = async (ctx) => {
   const { height } = ctx.params ?? {};
@@ -230,17 +251,25 @@ export const getServerSideProps: GetServerSideProps<SuperblockDetailProps> = asy
     const r = await api.get(`/superblocks/${height}`);
     const attrs = r.data?.data?.attributes as Superblock | undefined;
     if (!attrs) return { notFound: true };
+    const magnitudes = (r.data?.magnitudes ?? []) as MagnitudeRow[];
+    // Names come server-side on each magnitude row now (displayName);
+    // seed useCpidNames from them instead of a second /cpids/names call.
+    const initialCpidNames: Record<string, string> = {};
+    for (const m of magnitudes) {
+      if (m.displayName) initialCpidNames[m.cpid] = m.displayName;
+    }
     return {
       props: {
         initialSb: attrs,
-        initialMagnitudes: r.data?.magnitudes ?? [],
+        initialMagnitudes: magnitudes,
         initialProjects: r.data?.projects ?? [],
         initialBlockTime: r.data?.blockTime ?? null,
         initialActiveBeaconCount: r.data?.activeBeaconCount ?? null,
+        initialCpidNames,
       },
     };
-  } catch {
-    return { notFound: true };
+  } catch (err) {
+    return notFoundOrRethrow(err);
   }
 };
 

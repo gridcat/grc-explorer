@@ -7,6 +7,7 @@ import {
   useCallback, useEffect, useRef, useState,
 } from 'react';
 import { api } from '../lib/api';
+import { shortHash } from '../lib/format';
 import { useSSE } from '../hooks/useSSE';
 
 // One-shot success pulse for rows transitioning to "confirmed". Holding
@@ -18,7 +19,7 @@ const pulseSuccess = keyframes`
   100% { background-color: transparent; }
 `;
 
-interface Entry {
+export interface Entry {
   txId: string;
   enteredAt: number;
   state: 'pending' | 'confirmed' | 'evicted';
@@ -27,9 +28,14 @@ interface Entry {
 
 const MAX = 12;
 
-export function LiveTxFeed() {
-  const [entries, setEntries] = useState<Entry[]>([]);
+export function LiveTxFeed({
+  initialEntries = [],
+}: {
+  initialEntries?: Entry[];
+} = {}) {
+  const [entries, setEntries] = useState<Entry[]>(initialEntries);
   const cancelledRef = useRef(false);
+  const skipFirstFetchRef = useRef(initialEntries.length > 0);
 
   // Seed (and refresh) from the current mempool. Without the seed
   // path, the panel sat on "Watching for new mempool transactions…"
@@ -65,7 +71,11 @@ export function LiveTxFeed() {
 
   useEffect(() => {
     cancelledRef.current = false;
-    refresh();
+    if (skipFirstFetchRef.current) {
+      skipFirstFetchRef.current = false;
+    } else {
+      refresh();
+    }
     return () => { cancelledRef.current = true; };
   }, [refresh]);
 
@@ -115,7 +125,7 @@ export function LiveTxFeed() {
             >
               <Link href={`/transactions/${e.txId}`} style={{ flex: 1, textDecoration: 'none', color: 'inherit' }}>
                 <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: 12 }}>
-                  {e.txId.slice(0, 16)}…{e.txId.slice(-6)}
+                  {shortHash(e.txId, 16, 6)}
                 </Typography>
               </Link>
               {e.isMrc && (

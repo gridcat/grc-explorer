@@ -15,7 +15,7 @@ import {
 } from '../../components/charts/SvgChart';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { api } from '../../lib/api';
-import { formatCompact } from '../../lib/format';
+import { formatCompact, formatYmdDate, MONTHS_SHORT } from '../../lib/format';
 
 interface Point {
   ts: number;
@@ -52,20 +52,7 @@ function formatGrc(v: number): string {
   return `${formatCompact(v, 2)} GRC`;
 }
 
-// Hoisted out of formatDate so the X-axis tick formatter can reuse it
-// against `getUTCMonth()`. Locale-dependent date formatting (the previous
-// `toLocaleString('en', { month: 'short' })` shape) caused SSR/CSR
-// hydration drift on the year-end tick: server renders Dec 31 23:59:59 UTC
-// in UTC ("Dec"), client renders the same instant in its own TZ ("Jan" in
-// any positive offset). UTC-anchored array lookup is timezone-invariant.
-const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-function formatDate(date: string): string {
-  // YYYY-MM-DD → "12 Mar 2024" without spinning up a Date object per
-  // tooltip frame (mouse-move can fire 60×/s).
-  const [y, m, d] = date.split('-');
-  return `${Number(d)} ${MONTHS_SHORT[Number(m) - 1] ?? '???'} ${y}`;
-}
+const formatDate = formatYmdDate;
 
 export default function StakersHistory({ points: rawPoints }: StakersHistoryProps) {
   const router = useRouter();

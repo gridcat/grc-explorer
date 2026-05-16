@@ -4,6 +4,7 @@ import {
 import { alpha, useTheme, type Theme } from '@mui/material/styles';
 import Link from 'next/link';
 import { useMemo } from 'react';
+import { MONTHS_SHORT } from '../lib/format';
 
 /**
  * Heatmap-style date archive grids. Two flavors:
@@ -34,8 +35,6 @@ interface Cell {
   tooltip?: string;
 }
 
-const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 function densityColor(theme: Theme, count: number, max: number): string {
@@ -109,7 +108,7 @@ export function YearMonthGrid({
   const byMonth = new Map<number, typeof months[number]>();
   for (const m of months) byMonth.set(m.month, m);
 
-  const cells: Cell[] = MONTH_NAMES.map((name, i) => {
+  const cells: Cell[] = MONTHS_SHORT.map((name, i) => {
     const data = byMonth.get(i + 1);
     const count = data?.blockCount ?? 0;
     return {
@@ -181,8 +180,8 @@ export function MonthDayGrid({
       count,
       href: count > 0 ? `${basePath}/${year}/${fmtMonth}/${String(d).padStart(2, '0')}` : null,
       tooltip: data
-        ? `${data.day} ${MONTH_NAMES[month - 1]} ${year} · ${count.toLocaleString('en-US')} blocks · ${data.txCount.toLocaleString('en-US')} txs`
-        : `${d} ${MONTH_NAMES[month - 1]} ${year} · no blocks indexed`,
+        ? `${data.day} ${MONTHS_SHORT[month - 1]} ${year} · ${count.toLocaleString('en-US')} blocks · ${data.txCount.toLocaleString('en-US')} txs`
+        : `${d} ${MONTHS_SHORT[month - 1]} ${year} · no blocks indexed`,
     });
   }
   while (cells.length % 7 !== 0) {

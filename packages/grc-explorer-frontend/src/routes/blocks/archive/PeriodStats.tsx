@@ -1,7 +1,7 @@
 import {
   Card, CardContent, Stack, Typography,
 } from '@mui/material';
-import { formatNumber } from '../../../lib/format';
+import { formatGrcCompact, formatNumber } from '../../../lib/format';
 import type { ArchivePeriodStats } from './types';
 
 /**
@@ -15,9 +15,9 @@ export function PeriodStatRow({ stats }: { stats: ArchivePeriodStats }) {
     { label: 'Blocks',      value: formatNumber(stats.blockCount) },
     { label: 'Transactions', value: formatNumber(stats.txCount) },
     { label: 'Superblocks', value: formatNumber(stats.superblockCount) },
-    { label: 'GRC moved',   value: formatGrcCompact(stats.valueMovedGrc) },
-    { label: 'GRC minted',  value: formatGrcCompact(stats.mintTotalGrc) },
-    { label: 'Fees (GRC)',  value: formatGrcCompact(stats.feeTotalGrc) },
+    { label: 'GRC moved',   value: formatGrcCompact(Number(stats.valueMovedGrc)) },
+    { label: 'GRC minted',  value: formatGrcCompact(Number(stats.mintTotalGrc)) },
+    { label: 'Fees (GRC)',  value: formatGrcCompact(Number(stats.feeTotalGrc)) },
   ];
   return (
     <Stack direction="row" spacing={{ xs: 1, sm: 2 }} useFlexGap sx={{ flexWrap: 'wrap' }}>
@@ -55,20 +55,3 @@ export function PeriodStatRow({ stats }: { stats: ArchivePeriodStats }) {
   );
 }
 
-// Compact "GRC moved" rendering — the raw decimal-string from CH (eg
-// "12345678.12345678") is unreadable at-a-glance for >1k. Collapse to
-// K/M/G/T with two decimals like the difficulty tile does.
-function formatGrcCompact(grc: string): string {
-  const n = Number(grc);
-  if (!Number.isFinite(n) || n === 0) return '0';
-  const abs = Math.abs(n);
-  if (abs < 1000) return n.toLocaleString('en-US', { maximumFractionDigits: 2 });
-  const units = ['K', 'M', 'G', 'T', 'P'];
-  let v = n;
-  let idx = -1;
-  while (Math.abs(v) >= 1000 && idx < units.length - 1) {
-    v /= 1000;
-    idx += 1;
-  }
-  return `${v.toFixed(2)} ${units[idx]}`;
-}

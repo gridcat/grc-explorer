@@ -2,7 +2,7 @@ import type { GetServerSideProps } from 'next';
 import { YearArchive } from '../../routes/blocks/archive/YearArchive';
 import { fetchYearArchive, fetchYearList } from '../../routes/blocks/archive/fetch';
 import type { YearArchiveData } from '../../routes/blocks/archive/types';
-import { loadYearArticle } from '../../lib/contentLoader';
+import { loadYearArticle, hasYearArticle } from '../../lib/contentLoader';
 
 interface ArticleProps {
   data: Record<string, unknown>;
@@ -49,19 +49,23 @@ export const getServerSideProps: GetServerSideProps<Props> = async (ctx) => {
     // Fetch the full year list in parallel so we can compute prev/next
     // arrows that point at years which actually have indexed data —
     // year-1 is wrong when (e.g.) 2013 has no blocks but 2014 does.
-    const [data, list, article] = await Promise.all([
+    const [data, list, article, prevHasArticle, nextHasArticle] = await Promise.all([
       fetchYearArchive(yearNum),
       fetchYearList(),
       loadYearArticle(yearNum),
+      hasYearArticle(yearNum - 1),
+      hasYearArticle(yearNum + 1),
     ]);
     if (!data) return { notFound: true };
-    // List is newest-first. Find this year's position; its neighbors
-    // in the (sorted desc) list are the chronologically adjacent
-    // populated years.
-    const sortedYears = list.map((y) => y.year).sort((a, b) => a - b);
-    const idx = sortedYears.indexOf(yearNum);
-    const prevYear = idx > 0 ? sortedYears[idx - 1] : null;
-    const nextYear = idx >= 0 && idx < sortedYears.length - 1 ? sortedYears[idx + 1] : null;
+    // Prev/next walk the full history range, not just data-years: a
+    // year is a navigable page if it has indexed blocks OR an editorial
+    // article (e.g. 2013 — Gridcoin Classic context — has an article
+    // but no chain data, so list-only nav would orphan it). The chain
+    // is contiguous, so a simple ±1 naturally yields no prev on the
+    // earliest year and no next on the latest.
+    const dataYears = new Set(list.map((y) => y.year));
+    const prevYear = (dataYears.has(yearNum - 1) || prevHasArticle) ? yearNum - 1 : null;
+    const nextYear = (dataYears.has(yearNum + 1) || nextHasArticle) ? yearNum + 1 : null;
     return {
       props: {
         data,

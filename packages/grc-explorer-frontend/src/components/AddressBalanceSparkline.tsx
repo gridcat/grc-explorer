@@ -9,7 +9,7 @@ import {
   linearScale,
   niceTicks,
 } from './charts/SvgChart';
-import { formatGrcCompact } from '../lib/format';
+import { formatGrcCompact, nowSec } from '../lib/format';
 
 interface Point { height: number; ts: number; balance: string }
 
@@ -30,7 +30,7 @@ export function AddressBalanceSparkline({ address }: { address: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    const now = Math.floor(Date.now() / 1000);
+    const now = nowSec();
     const from = now - WINDOW_DAYS * 86_400;
     api.get(`/addresses/${address}/balance-history`, {
       params: { from, to: now, granularity: '1d' },

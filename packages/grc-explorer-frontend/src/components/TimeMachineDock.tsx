@@ -10,7 +10,7 @@ import SkipNextIcon from '@mui/icons-material/SkipNext';
 import LinkIcon from '@mui/icons-material/Link';
 import { useState } from 'react';
 import { Speed, SPEEDS, useTimeMachine } from '../hooks/useTimeMachine';
-import { formatDuration } from '../lib/format';
+import { formatDuration, nowSec } from '../lib/format';
 
 /**
  * Bottom-fixed time-machine dock — shown on every page since the
@@ -81,7 +81,7 @@ export function TimeMachineDock() {
 
   // Replay mode — full dock.
   const min = tm.bounds?.minTs ?? 0;
-  const max = tm.bounds?.maxTs ?? Math.floor(Date.now() / 1000);
+  const max = tm.bounds?.maxTs ?? nowSec();
   const committedAt = tm.at ?? max;
   const cur = scrubAt ?? committedAt;
   const formattedCur = new Date(cur * 1000).toLocaleString(undefined, {

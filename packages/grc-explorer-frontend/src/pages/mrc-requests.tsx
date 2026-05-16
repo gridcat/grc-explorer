@@ -1,21 +1,31 @@
 import {
-  Box, Card, CardContent, Chip, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography,
+  Box, Card, CardContent, Chip, Paper, Stack, Table, TableBody, TableCell, TableHead,
+  TablePagination, TableRow, TableSortLabel, Typography,
 } from '@mui/material';
 import { Stat } from '../components/Stat';
 import { useTheme } from '@mui/material/styles';
 import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useRouter } from 'next/router';
 import {
-  Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ResponsiveContainer, Scatter, ScatterChart,
+  useEffect, useMemo, useRef, useState,
+} from 'react';
+import {
+  Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Scatter, ScatterChart,
   Tooltip, XAxis, YAxis, ZAxis,
 } from 'recharts';
 import { Layout } from '../layouts/Layout';
 import { api } from '../lib/api';
-import { formatDuration, formatGrc } from '../lib/format';
+import {
+  formatDuration, formatGrc, formatNumber, formatUnixDate, formatUnixDateShort,
+} from '../lib/format';
+import { makeRechartsTooltip } from '../components/charts/RechartsTooltip';
 import { HashTrim } from '../components/HashTrim';
 import { TimeAgo } from '../components/TimeAgo';
 import { Crumbs, RESEARCHERS_CRUMB } from '../components/Crumbs';
+import {
+  PAGE_SIZE_OPTIONS, pushPaginationQuery, readPageFromQuery, readPageSizeFromQuery,
+} from '../lib/pagination';
 
 interface Summary {
   confirmedCount: number;
@@ -72,44 +82,185 @@ interface MrcDashboardProps {
   initialScatter: ScatterPoint[];
   initialStakerTake: StakerTakePoint[];
   initialRecent: MrcRow[];
+  initialRecentTotal: number;
+  initialPage: number;
+  initialPageSize: number;
+  initialSort: string;
 }
 
 const TIMELINE_DAYS = 30;
 const WAIT_DAYS = 90;
 const SCATTER_DAYS = 30;
 const STAKER_TAKE_DAYS = 30;
-const RECENT_LIMIT = 25;
+
+// Whitelist must mirror the backend (`routes/mrcRequests.ts:SORTABLE`).
+// Any value not in this set falls back to `-first_seen` server-side, so
+// stale shareable links can't error.
+type SortField = 'first_seen' | 'block_height' | 'research_subsidy' | 'fee_offered';
+type SortDir = 'asc' | 'desc';
+const SORT_FIELDS: ReadonlyArray<SortField> = ['first_seen', 'block_height', 'research_subsidy', 'fee_offered'];
+
+function parseSort(raw: string | string[] | undefined): { field: SortField; dir: SortDir } {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (!value) return { field: 'first_seen', dir: 'desc' };
+  const dir: SortDir = value.startsWith('-') ? 'desc' : 'asc';
+  const field = value.replace(/^-/, '') as SortField;
+  if (!SORT_FIELDS.includes(field)) return { field: 'first_seen', dir: 'desc' };
+  return { field, dir };
+}
+
+function formatSort(field: SortField, dir: SortDir): string {
+  return `${dir === 'desc' ? '-' : ''}${field}`;
+}
+
+const STATUS_CHIP_COLOR: Record<MrcRow['status'], 'success' | 'default' | 'primary'> = {
+  confirmed: 'success',
+  evicted: 'default',
+  pending: 'primary',
+};
 
 export default function MrcDashboard({
-  initialSummary, initialTimeline, initialWaitDistribution, initialScatter, initialStakerTake, initialRecent,
+  initialSummary, initialTimeline, initialWaitDistribution, initialScatter, initialStakerTake,
+  initialRecent, initialRecentTotal, initialPage, initialPageSize, initialSort,
 }: MrcDashboardProps) {
   const theme = useTheme();
+  const router = useRouter();
   const [summary, setSummary] = useState<Summary | null>(initialSummary);
   const [timeline, setTimeline] = useState<TimelinePoint[]>(initialTimeline);
   const [wait, setWait] = useState<WaitDistribution | null>(initialWaitDistribution);
   const [scatter, setScatter] = useState<ScatterPoint[]>(initialScatter);
   const [stakerTake, setStakerTake] = useState<StakerTakePoint[]>(initialStakerTake);
   const [recent, setRecent] = useState<MrcRow[]>(initialRecent);
+  const [recentTotal, setRecentTotal] = useState<number>(initialRecentTotal);
+  const [recentLoading, setRecentLoading] = useState(false);
 
-  // Refresh every 60s — the data is per-block-cadence, no need for SSE here.
+  const page = readPageFromQuery(router.query);
+  const pageSize = readPageSizeFromQuery(router.query);
+  const sort = parseSort(router.query.sort);
+
+  // Skip the first table refetch — SSR already hydrated us with the
+  // exact (page, pageSize, sort) the URL asked for. Only refetch when
+  // any of those change after mount.
+  const initialKey = `${initialPage}/${initialPageSize}/${initialSort}`;
+  const lastFetchedKey = useRef(initialKey);
+  useEffect(() => {
+    const key = `${page}/${pageSize}/${formatSort(sort.field, sort.dir)}`;
+    if (key === lastFetchedKey.current) return;
+    lastFetchedKey.current = key;
+    let cancelled = false;
+    setRecentLoading(true);
+    api.get('/mrc-requests', {
+      params: {
+        'page[number]': page + 1,
+        'page[size]': pageSize,
+        sort: formatSort(sort.field, sort.dir),
+      },
+    }).then((r) => {
+      if (cancelled) return;
+      const data = (r.data?.data ?? []) as Array<{ attributes: MrcRow }>;
+      setRecent(data.map((d) => d.attributes));
+      setRecentTotal(Number(r.data?.meta?.count ?? 0));
+    }).catch(() => { /* keep last good rows */ }).finally(() => {
+      if (!cancelled) setRecentLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [page, pageSize, sort.field, sort.dir]);
+
+  const updatePagination = (next: { page?: number; pageSize?: number }) => {
+    pushPaginationQuery(router, next);
+  };
+
+  const toggleSort = (field: SortField) => {
+    // Same field → flip direction; new field → start with desc, since
+    // most numeric columns are most useful largest-first.
+    const nextDir: SortDir = sort.field === field
+      ? (sort.dir === 'desc' ? 'asc' : 'desc')
+      : 'desc';
+    router.replace(
+      {
+        pathname: router.pathname,
+        query: {
+          ...router.query,
+          sort: formatSort(field, nextDir),
+          page: '0',
+        },
+      },
+      undefined,
+      { scroll: false, shallow: true },
+    );
+  };
+
+  // One tooltip component per chart. Memoised on theme so a dark/light
+  // mode flip rebuilds the closure (the swatch colour changes), but
+  // ordinary refresh ticks don't churn the recharts content prop.
+  const TimelineTooltip = useMemo(() => makeRechartsTooltip((payload, label) => ({
+    title: typeof label === 'number' ? formatUnixDate(label) : undefined,
+    rows: [{
+      label: 'MRCs',
+      value: formatNumber(Number(payload[0]?.value ?? 0)),
+      color: theme.palette.primary.main,
+    }],
+  })), [theme.palette.primary.main]);
+
+  const WaitTooltip = useMemo(() => makeRechartsTooltip((payload, label) => ({
+    title: typeof label === 'string' ? `Wait ${label}` : undefined,
+    rows: [{
+      label: 'Count',
+      value: formatNumber(Number(payload[0]?.value ?? 0)),
+      color: theme.palette.primary.main,
+    }],
+  })), [theme.palette.primary.main]);
+
+  const StakerTakeTooltip = useMemo(() => makeRechartsTooltip((payload, label) => ({
+    title: typeof label === 'number' ? formatUnixDate(label) : undefined,
+    rows: payload.map((p) => ({
+      label: p.dataKey === 'staker' ? 'Staker' : 'Foundation',
+      value: `${Number(p.value ?? 0).toFixed(8)} GRC`,
+      color: p.color
+        ?? (p.dataKey === 'staker' ? theme.palette.success.main : theme.palette.warning.main),
+    })),
+  })), [theme.palette.success.main, theme.palette.warning.main]);
+
+  const ScatterTooltip = useMemo(() => makeRechartsTooltip((payload) => {
+    const point = payload[0]?.payload as
+      | { researchSubsidy?: number; feeOffered?: number }
+      | undefined;
+    if (!point) return null;
+    return {
+      rows: [
+        {
+          label: 'Requested',
+          value: `${Number(point.researchSubsidy ?? 0).toLocaleString()} GRC`,
+          color: theme.palette.secondary.main,
+        },
+        {
+          label: 'Bid fee',
+          value: `${Number(point.feeOffered ?? 0).toFixed(8)} GRC`,
+        },
+      ],
+    };
+  }), [theme.palette.secondary.main]);
+
+  // Refresh the dashboard charts + summary every 60s — data is per-
+  // block-cadence so SSE isn't worth the wiring here. The recent-MRC
+  // table refresh is intentionally separate (see the URL-driven effect
+  // above): the user's page/sort selection has to survive a refresh
+  // tick, and merging the two would clobber it.
   useEffect(() => {
     const refresh = async () => {
       try {
-        const [s, t, w, b, k, r] = await Promise.all([
+        const [s, t, w, b, k] = await Promise.all([
           api.get('/mrc-requests/summary'),
           api.get('/mrc-requests/timeline', { params: { days: TIMELINE_DAYS } }),
           api.get('/mrc-requests/wait-distribution', { params: { days: WAIT_DAYS } }),
           api.get('/mrc-requests/bid-vs-payout', { params: { days: SCATTER_DAYS } }),
           api.get('/mrc-requests/staker-take', { params: { days: STAKER_TAKE_DAYS } }),
-          api.get('/mrc-requests', { params: { 'page[size]': RECENT_LIMIT } }),
         ]);
         setSummary(s.data?.data?.attributes ?? null);
         setTimeline(t.data?.data?.attributes?.samples ?? []);
         setWait(w.data?.data?.attributes ?? null);
         setScatter(b.data?.data?.attributes?.points ?? []);
         setStakerTake(k.data?.data?.attributes?.samples ?? []);
-        const rows = (r.data?.data ?? []) as Array<{ attributes: MrcRow }>;
-        setRecent(rows.map((d) => d.attributes));
       } catch { /* ignore */ }
     };
     const id = setInterval(refresh, 60_000);
@@ -137,9 +288,9 @@ export default function MrcDashboard({
         </Box>
 
         <Box sx={{ display: 'grid', gap: 2, gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)', md: 'repeat(4, 1fr)' } }}>
-          <Stat size="sm" label="Total confirmed" value={summary?.confirmedCount?.toLocaleString() ?? '—'} />
+          <Stat size="sm" label="Total confirmed" value={summary ? formatNumber(summary.confirmedCount) : '—'} />
           <Stat size="sm" label="Research paid (lifetime)" value={summary ? `${formatGrc(summary.confirmedResearchTotal)} GRC` : '—'} />
-          <Stat size="sm" label="Distinct researchers" value={summary?.distinctCpids?.toLocaleString() ?? '—'} />
+          <Stat size="sm" label="Distinct researchers" value={summary ? formatNumber(summary.distinctCpids) : '—'} />
           <Stat
             size="sm"
             label="Last 24h"
@@ -158,13 +309,13 @@ export default function MrcDashboard({
                   <CartesianGrid strokeDasharray="3 3" stroke={theme.palette.divider} />
                   <XAxis
                     dataKey="ts"
-                    tickFormatter={(ts: number) => new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                    tickFormatter={formatUnixDateShort}
                     fontSize={11}
                   />
                   <YAxis fontSize={11} allowDecimals={false} />
                   <Tooltip
-                    labelFormatter={(ts: number) => new Date(ts * 1000).toLocaleDateString()}
-                    formatter={(value: number, key: string) => (key === 'count' ? [value, 'MRCs'] : [value, key])}
+                    cursor={{ stroke: theme.palette.divider, strokeDasharray: '3 3' }}
+                    content={<TimelineTooltip />}
                   />
                   <Line type="monotone" dataKey="count" stroke={theme.palette.primary.main} strokeWidth={2} dot={false} />
                 </LineChart>
@@ -189,12 +340,11 @@ export default function MrcDashboard({
                   <CartesianGrid strokeDasharray="3 3" stroke={theme.palette.divider} />
                   <XAxis dataKey="label" fontSize={11} />
                   <YAxis fontSize={11} allowDecimals={false} />
-                  <Tooltip />
-                  <Bar dataKey="count">
-                    {(wait?.buckets ?? []).map((entry) => (
-                      <Cell key={entry.label} fill={theme.palette.primary.main} />
-                    ))}
-                  </Bar>
+                  <Tooltip
+                    cursor={{ fill: theme.palette.action.hover }}
+                    content={<WaitTooltip />}
+                  />
+                  <Bar dataKey="count" fill={theme.palette.primary.main} />
                 </BarChart>
               </ResponsiveContainer>
               {(wait?.p50Seconds ?? null) === null && (
@@ -230,13 +380,13 @@ export default function MrcDashboard({
                   <CartesianGrid strokeDasharray="3 3" stroke={theme.palette.divider} />
                   <XAxis
                     dataKey="ts"
-                    tickFormatter={(ts: number) => new Date(ts * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                    tickFormatter={formatUnixDateShort}
                     fontSize={11}
                   />
                   <YAxis fontSize={11} tickFormatter={(v: number) => `${v.toFixed(2)}`} />
                   <Tooltip
-                    labelFormatter={(ts: number) => new Date(ts * 1000).toLocaleDateString()}
-                    formatter={(value: number, key: string) => [`${value.toFixed(8)} GRC`, key === 'staker' ? 'Staker' : 'Foundation']}
+                    cursor={{ fill: theme.palette.action.hover }}
+                    content={<StakerTakeTooltip />}
                   />
                   <Bar dataKey="staker" stackId="fees" fill={theme.palette.success.main} />
                   <Bar dataKey="foundation" stackId="fees" fill={theme.palette.warning.main} />
@@ -271,12 +421,8 @@ export default function MrcDashboard({
                   />
                   <ZAxis range={[40, 40]} />
                   <Tooltip
-                    cursor={{ strokeDasharray: '3 3' }}
-                    formatter={(value: number, key: string) => {
-                      if (key === 'researchSubsidy') return [`${value.toLocaleString()} GRC`, 'Requested'];
-                      if (key === 'feeOffered') return [`${value.toFixed(8)} GRC`, 'Bid fee'];
-                      return [value, key];
-                    }}
+                    cursor={{ stroke: theme.palette.divider, strokeDasharray: '3 3' }}
+                    content={<ScatterTooltip />}
                   />
                   <Scatter
                     data={scatter.map((p) => ({
@@ -291,9 +437,9 @@ export default function MrcDashboard({
           </Card>
         </Box>
 
-        <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
+        <Paper variant="outlined" sx={{ overflowX: 'auto', opacity: recentLoading ? 0.6 : 1, transition: 'opacity 120ms' }}>
           <Stack direction="row" sx={{ alignItems: 'baseline', justifyContent: 'space-between', p: 2 }}>
-            <Typography variant="subtitle2" color="text.secondary">Recent MRC requests</Typography>
+            <Typography variant="subtitle2" color="text.secondary">MRC requests</Typography>
             <Stack direction="row" spacing={1}>
               {summary && summary.pendingCount > 0 && (
                 <Chip size="small" label={`${summary.pendingCount} pending`} color="primary" variant="outlined" />
@@ -308,11 +454,43 @@ export default function MrcDashboard({
               <TableRow>
                 <TableCell>Tx</TableCell>
                 <TableCell>Researcher</TableCell>
-                <TableCell align="right">Requested</TableCell>
-                <TableCell align="right">Bid fee</TableCell>
+                <TableCell align="right" sortDirection={sort.field === 'research_subsidy' ? sort.dir : false}>
+                  <TableSortLabel
+                    active={sort.field === 'research_subsidy'}
+                    direction={sort.field === 'research_subsidy' ? sort.dir : 'desc'}
+                    onClick={() => toggleSort('research_subsidy')}
+                  >
+                    Requested
+                  </TableSortLabel>
+                </TableCell>
+                <TableCell align="right" sortDirection={sort.field === 'fee_offered' ? sort.dir : false}>
+                  <TableSortLabel
+                    active={sort.field === 'fee_offered'}
+                    direction={sort.field === 'fee_offered' ? sort.dir : 'desc'}
+                    onClick={() => toggleSort('fee_offered')}
+                  >
+                    Bid fee
+                  </TableSortLabel>
+                </TableCell>
                 <TableCell>Status</TableCell>
-                <TableCell>Block</TableCell>
-                <TableCell>First seen</TableCell>
+                <TableCell sortDirection={sort.field === 'block_height' ? sort.dir : false}>
+                  <TableSortLabel
+                    active={sort.field === 'block_height'}
+                    direction={sort.field === 'block_height' ? sort.dir : 'desc'}
+                    onClick={() => toggleSort('block_height')}
+                  >
+                    Block
+                  </TableSortLabel>
+                </TableCell>
+                <TableCell sortDirection={sort.field === 'first_seen' ? sort.dir : false}>
+                  <TableSortLabel
+                    active={sort.field === 'first_seen'}
+                    direction={sort.field === 'first_seen' ? sort.dir : 'desc'}
+                    onClick={() => toggleSort('first_seen')}
+                  >
+                    First seen
+                  </TableSortLabel>
+                </TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -334,7 +512,7 @@ export default function MrcDashboard({
                     <Chip
                       size="small"
                       label={m.status}
-                      color={m.status === 'confirmed' ? 'success' : m.status === 'evicted' ? 'default' : 'primary'}
+                      color={STATUS_CHIP_COLOR[m.status]}
                       variant={m.status === 'pending' ? 'filled' : 'outlined'}
                     />
                   </TableCell>
@@ -346,7 +524,7 @@ export default function MrcDashboard({
                   <TableCell><TimeAgo unixSec={m.firstSeen} /></TableCell>
                 </TableRow>
               ))}
-              {recent.length === 0 && (
+              {recent.length === 0 && !recentLoading && (
                 <TableRow>
                   <TableCell colSpan={7} sx={{ textAlign: 'center', color: 'text.secondary', py: 3 }}>
                     No MRC requests observed yet.
@@ -355,13 +533,26 @@ export default function MrcDashboard({
               )}
             </TableBody>
           </Table>
+          <TablePagination
+            component="div"
+            count={recentTotal}
+            page={page}
+            onPageChange={(_, p) => updatePagination({ page: p })}
+            rowsPerPage={pageSize}
+            rowsPerPageOptions={PAGE_SIZE_OPTIONS}
+            onRowsPerPageChange={(e) => updatePagination({ page: 0, pageSize: parseInt(e.target.value, 10) })}
+          />
         </Paper>
       </Stack>
     </Layout>
   );
 }
 
-export const getServerSideProps: GetServerSideProps<MrcDashboardProps> = async () => {
+export const getServerSideProps: GetServerSideProps<MrcDashboardProps> = async (ctx) => {
+  const page = readPageFromQuery(ctx.query);
+  const pageSize = readPageSizeFromQuery(ctx.query);
+  const sort = parseSort(ctx.query.sort);
+  const sortStr = formatSort(sort.field, sort.dir);
   try {
     const [s, t, w, b, k, r] = await Promise.all([
       api.get('/mrc-requests/summary'),
@@ -369,7 +560,9 @@ export const getServerSideProps: GetServerSideProps<MrcDashboardProps> = async (
       api.get('/mrc-requests/wait-distribution', { params: { days: WAIT_DAYS } }),
       api.get('/mrc-requests/bid-vs-payout', { params: { days: SCATTER_DAYS } }),
       api.get('/mrc-requests/staker-take', { params: { days: STAKER_TAKE_DAYS } }),
-      api.get('/mrc-requests', { params: { 'page[size]': RECENT_LIMIT } }),
+      api.get('/mrc-requests', {
+        params: { 'page[number]': page + 1, 'page[size]': pageSize, sort: sortStr },
+      }),
     ]);
     const recentRows = (r.data?.data ?? []) as Array<{ attributes: MrcRow }>;
     return {
@@ -380,6 +573,10 @@ export const getServerSideProps: GetServerSideProps<MrcDashboardProps> = async (
         initialScatter: b.data?.data?.attributes?.points ?? [],
         initialStakerTake: k.data?.data?.attributes?.samples ?? [],
         initialRecent: recentRows.map((d) => d.attributes),
+        initialRecentTotal: Number(r.data?.meta?.count ?? 0),
+        initialPage: page,
+        initialPageSize: pageSize,
+        initialSort: sortStr,
       },
     };
   } catch {
@@ -391,6 +588,10 @@ export const getServerSideProps: GetServerSideProps<MrcDashboardProps> = async (
         initialScatter: [],
         initialStakerTake: [],
         initialRecent: [],
+        initialRecentTotal: 0,
+        initialPage: page,
+        initialPageSize: pageSize,
+        initialSort: sortStr,
       },
     };
   }

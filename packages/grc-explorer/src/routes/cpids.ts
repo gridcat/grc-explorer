@@ -1,12 +1,18 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { ch } from '../lib/ch';
+import { byBalanceDesc, computeCombined } from '../lib/combined';
+import { cpidDisplayName, resolveCpidNames } from '../lib/cpidNames';
 import { halford2grc } from '../lib/halford';
 import { statusOf, waitSecondsOf } from '../lib/mrcStatus';
 import { getPagination } from '../lib/pagination';
-import { param } from '../lib/req';
+import { clampedQueryInt, param } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
-import { parseAt, parseUnixSeconds, resolveAtHeight } from '../lib/timeMachine';
+import { getMoneySupplyRaw } from '../lib/supply';
+import { swrCachedLiveKeyed } from '../lib/swrCache';
+import {
+  parseAt, parseUnixSeconds, resolveAtHeight, resolveAtSuperblockHeight,
+} from '../lib/timeMachine';
 import { registerParamValidators } from '../lib/validators';
 
 export const cpidsRouter = Router();
@@ -25,41 +31,19 @@ registerParamValidators(cpidsRouter);
 // or unknown" and falls back to the truncated CPID hash.
 cpidsRouter.get('/names', async (req: Request, res: Response) => {
   const raw = String(req.query.cpids ?? '');
-  // Allowlist 32-char lowercase hex only; cap the unique set at 200
-  // so a malicious caller can't pass a 100k-CPID list and turn the
-  // route into a CH-grinder.
+  // Allowlist 32-char hex only; cap the unique set at 500 so an
+  // untrusted caller can't pass a 100k-CPID list and turn the route
+  // into a CH-grinder (useCpidNames chunks to 100/request client-side;
+  // this is the server-side backstop). Internal SSR-seed enrichment
+  // calls resolveCpidNames directly with no such cap.
   const requested = raw
     .toLowerCase()
     .split(',')
     .filter((s) => /^[0-9a-f]{32}$/.test(s));
-  const unique = Array.from(new Set(requested)).slice(0, 200);
+  const unique = Array.from(new Set(requested)).slice(0, 500);
+  const resolved = await resolveCpidNames(unique);
   const names: Record<string, string> = {};
-  if (unique.length > 0) {
-    try {
-      // argMax(name, total_credit) — pick the BOINC project where the
-      // user has the most credit as the canonical display name. Most
-      // users have their primary project as the highest-credit one
-      // and that's where their preferred name lives. Empty names
-      // (anonymous BOINC profiles) are filtered server-side so the
-      // map only carries displayable strings.
-      const result = await ch.query({
-        query: `
-          SELECT cpid, argMax(name, total_credit) AS name
-          FROM project_users FINAL
-          WHERE cpid IN ({cpids: Array(String)}) AND name != ''
-          GROUP BY cpid
-        `,
-        query_params: { cpids: unique },
-        format: 'JSONEachRow',
-      });
-      const rows = await result.json<{ cpid: string; name: string }>();
-      for (const r of rows) if (r.name) names[r.cpid] = r.name;
-    } catch (_err) {
-      // Table absent (pre-migration-0015) or transient CH error —
-      // empty response is a safe degradation; the UI just falls back
-      // to truncated CPID hashes.
-    }
-  }
+  for (const [cpid, name] of resolved) names[cpid] = name;
   res.status(StatusCodes.OK).send(withMeta({
     data: {
       type: 'cpid_names_batch',
@@ -69,38 +53,89 @@ cpidsRouter.get('/names', async (req: Request, res: Response) => {
   }));
 });
 
-cpidsRouter.get('/leaderboard', async (req: Request, res: Response) => {
-  const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? '20'), 10) || 20, 1), 100);
-  const at = parseAt(req);
-  let compareAt = parseUnixSeconds(req, 'compare_at');
-  const compareDaysRaw = parseInt(String(req.query.compare_days ?? ''), 10);
-  const compareDays = Number.isFinite(compareDaysRaw) && compareDaysRaw > 0 ? compareDaysRaw : null;
-
-  const findSb = async (atTime: number | undefined): Promise<number | null> => {
-    if (atTime === undefined) {
-      const r = await ch.query({
-        query: 'SELECT height FROM superblocks FINAL ORDER BY height DESC LIMIT 1',
-        format: 'JSONEachRow',
-      });
-      return (await r.json<{ height: number }>())[0]?.height ?? null;
-    }
-    const r = await ch.query({
-      query: `
-        SELECT height FROM blocks FINAL
-        WHERE is_superblock = true AND time <= toDateTime({at: UInt32})
-        ORDER BY height DESC LIMIT 1
-      `,
-      query_params: { at: atTime },
-      format: 'JSONEachRow',
-    });
-    return (await r.json<{ height: number }>())[0]?.height ?? null;
-  };
-
-  const currentHeight = await findSb(at);
-  if (currentHeight === null) {
-    res.status(StatusCodes.OK).send(withMeta({ data: [] }));
+// Resolve a BOINC display name to its CPID(s). Used by the frontend
+// when a user lands on `/cpids/<name>` instead of `/cpids/<hex>` —
+// SSR looks the name up here and redirects to the canonical hex URL.
+//
+// Returns the highest-credit CPID match when there's an exact name
+// match. Falls back to a Meili prefix/substring search if no exact
+// match exists. Empty `matches` means 404; consumers should show a
+// friendly "no researcher by that name" page instead of erroring.
+cpidsRouter.get('/resolve', async (req: Request, res: Response) => {
+  const raw = String(req.query.name ?? '').trim();
+  if (!raw || raw.length > 64) {
+    res.status(StatusCodes.OK).send(withMeta({
+      data: { type: 'cpid_resolve', id: 'empty', attributes: { matches: [] } },
+    }));
     return;
   }
+  // Exact match first — argMax over project_users picks the CPID
+  // where this name has the most credit, which is almost always the
+  // user's primary BOINC account. Doubles as the "canonical" CPID
+  // when the same name exists across multiple projects.
+  let matches: Array<{ cpid: string; name: string; project_name: string; total_credit: number }> = [];
+  try {
+    const exact = await ch.query({
+      // No FINAL: bloom-pruned (idx_project_users_name, migration
+      // 0032) + per-(cpid,project_name) _seq dedup + HAVING re-assert
+      // — same verified pattern as resolveCpidNames / search.ts.
+      query: `
+        SELECT cpid, disp_name AS name, project_name, total_credit FROM (
+          SELECT cpid, project_name,
+                 argMax(name, _seq)         AS disp_name,
+                 argMax(total_credit, _seq) AS total_credit
+          FROM project_users
+          WHERE name = {name: String}
+          GROUP BY cpid, project_name
+          HAVING disp_name = {name: String}
+        )
+        ORDER BY total_credit DESC
+        LIMIT 10
+      `,
+      query_params: { name: raw },
+      format: 'JSONEachRow',
+    });
+    matches = await exact.json<{ cpid: string; name: string; project_name: string; total_credit: number }>();
+  } catch (_err) {
+    // project_users absent (fresh deploy pre-migration 0015) → fall
+    // through to empty matches; the frontend handles the 404 case.
+  }
+  res.status(StatusCodes.OK).send(withMeta({
+    data: {
+      type: 'cpid_resolve',
+      id: raw,
+      attributes: {
+        query: raw,
+        matches: matches.map((m) => ({
+          cpid: m.cpid,
+          name: m.name,
+          projectName: m.project_name,
+          totalCredit: m.total_credit,
+        })),
+      },
+    },
+  }));
+});
+
+// Superblock-cadence (~daily) leaderboard with an optional compare
+// window; long live-gated memo keyed by every shaping param.
+const CPID_LEADERBOARD_TTL_MS = 300_000;
+interface CpidLeaderboardPayload {
+  data: unknown[];
+  meta?: Record<string, unknown>;
+  [k: string]: unknown;
+}
+const getCpidLeaderboard = swrCachedLiveKeyed<CpidLeaderboardPayload>(CPID_LEADERBOARD_TTL_MS);
+
+async function buildCpidLeaderboard(
+  limit: number,
+  at: number | undefined,
+  rawCompareAt: number | undefined,
+  compareDays: number | null,
+): Promise<CpidLeaderboardPayload> {
+  let compareAt = rawCompareAt;
+  const currentHeight = await resolveAtSuperblockHeight(at);
+  if (currentHeight === null) return { data: [] };
   if (compareAt === undefined && compareDays !== null) {
     const r = await ch.query({
       query: 'SELECT toUnixTimestamp(time) AS time FROM blocks FINAL WHERE height = {h: UInt32}',
@@ -110,7 +145,7 @@ cpidsRouter.get('/leaderboard', async (req: Request, res: Response) => {
     const t = (await r.json<{ time: number }>())[0]?.time;
     if (t !== undefined) compareAt = t - compareDays * 86_400;
   }
-  const compareHeight = compareAt !== undefined ? await findSb(compareAt) : null;
+  const compareHeight = compareAt !== undefined ? await resolveAtSuperblockHeight(compareAt) : null;
 
   const [currentResult, compareResult] = await Promise.all([
     ch.query({
@@ -140,7 +175,11 @@ cpidsRouter.get('/leaderboard', async (req: Request, res: Response) => {
   const compareRanks = new Map<string, number>();
   compare.forEach((row, idx) => compareRanks.set(row.cpid, idx + 1));
 
-  res.status(StatusCodes.OK).send(withMeta({
+  // Resolve display names server-side so the SSR seed renders names
+  // without the frontend making a second /cpids/names round trip.
+  const names = await resolveCpidNames(current.map((r) => r.cpid));
+
+  return {
     data: current.map((row, idx) => {
       const rankNow = idx + 1;
       const rankThen = compareRanks.get(row.cpid);
@@ -150,6 +189,7 @@ cpidsRouter.get('/leaderboard', async (req: Request, res: Response) => {
         id: row.cpid,
         attributes: {
           cpid: row.cpid,
+          displayName: cpidDisplayName(names, row.cpid),
           rank: rankNow,
           magnitude: row.magnitude,
           rankThen: rankThen ?? null,
@@ -163,7 +203,21 @@ cpidsRouter.get('/leaderboard', async (req: Request, res: Response) => {
       compareSuperblockHeight: compareHeight,
       limit,
     },
-  }));
+  };
+}
+
+cpidsRouter.get('/leaderboard', async (req: Request, res: Response) => {
+  const limit = clampedQueryInt(req, 'limit', { def: 20, min: 1, max: 100 });
+  const at = parseAt(req);
+  const rawCompareAt = parseUnixSeconds(req, 'compare_at');
+  const compareDaysRaw = parseInt(String(req.query.compare_days ?? ''), 10);
+  const compareDays = Number.isFinite(compareDaysRaw) && compareDaysRaw > 0
+    ? compareDaysRaw : null;
+  const payload = await getCpidLeaderboard(
+    `${limit}:${at ?? 'tip'}:${rawCompareAt ?? ''}:${compareDays ?? ''}`,
+    () => buildCpidLeaderboard(limit, at, rawCompareAt, compareDays),
+  );
+  res.status(StatusCodes.OK).send(withMeta(payload));
 });
 
 cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
@@ -180,7 +234,9 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
   const params: Record<string, unknown> = { cpid };
   if (hasAtFilter) params.h = atHeight;
 
-  const [claimResult, magResult, beaconResult, blockCountResult, mrcResult, namesResult] = await Promise.all([
+  const [
+    claimResult, magResult, beaconResult, blockCountResult, mrcResult, namesResult, linkedWalletsResult,
+  ] = await Promise.all([
     ch.query({
       query: `
         SELECT block_height, organization,
@@ -244,15 +300,71 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
     // resilient if the table is absent (fresh deploy pre-migration
     // 0015): empty array, the rest of the response still renders.
     ch.query({
+      // No FINAL: cpid is the LEADING ORDER BY key, so WHERE cpid is a
+      // tight PK range once FINAL is gone. Dedup each project_name to
+      // its latest _seq, then drop empty names post-dedup (HAVING).
       query: `
-        SELECT project_name, name, total_credit
-        FROM project_users FINAL
-        WHERE cpid = {cpid: String} AND name != ''
+        SELECT project_name, disp_name AS name, total_credit FROM (
+          SELECT project_name,
+                 argMax(name, _seq)         AS disp_name,
+                 argMax(total_credit, _seq) AS total_credit
+          FROM project_users
+          WHERE cpid = {cpid: String}
+          GROUP BY project_name
+          HAVING disp_name != ''
+        )
         ORDER BY total_credit DESC
       `,
       query_params: { cpid },
       format: 'JSONEachRow',
     }).catch(() => null),
+    // Wallet ↔ CPID linkage from three on-chain signals:
+    //   • beacons.address — the researcher signed a beacon contract.
+    //   • blocks.staker_cpid → miner_address — the wallet had the
+    //     CPID's research key + private key to sign that coinstake.
+    //   • mrc_requests.cpid → pay_to_address — the researcher chose
+    //     this address as their MRC payout target.
+    // The inner UNION ALL produces one row per (address, source) with
+    // per-source aggregates; the outer GROUP BY collapses across
+    // sources so the response is one row per distinct address.
+    ch.query({
+      query: `
+        SELECT
+          address,
+          toUInt32(sumIf(c, source = 'beacon')) AS beacon_count,
+          toUInt32(sumIf(c, source = 'staked')) AS staked_blocks,
+          toUInt32(sumIf(c, source = 'mrc'))    AS mrc_payouts,
+          toUInt32(min(first_h))                AS first_height,
+          toUInt32(max(last_h))                 AS last_height
+        FROM (
+          SELECT address, count() AS c, 'beacon' AS source,
+                 min(block_height) AS first_h, max(block_height) AS last_h
+          FROM beacons FINAL
+          WHERE cpid = {cpid: String} AND address != '' ${cap}
+          GROUP BY address
+          UNION ALL
+          SELECT miner_address AS address, count() AS c, 'staked' AS source,
+                 min(height) AS first_h, max(height) AS last_h
+          FROM blocks FINAL
+          WHERE staker_cpid = {cpid: String}
+            AND miner_address IS NOT NULL AND miner_address != '' ${blockCap}
+          GROUP BY miner_address
+          UNION ALL
+          SELECT pay_to_address AS address, count() AS c, 'mrc' AS source,
+                 min(block_height) AS first_h, max(block_height) AS last_h
+          FROM mrc_requests FINAL
+          WHERE cpid = {cpid: String}
+            AND pay_to_address IS NOT NULL AND pay_to_address != ''
+            AND block_height IS NOT NULL ${cap}
+          GROUP BY pay_to_address
+        )
+        GROUP BY address
+        ORDER BY beacon_count DESC, staked_blocks DESC, mrc_payouts DESC, last_height DESC
+        LIMIT 50
+      `,
+      query_params: params,
+      format: 'JSONEachRow',
+    }),
   ]);
   const claims = await claimResult.json<{
     block_height: number; organization: string; block_subsidy: string;
@@ -272,6 +384,68 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
   const names = namesResult
     ? await namesResult.json<{ project_name: string; name: string; total_credit: number }>()
     : [];
+  const linkedWallets = await linkedWalletsResult.json<{
+    address: string;
+    beacon_count: number;
+    staked_blocks: number;
+    mrc_payouts: number;
+    first_height: number;
+    last_height: number;
+  }>();
+  // Current rank — how many CPIDs have a higher magnitude in the most
+  // recent superblock this CPID appeared in? Plus 1 = their rank. If
+  // they don't appear in any superblock yet, rank is null (the page
+  // renders "—"). Cheap: bounded by the per-superblock CPID set
+  // (~150-200 entries on mainnet).
+  //
+  // Fired in parallel with the claim-heights time lookup — they're
+  // independent CH queries reachable from the data we already have.
+  const claimHeights = claims.length > 0
+    ? Array.from(new Set([claims[0].block_height, claims[claims.length - 1].block_height]))
+    : [];
+  const wantRank = magnitudes.length > 0 && magnitudes[0].magnitude > 0;
+  const [rankRow, heightRows] = await Promise.all([
+    wantRank
+      ? ch.query({
+        query: `
+          SELECT toUInt32(count()) AS higher
+          FROM superblock_magnitudes FINAL
+          WHERE superblock_height = {sb: UInt32} AND magnitude > {mag: Float64}
+        `,
+        query_params: { sb: magnitudes[0].superblock_height, mag: magnitudes[0].magnitude },
+        format: 'JSONEachRow',
+      }).then((r) => r.json<{ higher: number | string }>()).then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
+    claimHeights.length > 0
+      ? ch.query({
+        query: `
+          SELECT height, toUnixTimestamp(time) AS time
+          FROM blocks FINAL
+          WHERE height IN ({hs: Array(UInt32)})
+        `,
+        query_params: { hs: claimHeights },
+        format: 'JSONEachRow',
+      }).then((r) => r.json<{ height: number; time: number }>())
+      : Promise.resolve([] as Array<{ height: number; time: number }>),
+  ]);
+  const currentRank: number | null = rankRow ? Number(rankRow.higher) + 1 : null;
+  const heightToTime = new Map<number, number>();
+  for (const b of heightRows) heightToTime.set(b.height, b.time);
+
+  // The CPID page is the authoritative "researcher profile", so the
+  // combined figure lives here (the address page links up to it). The
+  // displayed table stays the CPID-signal set (beacon/stake/MRC, with
+  // activity columns); the combined TOTAL spans the full common-input
+  // ownership cluster of those addresses — the actual wallet, what
+  // gridcoinstats sums — degrading to the narrow set if the cluster
+  // table is empty.
+  const linkedAddrs = Array.from(new Set(linkedWallets.map((w) => w.address)));
+  const supplyRaw = await getMoneySupplyRaw();
+  const {
+    combinedBalance, combinedSharePct, combinedCount, balMap,
+  } = await computeCombined(linkedAddrs, supplyRaw);
+  const linkedSorted = [...linkedWallets].sort(byBalanceDesc(balMap));
+
   // Pick the highest-total-credit non-empty name as the canonical
   // display. The full per-project list ships under `names` for the
   // CPID page's "also known as" section.
@@ -285,10 +459,17 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
         cpid,
         displayName,
         currentMagnitude: magnitudes[0]?.magnitude ?? 0,
+        currentRank,
         blocksStaked,
         beaconCount: beacons.length,
         firstClaimAt: claims.length > 0 ? claims[claims.length - 1].block_height : null,
+        firstClaimTime: claims.length > 0
+          ? (heightToTime.get(claims[claims.length - 1].block_height) ?? null)
+          : null,
         lastClaimAt: claims.length > 0 ? claims[0].block_height : null,
+        lastClaimTime: claims.length > 0
+          ? (heightToTime.get(claims[0].block_height) ?? null)
+          : null,
       },
     },
     names: names.map((n) => ({
@@ -329,6 +510,18 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
         firstSeen: m.first_seen,
         blockTime: m.block_time,
       }),
+    })),
+    combinedBalance,
+    combinedSharePct,
+    combinedCount,
+    linkedWallets: linkedSorted.map((w) => ({
+      address: w.address,
+      balance: halford2grc(balMap.get(w.address) ?? 0n),
+      beaconCount: w.beacon_count,
+      stakedBlocks: w.staked_blocks,
+      mrcPayouts: w.mrc_payouts,
+      firstHeight: w.first_height,
+      lastHeight: w.last_height,
     })),
   }));
 });

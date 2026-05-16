@@ -88,32 +88,44 @@ export class TipFollower {
     let cursor = cursorHeight;
     let cursorHashLocal = cursorHash;
 
+    // Fetch the catch-up window in `getblocksbatch` spans rather than
+    // two RPCs per block. CATCHUP_SPAN balances batching gain against
+    // reorg-detection latency — a reorg mid-batch is caught on the
+    // first prev-hash mismatch, but we'd then throw away the rest of
+    // the buffered span and refetch, so spans bigger than a few dozen
+    // start losing more than they save under adversarial conditions.
+    const CATCHUP_SPAN = 32;
     while (cursor < tipHeight) {
-      const nextHeight = cursor + 1;
+      const start = cursor + 1;
+      const span = Math.min(tipHeight - cursor, CATCHUP_SPAN);
       // eslint-disable-next-line no-await-in-loop
-      const nextHash = await this.getBlockHash(nextHeight);
-      // eslint-disable-next-line no-await-in-loop
-      const block = await this.getBlock(nextHash);
+      const batch = await this.getBlocksBatch(start, span);
 
-      if (cursorHashLocal && block.previousblockhash !== cursorHashLocal) {
-        log.warn(
-          `Reorg detected at height ${nextHeight}: incoming prev=${block.previousblockhash} != db.tip=${cursorHashLocal}`,
-        );
+      let reorged = false;
+      for (const block of batch) {
+        if (cursorHashLocal && block.previousblockhash !== cursorHashLocal) {
+          log.warn(
+            `Reorg detected at height ${block.height}: incoming prev=${block.previousblockhash} != db.tip=${cursorHashLocal}`,
+          );
+          // eslint-disable-next-line no-await-in-loop
+          const newCursor = await this.reorg.handle();
+          cursor = newCursor.height;
+          cursorHashLocal = newCursor.hash;
+          reorged = true;
+          break;
+        }
+
         // eslint-disable-next-line no-await-in-loop
-        const newCursor = await this.reorg.handle();
-        cursor = newCursor.height;
-        cursorHashLocal = newCursor.hash;
-        continue;
+        const lookup = await buildPrevOutputsLookup(block.tx);
+        const parsed = parseBlock(block, lookup);
+        // eslint-disable-next-line no-await-in-loop
+        await applyBlock(parsed);
+
+        cursor = block.height;
+        cursorHashLocal = block.hash;
       }
-
-      // eslint-disable-next-line no-await-in-loop
-      const lookup = await buildPrevOutputsLookup(block.tx);
-      const parsed = parseBlock(block, lookup);
-      // eslint-disable-next-line no-await-in-loop
-      await applyBlock(parsed);
-
-      cursor = nextHeight;
-      cursorHashLocal = block.hash;
+      if (reorged) continue;
+      if (batch.length === 0) break; // daemon returned nothing — try again next tick
     }
 
     events.publish({
@@ -123,18 +135,15 @@ export class TipFollower {
   }
 
   private async getTipHeight(): Promise<number> {
-    const info = await (liveRpc as unknown as { getBlockchainInfo: () => Promise<{ blocks: number }> })
-      .getBlockchainInfo();
+    const info = await liveRpc.getBlockchainInfo();
     return info.blocks;
   }
 
-  private async getBlockHash(height: number): Promise<string> {
-    return (liveRpc as unknown as { getBlockHash: (h: number) => Promise<string> }).getBlockHash(height);
-  }
-
-  private async getBlock(hash: string): Promise<VerboseBlock> {
-    return (liveRpc as unknown as {
-      getBlock: <T extends boolean>(h: string, txinfo: T) => Promise<unknown>;
-    }).getBlock(hash, true) as Promise<VerboseBlock>;
+  private async getBlocksBatch(start: number, count: number): Promise<VerboseBlock[]> {
+    const result = await liveRpc.getBlocksBatch(start, count, true);
+    const blocks = Array.isArray(result?.blocks) ? (result.blocks as unknown as VerboseBlock[]) : [];
+    // Daemon serializer doesn't guarantee height-ordered output; sort
+    // defensively so the prev-hash chain check below is meaningful.
+    return blocks.sort((a, b) => a.height - b.height);
   }
 }

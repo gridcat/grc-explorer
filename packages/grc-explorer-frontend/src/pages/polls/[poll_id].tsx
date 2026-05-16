@@ -6,10 +6,12 @@ import VerifiedUserIcon from '@mui/icons-material/VerifiedUser';
 import type { GetServerSideProps } from 'next';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import {
+  useEffect, useMemo, useRef, useState,
+} from 'react';
 import { Layout } from '../../layouts/Layout';
-import { api } from '../../lib/api';
-import { formatTime } from '../../lib/format';
+import { api, notFoundOrRethrow } from '../../lib/api';
+import { formatTime, nowSec } from '../../lib/format';
 import { Crumbs } from '../../components/Crumbs';
 import { HashTrim } from '../../components/HashTrim';
 import { NextMuiLink } from '../../components/NextMuiLink';
@@ -79,7 +81,7 @@ function pollDuration(start: number, end: number): string {
 }
 
 function pollStatus(end: number): 'Active' | 'Ended' {
-  return Math.floor(Date.now() / 1000) < end ? 'Active' : 'Ended';
+  return nowSec() < end ? 'Active' : 'Ended';
 }
 
 interface PollDetailProps {
@@ -114,9 +116,12 @@ export default function PollDetail({
   const [claimText, setClaimText] = useState<string>('');
   const [claimLoading, setClaimLoading] = useState(false);
 
+  // Ref guard so post-fetch setPoll doesn't re-trigger the effect.
+  const lastFetchedRef = useRef<string | null>(initialPoll?.pollId ?? null);
   useEffect(() => {
-    if (!pollId) return;
-    if (poll && poll.pollId === pollId) return;
+    if (typeof pollId !== 'string' || !pollId) return;
+    if (lastFetchedRef.current === pollId) return;
+    lastFetchedRef.current = pollId;
     api.get(`/polls/${pollId}`).then((r) => {
       setPoll(r.data?.data?.attributes ?? null);
       setOptions(r.data?.options ?? []);
@@ -128,7 +133,7 @@ export default function PollDetail({
       setAvwCombined(String(r.data?.avwCombined ?? '0'));
       setWeightsComputed(!!r.data?.weightsComputed);
     }).catch(() => { /* ignore */ });
-  }, [pollId, poll]);
+  }, [pollId]);
 
   // Voting Distribution table is sortable by any column. Default is
   // weight desc with a count tiebreak — the natural "winning choice
@@ -651,8 +656,8 @@ export const getServerSideProps: GetServerSideProps<PollDetailProps> = async (ct
         initialWeightsComputed: !!r.data?.weightsComputed,
       },
     };
-  } catch {
-    return { notFound: true };
+  } catch (err) {
+    return notFoundOrRethrow(err);
   }
 };
 

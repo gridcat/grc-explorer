@@ -8,18 +8,23 @@ import { BarChartCanvas, ChartFrameProvider } from './charts/SvgChart';
 import { useSSE } from '../hooks/useSSE';
 import { atParam, useTimeMachine } from '../hooks/useTimeMachine';
 
-interface Bucket { feePerKb: number; count: number }
+export interface Bucket { feePerKb: number; count: number }
 
 /**
  * Live mempool histogram only — confirmed-fee percentiles live in
  * MempoolFeePercentiles. Splitting them lets each show its own
  * empty-state cleanly without one obscuring the other.
  */
-export function MempoolFeeMarket() {
+export function MempoolFeeMarket({
+  initialBuckets = [],
+}: {
+  initialBuckets?: Bucket[];
+} = {}) {
   const theme = useTheme();
   const tm = useTimeMachine();
-  const [buckets, setBuckets] = useState<Bucket[]>([]);
+  const [buckets, setBuckets] = useState<Bucket[]>(initialBuckets);
   const cancelledRef = useRef(false);
+  const skipFirstFetchRef = useRef(initialBuckets.length > 0);
 
   const refresh = useCallback(() => {
     api.get('/mempool/fee-histogram', { params: atParam(tm.at) }).then((r) => {
@@ -31,7 +36,11 @@ export function MempoolFeeMarket() {
 
   useEffect(() => {
     cancelledRef.current = false;
-    refresh();
+    if (skipFirstFetchRef.current) {
+      skipFirstFetchRef.current = false;
+    } else {
+      refresh();
+    }
     return () => { cancelledRef.current = true; };
   }, [refresh]);
 

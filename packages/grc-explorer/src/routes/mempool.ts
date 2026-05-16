@@ -3,6 +3,7 @@ import { StatusCodes } from 'http-status-codes';
 import { ch } from '../lib/ch';
 import { halford2grc } from '../lib/halford';
 import { getPagination } from '../lib/pagination';
+import { clampedQueryInt } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
 import { tsToUnix } from '../lib/time';
 import { parseAt } from '../lib/timeMachine';
@@ -151,8 +152,8 @@ mempoolRouter.get('/fee-histogram', async (req: Request, res: Response) => {
 });
 
 mempoolRouter.get('/timeline', async (req: Request, res: Response) => {
-  const hours = Math.min(Math.max(parseInt(String(req.query.hours ?? '12'), 10) || 12, 1), 168);
-  const step = Math.min(Math.max(parseInt(String(req.query.step ?? '300'), 10) || 300, 30), 3600);
+  const hours = clampedQueryInt(req, 'hours', { def: 12, min: 1, max: 168 });
+  const step = clampedQueryInt(req, 'step', { def: 300, min: 30, max: 3600 });
   const now = Math.floor(Date.now() / 1000);
   const start = now - hours * 3600;
 
@@ -164,9 +165,9 @@ mempoolRouter.get('/timeline', async (req: Request, res: Response) => {
       WITH arrayJoin(range(toUInt32({start: UInt32}), toUInt32({end: UInt32}) + 1, toUInt32({step: UInt32}))) AS sample_ts
       SELECT
         sample_ts AS ts,
-        count() AS count,
+        toUInt32(count()) AS count,
         toString(sum(fee_estimate)) AS total_fees,
-        sum(size) AS total_size
+        toUInt32(sum(size)) AS total_size
       FROM mempool_txs FINAL
       WHERE first_seen <= toDateTime(sample_ts)
         AND (confirmed_at IS NULL OR confirmed_at > toDateTime(sample_ts))

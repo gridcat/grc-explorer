@@ -8,6 +8,7 @@ import { ChainReorgHandler } from './services/indexer/ChainReorgHandler';
 import { HistoricalBackfiller } from './services/indexer/HistoricalBackfiller';
 import { MempoolWatcher } from './services/indexer/MempoolWatcher';
 import { TipFollower } from './services/indexer/TipFollower';
+import { AddressClusterJob } from './services/jobs/AddressClusterJob';
 import { BoincStatsImportJob } from './services/jobs/BoincStatsImportJob';
 import { PollWeightAggregator } from './services/jobs/PollWeightAggregator';
 import { WealthSnapshotJob } from './services/jobs/WealthSnapshotJob';
@@ -40,7 +41,6 @@ async function bootIndexer(): Promise<void> {
 
   const reorg = new ChainReorgHandler();
   const tipFollower = new TipFollower(reorg);
-  const mempool = new MempoolWatcher();
   const networkStats = new NetworkStatsPoller();
 
   // Backfiller is invoked on a schedule (single-flight) so it gets
@@ -53,7 +53,17 @@ async function bootIndexer(): Promise<void> {
 
   schedule(config.TIP_POLL_INTERVAL_MS, () => tipFollower.tick(), 'TipFollower');
   schedule(config.REORG_SAFETY_SWEEP_INTERVAL_MS, () => reorg.safetySweep(), 'ReorgSafetySweep');
-  schedule(config.MEMPOOL_POLL_INTERVAL_MS, () => mempool.tick(), 'MempoolWatcher');
+  // Mempool watching is opt-out. When disabled (dev/replica boxes
+  // that get switched on and off), mempool_txs / mempool_snapshots /
+  // mrc_requests stay frozen at whatever was last persisted — the
+  // wallet keeps churning while we're off, and re-engaging mid-stream
+  // would store an out-of-sync view. Prod always-on leaves it true.
+  if (config.MEMPOOL_WATCHER_ENABLED) {
+    const mempool = new MempoolWatcher();
+    schedule(config.MEMPOOL_POLL_INTERVAL_MS, () => mempool.tick(), 'MempoolWatcher');
+  } else {
+    log.info('MempoolWatcher disabled (MEMPOOL_WATCHER_ENABLED=false)');
+  }
   schedule(config.NETWORK_STATS_INTERVAL_MS, () => networkStats.tick(), 'NetworkStats');
 
   // Daily wealth snapshot — Gini, top-N share, hodler windows. The job
@@ -74,6 +84,13 @@ async function bootIndexer(): Promise<void> {
   // each project pulls once per day at most, retrying on failure.
   const boinc = new BoincStatsImportJob();
   schedule(60 * 60_000, () => boinc.tick(), 'BoincStatsImport');
+
+  // Common-input-ownership address clustering. Ticks hourly but the
+  // job self-gates on a Redis last-run (~12h), so almost every tick
+  // is an instant no-op; the gate persists across restarts so a
+  // hot-reload never re-triggers the heavy full rebuild.
+  const cluster = new AddressClusterJob();
+  schedule(60 * 60_000, () => cluster.tick(), 'AddressCluster');
 
   // Meili drainer — long-running consumer over the meili:queue Redis
   // stream that BlockWriter.runPostCommit feeds. Doesn't fit setInterval;

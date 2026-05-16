@@ -5,7 +5,7 @@ import { config } from '../config';
 // received vs required, summing thousands of vouts). We convert to
 // integer halford on the boundary and never look back.
 
-const HALFORD = BigInt(config.HALFORD);
+export const HALFORD = BigInt(config.HALFORD);
 
 /**
  * Convert a GRC amount (as it arrives from the daemon — `number` or

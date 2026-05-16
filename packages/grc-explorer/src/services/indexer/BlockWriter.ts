@@ -1,8 +1,10 @@
 import { ch } from '../../lib/ch';
+import { chunked } from '../../lib/chunked';
 import { events } from '../../lib/emitter';
 import { halford2grc } from '../../lib/halford';
 import { log } from '../../lib/log';
 import { enqueueMeiliBatch, MeiliEnvelope } from '../../lib/meili';
+import { normalizeProjectName } from '../../lib/projectName';
 import {
   applyWalletDeltasBatch, getCursor, nextSeq, setCursor, WalletDelta,
 } from '../../lib/redis';
@@ -39,13 +41,15 @@ export async function applyBlocks(parsedList: ParsedBlock[], options: ApplyBlock
 
   // One _seq per call. Every row in this batch shares it; reorg
   // re-applies bump _seq globally so newer always wins.
-  const seq = await nextSeq();
-
-  // Flag Halford-era kernel-reuse re-claims and cancel their phantom
-  // debits in addressDeltas before the per-table inserts read them.
-  // Must precede the insert dispatch — insertTxInputs and
-  // insertAddressBalanceHistory both consume the mutated parsedList.
-  await markPhantomSpends(parsedList);
+  // nextSeq + markPhantomSpends are independent (one Redis INCR, one
+  // pipelined SADD scan over Halford-era kernel reuses) so they run
+  // concurrently. Both must complete before the per-table inserts —
+  // insertTxInputs and insertAddressBalanceHistory consume the
+  // phantom-spend annotations on the mutated parsedList.
+  const [seq] = await Promise.all([
+    nextSeq(),
+    markPhantomSpends(parsedList),
+  ]);
 
   // Per-table inserts run in parallel — each writes to a different CH
   // table (no row-level dependencies between them at the storage
@@ -78,6 +82,8 @@ export async function applyBlocks(parsedList: ParsedBlock[], options: ApplyBlock
     insertVotes(parsedList, seq),
     insertTxMessages(parsedList, seq),
     insertProjectContracts(parsedList, seq),
+    insertSidestakeContracts(parsedList, seq),
+    insertCoinstakeSidestakes(parsedList, seq),
     insertProtocolEntries(parsedList, seq),
     insertMrcRequests(parsedList, seq),
     reconcileMempool(parsedList, seq),
@@ -107,6 +113,19 @@ export async function applyBlocks(parsedList: ParsedBlock[], options: ApplyBlock
   }
 }
 
+// Shared "flatMap → bail-if-empty → ch.insert" wrapper. Every per-
+// table inserter below is a row-shape mapper around the same I/O
+// skeleton; this helper centralises the empty-check + insert call.
+async function insertRows<R>(
+  table: string,
+  parsedList: ParsedBlock[],
+  mapFn: (p: ParsedBlock) => R[],
+): Promise<void> {
+  const rows = parsedList.flatMap(mapFn);
+  if (rows.length === 0) return;
+  await ch.insert({ table, format: 'JSONEachRow', values: rows });
+}
+
 async function insertBlocks(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
   await ch.insert({
     table: 'blocks',
@@ -127,13 +146,15 @@ async function insertBlocks(parsedList: ParsedBlock[], seq: bigint): Promise<voi
       is_superblock: p.block.isSuperblock,
       mint: p.block.mint.toString(),
       money_supply: p.block.moneySupply.toString(),
+      nonce: p.block.nonce,
+      bits: p.block.bits,
       _seq: seq.toString(),
     })),
   });
 }
 
 async function insertTransactions(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
-  const rows = parsedList.flatMap((p) => p.transactions.map((tx) => ({
+  await insertRows('transactions', parsedList, (p) => p.transactions.map((tx) => ({
     tx_id: tx.txId,
     block_height: tx.blockHeight,
     block_hash: tx.blockHash,
@@ -148,10 +169,10 @@ async function insertTransactions(parsedList: ParsedBlock[], seq: bigint): Promi
     is_coinstake: tx.isCoinstake,
     index_in_blk: tx.indexInBlk,
     hashboinc: tx.hashboinc,
+    n_version: tx.nVersion,
+    n_lock_time: tx.nLockTime,
     _seq: seq.toString(),
   })));
-  if (rows.length === 0) return;
-  await ch.insert({ table: 'transactions', format: 'JSONEachRow', values: rows });
 }
 
 async function insertTxOutputs(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
@@ -159,7 +180,7 @@ async function insertTxOutputs(parsedList: ParsedBlock[], seq: bigint): Promise<
   // key — see clickhouse/migrations/0001_init.sql). The parser emits
   // null for OP_RETURN / anyone-can-spend / exotic scripts; translate
   // to empty-string sentinel here.
-  const rows = parsedList.flatMap((p) => p.txOutputs.map((o) => ({
+  await insertRows('tx_outputs', parsedList, (p) => p.txOutputs.map((o) => ({
     tx_id: o.txId,
     vout_n: o.voutN,
     block_height: p.block.height,
@@ -167,17 +188,16 @@ async function insertTxOutputs(parsedList: ParsedBlock[], seq: bigint): Promise<
     address: o.address ?? '',
     script_type: o.scriptType,
     script_hex: o.scriptHex,
+    req_sigs: o.reqSigs,
     spent_in_tx: null,
     spent_in_vin_n: null,
     spent_in_height: null,
     _seq: seq.toString(),
   })));
-  if (rows.length === 0) return;
-  await ch.insert({ table: 'tx_outputs', format: 'JSONEachRow', values: rows });
 }
 
 async function insertTxInputs(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
-  const rows = parsedList.flatMap((p) => p.txInputs.map((i) => ({
+  await insertRows('tx_inputs', parsedList, (p) => p.txInputs.map((i) => ({
     tx_id: i.txId,
     vin_n: i.vinN,
     prev_tx: i.prevTx || null,
@@ -186,10 +206,10 @@ async function insertTxInputs(parsedList: ParsedBlock[], seq: bigint): Promise<v
     value: i.value !== null ? i.value.toString() : null,
     block_height: p.block.height,
     is_phantom_spend: Boolean(i.isPhantomSpend),
+    script_sig_hex: i.scriptSigHex,
+    sequence: i.sequence,
     _seq: seq.toString(),
   })));
-  if (rows.length === 0) return;
-  await ch.insert({ table: 'tx_inputs', format: 'JSONEachRow', values: rows });
 }
 
 async function insertAddressBalanceHistory(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
@@ -247,7 +267,7 @@ async function insertAddressBalanceHistory(parsedList: ParsedBlock[], seq: bigin
 }
 
 async function insertClaims(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
-  const rows = parsedList.flatMap((p) => (p.claim ? [{
+  await insertRows('claims', parsedList, (p) => (p.claim ? [{
     block_height: p.claim.blockHeight,
     block_time: p.block.time,
     cpid: p.claim.cpid,
@@ -267,12 +287,10 @@ async function insertClaims(parsedList: ParsedBlock[], seq: bigint): Promise<voi
     mrc_staker_fees: p.claim.mrcStakerFees.toString(),
     _seq: seq.toString(),
   }] : []));
-  if (rows.length === 0) return;
-  await ch.insert({ table: 'claims', format: 'JSONEachRow', values: rows });
 }
 
 async function insertClaimMrcs(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
-  const rows = parsedList.flatMap((p) => p.claimMrcs.map((m) => ({
+  await insertRows('claim_mrcs', parsedList, (p) => p.claimMrcs.map((m) => ({
     block_height: m.blockHeight,
     cpid: m.cpid,
     mining_id: m.miningId,
@@ -282,50 +300,43 @@ async function insertClaimMrcs(parsedList: ParsedBlock[], seq: bigint): Promise<
     pay_to_address: m.payToAddress,
     _seq: seq.toString(),
   })));
-  if (rows.length === 0) return;
-  await ch.insert({ table: 'claim_mrcs', format: 'JSONEachRow', values: rows });
 }
 
 async function insertSuperblocks(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
-  const rows = parsedList.flatMap((p) => (p.superblock ? [{
+  await insertRows('superblocks', parsedList, (p) => (p.superblock ? [{
     height: p.superblock.height,
     quorum_hash: p.superblock.quorumHash,
     total_magnitude: p.superblock.totalMagnitude,
     cpid_count: p.superblock.cpidCount,
     project_count: p.superblock.projectCount,
     payload_size: p.superblock.payloadSize,
+    contract_version: p.superblock.contractVersion,
     _seq: seq.toString(),
   }] : []));
-  if (rows.length === 0) return;
-  await ch.insert({ table: 'superblocks', format: 'JSONEachRow', values: rows });
 }
 
 async function insertSuperblockMagnitudes(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
-  const rows = parsedList.flatMap((p) => p.superblockMagnitudes.map((m) => ({
+  await insertRows('superblock_magnitudes', parsedList, (p) => p.superblockMagnitudes.map((m) => ({
     superblock_height: m.superblockHeight,
     cpid: m.cpid,
     magnitude: m.magnitude,
     _seq: seq.toString(),
   })));
-  if (rows.length === 0) return;
-  await ch.insert({ table: 'superblock_magnitudes', format: 'JSONEachRow', values: rows });
 }
 
 async function insertSuperblockProjects(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
-  const rows = parsedList.flatMap((p) => p.superblockProjects.map((proj) => ({
+  await insertRows('superblock_projects', parsedList, (p) => p.superblockProjects.map((proj) => ({
     superblock_height: proj.superblockHeight,
-    project_name: proj.projectName,
+    project_name: normalizeProjectName(proj.projectName),
     average_rac: proj.averageRac,
     rac: proj.rac,
     total_credit: proj.totalCredit,
     _seq: seq.toString(),
   })));
-  if (rows.length === 0) return;
-  await ch.insert({ table: 'superblock_projects', format: 'JSONEachRow', values: rows });
 }
 
 async function insertBeacons(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
-  const rows = parsedList.flatMap((p) => p.beacons.map((b) => ({
+  await insertRows('beacons', parsedList, (p) => p.beacons.map((b) => ({
     cpid: b.cpid,
     address: b.address,
     status: b.status,
@@ -334,14 +345,13 @@ async function insertBeacons(parsedList: ParsedBlock[], seq: bigint): Promise<vo
     timestamp: b.timestamp,
     expiration: b.expiration,
     superseded_at_height: null,
+    auth_method: b.authMethod,
     _seq: seq.toString(),
   })));
-  if (rows.length === 0) return;
-  await ch.insert({ table: 'beacons', format: 'JSONEachRow', values: rows });
 }
 
 async function insertPolls(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
-  const rows = parsedList.flatMap((p) => p.polls.map((poll) => ({
+  await insertRows('polls', parsedList, (p) => p.polls.map((poll) => ({
     poll_id: poll.pollId,
     title: poll.title,
     question: poll.question,
@@ -360,19 +370,15 @@ async function insertPolls(parsedList: ParsedBlock[], seq: bigint): Promise<void
     weights_computed_at_height: null,
     _seq: seq.toString(),
   })));
-  if (rows.length === 0) return;
-  await ch.insert({ table: 'polls', format: 'JSONEachRow', values: rows });
 }
 
 async function insertPollOptions(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
-  const rows = parsedList.flatMap((p) => p.polls.flatMap((poll) => poll.options.map((opt) => ({
+  await insertRows('poll_options', parsedList, (p) => p.polls.flatMap((poll) => poll.options.map((opt) => ({
     poll_id: poll.pollId,
     idx: opt.idx,
     label: opt.label,
     _seq: seq.toString(),
   }))));
-  if (rows.length === 0) return;
-  await ch.insert({ table: 'poll_options', format: 'JSONEachRow', values: rows });
 }
 
 async function insertVotes(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
@@ -531,10 +537,8 @@ async function reconcileMempool(parsedList: ParsedBlock[], seq: bigint): Promise
     vout_count: number;
     raw_json: string;
   };
-  const CHUNK = 100;
   const rows: Row[] = [];
-  for (let i = 0; i < txIds.length; i += CHUNK) {
-    const slice = txIds.slice(i, i + CHUNK);
+  for (const slice of chunked(txIds, 100)) {
     // eslint-disable-next-line no-await-in-loop
     const result = await ch.query({
       query: `
@@ -576,6 +580,28 @@ async function reconcileMempool(parsedList: ParsedBlock[], seq: bigint): Promise
   });
 }
 
+// Earliest first_seen in mempool_txs as unix seconds; null when the
+// table is empty (deep backfill, watcher hasn't seen anything yet).
+// Memoised for ~30s: the watermark only grows, and a stale value
+// merely means we run a few snapshot inserts that would have been
+// skipped — never the inverse (we'd never wrongly skip a snapshot we
+// should have written). On reorg-driven re-applies of a small range,
+// the memoisation also collapses N watermark probes to 1.
+let watermarkCache: { value: number | null; expiresAt: number } | null = null;
+const WATERMARK_TTL_MS = 30_000;
+async function mempoolFirstSeenWatermark(): Promise<number | null> {
+  const now = Date.now();
+  if (watermarkCache && now < watermarkCache.expiresAt) return watermarkCache.value;
+  const r = await ch.query({
+    query: 'SELECT toUInt32(min(first_seen)) AS w FROM mempool_txs',
+    format: 'JSONEachRow',
+  });
+  const rows = await r.json<{ w: number | null }>();
+  const value = rows[0]?.w != null && rows[0].w > 0 ? Number(rows[0].w) : null;
+  watermarkCache = { value, expiresAt: now + WATERMARK_TTL_MS };
+  return value;
+}
+
 // Per-block snapshot of the active mempool at block.time. Materialises
 // the same `at=T` view that the /mempool route already supports, but
 // frozen for the moment a block landed — useful for studying the
@@ -591,8 +617,14 @@ async function reconcileMempool(parsedList: ParsedBlock[], seq: bigint): Promise
 //
 // Old blocks (pre-watcher era, deep backfill) snapshot to zero rows
 // because mempool_txs has no first_seen <= block.time matches there.
-// Partition pruning on first_seen makes the empty case cheap.
+// The watermark probe below short-circuits the entire batch when the
+// most recent parsed block is still older than anything in mempool_txs
+// — turns 1 query/block × N blocks into 1 query/batch.
 async function captureMempoolSnapshots(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
+  const newestTime = parsedList[parsedList.length - 1].block.time;
+  const watermark = await mempoolFirstSeenWatermark();
+  if (watermark === null || newestTime < watermark) return;
+
   await Promise.all(parsedList.map(({ block, transactions }) => ch.command({
     query: `
       INSERT INTO mempool_snapshots
@@ -625,8 +657,8 @@ async function captureMempoolSnapshots(parsedList: ParsedBlock[], seq: bigint): 
 }
 
 async function insertProjectContracts(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
-  const rows = parsedList.flatMap((p) => p.projectContracts.map((pc) => ({
-    project_name: pc.projectName,
+  await insertRows('project_contracts', parsedList, (p) => p.projectContracts.map((pc) => ({
+    project_name: normalizeProjectName(pc.projectName),
     action: pc.action,
     base_url: pc.baseUrl,
     contract_version: pc.contractVersion,
@@ -635,12 +667,41 @@ async function insertProjectContracts(parsedList: ParsedBlock[], seq: bigint): P
     time: pc.time,
     _seq: seq.toString(),
   })));
-  if (rows.length === 0) return;
-  await ch.insert({ table: 'project_contracts', format: 'JSONEachRow', values: rows });
+}
+
+async function insertSidestakeContracts(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
+  await insertRows('mandatory_sidestakes', parsedList, (p) => p.sidestakeContracts.map((sc) => ({
+    address: sc.address,
+    action: sc.action,
+    status: sc.status,
+    allocation_pct: sc.allocationPct,
+    description: sc.description,
+    contract_version: sc.contractVersion,
+    tx_id: sc.txId,
+    block_height: sc.blockHeight,
+    time: sc.time,
+    _seq: seq.toString(),
+  })));
+}
+
+async function insertCoinstakeSidestakes(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
+  await insertRows('coinstake_sidestakes', parsedList, (p) => p.coinstakeSidestakes.map((cs) => ({
+    address: cs.address,
+    block_height: cs.blockHeight,
+    vout_idx: cs.voutIdx,
+    tx_id: cs.txId,
+    amount: cs.amount.toString(),
+    // allocation_pct snapshot is filled by the API query path that
+    // joins against the active registry. We write 0 here so the
+    // column is non-null; readers should treat 0 as "look it up".
+    allocation_pct: 0,
+    time: cs.time,
+    _seq: seq.toString(),
+  })));
 }
 
 async function insertProtocolEntries(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
-  const rows = parsedList.flatMap((p) => p.protocolEntries.map((pe) => ({
+  await insertRows('protocol_entries', parsedList, (p) => p.protocolEntries.map((pe) => ({
     key: pe.key,
     value: pe.value,
     status: pe.status,
@@ -651,12 +712,10 @@ async function insertProtocolEntries(parsedList: ParsedBlock[], seq: bigint): Pr
     time: pe.time,
     _seq: seq.toString(),
   })));
-  if (rows.length === 0) return;
-  await ch.insert({ table: 'protocol_entries', format: 'JSONEachRow', values: rows });
 }
 
 async function insertTxMessages(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
-  const rows = parsedList.flatMap((p) => p.messages.map((m) => ({
+  await insertRows('tx_messages', parsedList, (p) => p.messages.map((m) => ({
     tx_id: m.txId,
     block_height: m.blockHeight,
     time: m.time,
@@ -664,15 +723,13 @@ async function insertTxMessages(parsedList: ParsedBlock[], seq: bigint): Promise
     message: m.message,
     _seq: seq.toString(),
   })));
-  if (rows.length === 0) return;
-  await ch.insert({ table: 'tx_messages', format: 'JSONEachRow', values: rows });
 }
 
 // Confirmed MRC request rows. The mempool path (MempoolWatcher) inserts
 // the same tx_id with NULL block_height when first seen; the
 // ReplacingMergeTree(_seq) merge keeps this confirmed version on top.
 async function insertMrcRequests(parsedList: ParsedBlock[], seq: bigint): Promise<void> {
-  const rows = parsedList.flatMap((p) => p.mrcRequests.map((m) => ({
+  await insertRows('mrc_requests', parsedList, (p) => p.mrcRequests.map((m) => ({
     tx_id: m.txId,
     version: m.version,
     cpid: m.cpid,
@@ -690,68 +747,16 @@ async function insertMrcRequests(parsedList: ParsedBlock[], seq: bigint): Promis
     block_time: m.blockTime,
     _seq: seq.toString(),
   })));
-  if (rows.length === 0) return;
-  await ch.insert({ table: 'mrc_requests', format: 'JSONEachRow', values: rows });
 }
 
 async function runPostCommit(parsedList: ParsedBlock[], options: ApplyBlockOptions): Promise<void> {
-  // SSE first (cheap, in-memory). Skipped in backfill to keep the
-  // dashboard from drowning in historical events.
+  // SSE fanouts are cheap and in-memory. Skipped in backfill to keep
+  // the dashboard from drowning in historical events.
   if (options.emitLiveEvents !== false) {
-    for (const parsed of parsedList) {
-      try {
-        events.publish({
-          topic: 'block.new',
-          payload: {
-            height: parsed.block.height,
-            hash: parsed.block.hash,
-            prev_hash: parsed.block.prevHash,
-            time: parsed.block.time,
-            tx_count: parsed.block.txCount,
-            is_pos: parsed.block.isPos,
-            is_superblock: parsed.block.isSuperblock,
-            // Lets LiveBlockTicker render the MRC chip on new blocks
-            // as they arrive over SSE without re-fetching.
-            is_mrc: parsed.claim?.isMrc ?? false,
-            miner_address: parsed.block.minerAddress,
-            staker_cpid: parsed.block.stakerCpid,
-            // Reuse the parser's metric rollup — same coinbase/coinstake
-            // exclusion the /blocks list aggregate uses, so SSE-pushed
-            // rows render identical Amount/Fee values to a manual refresh.
-            value_moved: halford2grc(parsed.metrics.valueMoved),
-            fee_total: halford2grc(parsed.metrics.feeTotal),
-          },
-        });
-      } catch (err) {
-        log.warn(`post-commit SSE fanout failed at height ${parsed.block.height}`, err);
-      }
-    }
-  }
-
-  // Project lifecycle events. Rare (a few per year on chain) but
-  // visually striking — a project add/remove flips one of the live
-  // home-page columns. Cheap fanout, fires regardless of backfill mode
-  // so the live ProjectsBoard "lights up" as backfill rolls past
-  // historical adds/removes too.
-  if (options.emitLiveEvents !== false) {
-    for (const parsed of parsedList) {
-      for (const pc of parsed.projectContracts) {
-        try {
-          events.publish({
-            topic: pc.action === 'add' ? 'project.added' : 'project.removed',
-            payload: {
-              name: pc.projectName,
-              base_url: pc.baseUrl,
-              tx_id: pc.txId,
-              block_height: pc.blockHeight,
-              time: pc.time,
-            },
-          });
-        } catch (err) {
-          log.warn(`post-commit project SSE fanout failed at height ${parsed.block.height}`, err);
-        }
-      }
-    }
+    fanoutBlockEvents(parsedList);
+    fanoutProjectEvents(parsedList);
+    fanoutSidestakeEvents(parsedList);
+    fanoutBeaconEvents(parsedList);
   }
 
   // Meili enqueue runs ALWAYS — the search index needs every block,
@@ -774,6 +779,153 @@ async function runPostCommit(parsedList: ParsedBlock[], options: ApplyBlockOptio
       await emitMetricsTicks(parsedList);
     } catch (err) {
       log.warn('post-commit metrics.tick fanout failed', err);
+    }
+  }
+}
+
+// One block.new (and superblock.new on superblocks) per parsed block.
+// LiveBlockTicker subscribes to block.new; magnitude-keyed dashboards
+// (leaderboards, top movers) subscribe to superblock.new so they skip
+// the ~1440 between-superblock refreshes where their response is
+// byte-identical.
+function fanoutBlockEvents(parsedList: ParsedBlock[]): void {
+  for (const parsed of parsedList) {
+    try {
+      events.publish({
+        topic: 'block.new',
+        payload: {
+          height: parsed.block.height,
+          hash: parsed.block.hash,
+          prev_hash: parsed.block.prevHash,
+          time: parsed.block.time,
+          tx_count: parsed.block.txCount,
+          is_pos: parsed.block.isPos,
+          is_superblock: parsed.block.isSuperblock,
+          // Lets LiveBlockTicker render the MRC chip on new blocks
+          // as they arrive over SSE without re-fetching.
+          is_mrc: parsed.claim?.isMrc ?? false,
+          miner_address: parsed.block.minerAddress,
+          staker_cpid: parsed.block.stakerCpid,
+          // Reuse the parser's metric rollup — same coinbase/coinstake
+          // exclusion the /blocks list aggregate uses, so SSE-pushed
+          // rows render identical Amount/Fee values to a manual refresh.
+          value_moved: halford2grc(parsed.metrics.valueMoved),
+          fee_total: halford2grc(parsed.metrics.feeTotal),
+        },
+      });
+      if (parsed.block.isSuperblock) {
+        events.publish({
+          topic: 'superblock.new',
+          payload: {
+            height: parsed.block.height,
+            hash: parsed.block.hash,
+            time: parsed.block.time,
+          },
+        });
+      }
+    } catch (err) {
+      log.warn(`post-commit SSE fanout failed at height ${parsed.block.height}`, err);
+    }
+  }
+}
+
+// Project lifecycle events — rare (a few per year on chain) but
+// visually striking. ProjectsBoard subscribes here so it "lights up"
+// as backfill rolls past historical adds/removes.
+function fanoutProjectEvents(parsedList: ParsedBlock[]): void {
+  for (const parsed of parsedList) {
+    for (const pc of parsed.projectContracts) {
+      try {
+        events.publish({
+          topic: pc.action === 'add' ? 'project.added' : 'project.removed',
+          payload: {
+            // Normalised so SSE consumers link /projects/<name> at the
+            // same canonical key the CH tables now store.
+            name: normalizeProjectName(pc.projectName),
+            base_url: pc.baseUrl,
+            tx_id: pc.txId,
+            block_height: pc.blockHeight,
+            time: pc.time,
+          },
+        });
+      } catch (err) {
+        log.warn(`post-commit project SSE fanout failed at height ${parsed.block.height}`, err);
+      }
+    }
+  }
+}
+
+// One sidestake.update per registry add/delete (rare, governance-
+// paced) + one sidestake.payout per V13+ PoS block that had any
+// coinstake extras. MSS dashboards subscribe to these so they refresh
+// exactly when there's something new to render, not on every block.
+function fanoutSidestakeEvents(parsedList: ParsedBlock[]): void {
+  for (const parsed of parsedList) {
+    for (const sc of parsed.sidestakeContracts) {
+      try {
+        events.publish({
+          topic: 'sidestake.update',
+          payload: {
+            address: sc.address,
+            action: sc.action,
+            status: sc.status,
+            allocation_pct: sc.allocationPct,
+            description: sc.description,
+            height: sc.blockHeight,
+            time: sc.time,
+          },
+        });
+      } catch (err) {
+        log.warn(`post-commit sidestake.update fanout failed at height ${parsed.block.height}`, err);
+      }
+    }
+    if (parsed.coinstakeSidestakes.length > 0) {
+      let total = 0n;
+      for (const cs of parsed.coinstakeSidestakes) total += cs.amount;
+      try {
+        events.publish({
+          topic: 'sidestake.payout',
+          payload: {
+            height: parsed.block.height,
+            time: parsed.block.time,
+            count: parsed.coinstakeSidestakes.length,
+            total: total.toString(),
+          },
+        });
+      } catch (err) {
+        log.warn(`post-commit sidestake.payout fanout failed at height ${parsed.block.height}`, err);
+      }
+    }
+  }
+}
+
+// One beacon.update per block carrying any beacon contract. BeaconFlux
+// + BeaconSurvival subscribe here so they stop refetching ~1000× per
+// real change. Status from ContractParser: pending/active → advertise,
+// revoked → revoke; both kinds in one block → 'mixed'.
+function fanoutBeaconEvents(parsedList: ParsedBlock[]): void {
+  for (const parsed of parsedList) {
+    if (parsed.beacons.length === 0) continue;
+    let hasAdvertise = false;
+    let hasRevoke = false;
+    for (const b of parsed.beacons) {
+      if (b.status === 'revoked') hasRevoke = true;
+      else hasAdvertise = true;
+    }
+    let action: 'advertise' | 'revoke' | 'mixed' = 'advertise';
+    if (hasAdvertise && hasRevoke) action = 'mixed';
+    else if (hasRevoke) action = 'revoke';
+    try {
+      events.publish({
+        topic: 'beacon.update',
+        payload: {
+          height: parsed.block.height,
+          time: parsed.block.time,
+          action,
+        },
+      });
+    } catch (err) {
+      log.warn(`post-commit beacon SSE fanout failed at height ${parsed.block.height}`, err);
     }
   }
 }
@@ -892,59 +1044,12 @@ async function emitMetricsTicks(parsedList: ParsedBlock[]): Promise<void> {
 function buildMeiliEnvelopes(parsed: ParsedBlock): MeiliEnvelope[] {
   const out: MeiliEnvelope[] = [];
 
-  out.push({
-    index: 'blocks',
-    action: 'upsert',
-    doc: {
-      id: String(parsed.block.height),
-      height: parsed.block.height,
-      hash: parsed.block.hash,
-      prev_hash: parsed.block.prevHash,
-      time: parsed.block.time,
-      is_pos: parsed.block.isPos,
-      is_superblock: parsed.block.isSuperblock,
-      miner_address: parsed.block.minerAddress,
-      staker_cpid: parsed.block.stakerCpid,
-    },
-  });
-
-  for (const tx of parsed.transactions) {
-    out.push({
-      index: 'transactions',
-      action: 'upsert',
-      doc: {
-        id: tx.txId,
-        tx_id: tx.txId,
-        block_hash: tx.blockHash,
-        block_height: tx.blockHeight,
-        time: tx.time,
-        is_coinbase: tx.isCoinbase,
-        is_coinstake: tx.isCoinstake,
-        has_contract: false, // refined below if any contract attaches
-        hashboinc: tx.hashboinc,
-      },
-    });
-  }
-
-  if (parsed.claim) {
-    out.push({
-      index: 'claims',
-      action: 'upsert',
-      doc: {
-        id: String(parsed.claim.blockHeight),
-        block_height: parsed.claim.blockHeight,
-        cpid: parsed.claim.cpid,
-        organization: parsed.claim.organization,
-        client_version: parsed.claim.clientVersion,
-        mining_id: parsed.claim.miningId,
-        is_mrc: parsed.claim.isMrc,
-        block_subsidy_grc: halford2grc(parsed.claim.blockSubsidy),
-        research_subsidy_grc: halford2grc(parsed.claim.researchSubsidy),
-        magnitude: parsed.claim.magnitude,
-      },
-    });
-  }
-
+  // Only fuzzy-text corpora go to Meili. Block / transaction / claim
+  // search is an exact-identifier lookup (height, hash, tx_id, cpid)
+  // served straight from ClickHouse in `search.ts` — see `MeiliIndexName`
+  // for why those indexes were removed. Per-doc payload below is trimmed
+  // to just the fields the search-result UI displays and the indexer
+  // settings flag as searchable / filterable / sortable.
   if (parsed.superblock) {
     out.push({
       index: 'superblocks',
@@ -957,11 +1062,10 @@ function buildMeiliEnvelopes(parsed: ParsedBlock): MeiliEnvelope[] {
         total_magnitude: parsed.superblock.totalMagnitude,
         cpid_count: parsed.superblock.cpidCount,
         project_count: parsed.superblock.projectCount,
-        // For free-text search across CPIDs / projects without storing
-        // every magnitude row in Meili. Joined as a single string per
-        // searchableAttribute setting.
-        cpids: parsed.superblockMagnitudes.map((m) => m.cpid).join(' '),
-        projects: parsed.superblockProjects.map((p) => p.projectName).join(' '),
+        // Project-name search hits this joined string. The CPID list
+        // used to be stored too but was multi-GB of inverted index
+        // overhead — users hit /cpids/<id> direct instead.
+        projects: parsed.superblockProjects.map((p) => normalizeProjectName(p.projectName)).join(' '),
       },
     });
   }
@@ -990,7 +1094,6 @@ function buildMeiliEnvelopes(parsed: ParsedBlock): MeiliEnvelope[] {
       doc: {
         id: `${beacon.cpid}:${beacon.txId}`,
         cpid: beacon.cpid,
-        address: beacon.address,
         status: beacon.status,
         block_height: beacon.blockHeight,
         timestamp: beacon.timestamp,
@@ -1005,24 +1108,12 @@ function buildMeiliEnvelopes(parsed: ParsedBlock): MeiliEnvelope[] {
       action: 'upsert',
       doc: {
         id: msg.txId,
-        tx_id: msg.txId,
         block_height: msg.blockHeight,
         time: msg.time,
-        sender_address: msg.senderAddress,
         message: msg.message,
       },
     });
   }
 
   return out;
-}
-
-// Kept for compatibility with the old API surface — some callers
-// (jobs that haven't been ported yet) imported this. After the
-// metric_buckets table was retired in favour of the network_5m/1h/1d
-// MVs, the indexer no longer needs to push metric ticks itself; this
-// is now a no-op preserved only to keep the import surface stable
-// during the migration window.
-export async function emitMetricsTick(_parsed: ParsedBlock): Promise<void> {
-  // intentionally empty — see file header
 }

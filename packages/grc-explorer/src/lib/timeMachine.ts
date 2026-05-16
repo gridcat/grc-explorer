@@ -36,17 +36,56 @@ export function parseAt(req: Request): number | undefined {
 export async function resolveAtHeight(at: number | undefined): Promise<number | null> {
   if (at === undefined) {
     const result = await ch.query({
-      query: 'SELECT height FROM blocks FINAL ORDER BY height DESC LIMIT 1',
+      // No FINAL: it disables PK/skip-index pruning. Keeping the
+      // ORDER BY ... LIMIT 1 shape preserves empty-table -> null, and
+      // only `height` is read — identical across any un-merged
+      // duplicate rows of a block.
+      query: 'SELECT height FROM blocks ORDER BY height DESC LIMIT 1',
       format: 'JSONEachRow',
     });
     const rows = await result.json<{ height: number }>();
     return rows[0]?.height ?? null;
   }
   const result = await ch.query({
-    query: 'SELECT height FROM blocks FINAL WHERE time <= toDateTime({at: UInt32}) ORDER BY height DESC LIMIT 1',
+    // No FINAL so the idx_blocks_time minmax index prunes `time <= X`.
+    query: 'SELECT height FROM blocks WHERE time <= toDateTime({at: UInt32}) ORDER BY height DESC LIMIT 1',
     query_params: { at },
     format: 'JSONEachRow',
   });
   const rows = await result.json<{ height: number }>();
   return rows[0]?.height ?? null;
+}
+
+/**
+ * Resolve the latest superblock height at-or-before `at`. Used by
+ * /cpids and /metrics for magnitude snapshots — magnitudes are
+ * keyed off the most recent superblock, not the current tip, so
+ * "what was the magnitude leaderboard at time T?" needs the SB
+ * cursor, not the block cursor.
+ *
+ * Live-mode (at === undefined) reads `superblocks FINAL` directly;
+ * historical mode walks `blocks` because a non-superblock height
+ * has no row in `superblocks` and we need the at-or-before
+ * predicate to apply to chain time.
+ */
+export async function resolveAtSuperblockHeight(at: number | undefined): Promise<number | null> {
+  if (at === undefined) {
+    const result = await ch.query({
+      query: 'SELECT height FROM superblocks FINAL ORDER BY height DESC LIMIT 1',
+      format: 'JSONEachRow',
+    });
+    return (await result.json<{ height: number }>())[0]?.height ?? null;
+  }
+  const result = await ch.query({
+    // No FINAL so idx_blocks_time prunes `time <= X`; `height` is the
+    // only column read and is stable across un-merged duplicates.
+    query: `
+      SELECT height FROM blocks
+      WHERE is_superblock = true AND time <= toDateTime({at: UInt32})
+      ORDER BY height DESC LIMIT 1
+    `,
+    query_params: { at },
+    format: 'JSONEachRow',
+  });
+  return (await result.json<{ height: number }>())[0]?.height ?? null;
 }

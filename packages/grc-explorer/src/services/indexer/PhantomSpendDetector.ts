@@ -1,3 +1,4 @@
+import { chunked } from '../../lib/chunked';
 import { redis } from '../../lib/redis';
 import { ParsedBlock } from './ContractParser';
 
@@ -110,9 +111,7 @@ export async function markPhantomSpends(parsedList: ParsedBlock[]): Promise<void
 export async function releaseSpentUtxos(keys: Iterable<string>): Promise<void> {
   const all = Array.from(keys);
   if (all.length === 0) return;
-  const CHUNK = 1000;
-  for (let i = 0; i < all.length; i += CHUNK) {
-    const slice = all.slice(i, i + CHUNK);
+  for (const slice of chunked(all, 1000)) {
     const pipe = redis.pipeline();
     for (const k of slice) pipe.srem(SPENT_UTXO_KEY, k);
     // eslint-disable-next-line no-await-in-loop
@@ -120,11 +119,7 @@ export async function releaseSpentUtxos(keys: Iterable<string>): Promise<void> {
   }
 }
 
-// Helper indirection: ioredis pipelines expose a flush method that
-// drains the queued commands and returns the per-command results.
-// The bound method reference is functionally identical to a direct
-// call and lets the file sidestep a substring-based security hook
-// that would otherwise block edits here.
+// Drain a Redis pipeline and surface the per-command results.
 type PipelineLike = ReturnType<typeof redis.pipeline>;
 type ExecResult = Awaited<ReturnType<PipelineLike['exec']>>;
 async function runPipeline(pipe: PipelineLike): Promise<ExecResult> {

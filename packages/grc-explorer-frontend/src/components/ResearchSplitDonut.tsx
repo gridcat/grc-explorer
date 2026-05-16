@@ -5,11 +5,12 @@ import { useTheme } from '@mui/material/styles';
 import {
   useCallback, useEffect, useMemo, useRef, useState,
 } from 'react';
+import { ChartLegend } from './charts/SvgChart';
 import { api } from '../lib/api';
-import { useSSE } from '../hooks/useSSE';
+import { useSSEDebounced } from '../hooks/useSSE';
 import { atParam, useTimeMachine } from '../hooks/useTimeMachine';
 
-interface Split {
+export interface Split {
   researchSubsidy: string;
   blockSubsidy: string;
   researcherBlocks: number;
@@ -25,13 +26,18 @@ interface Split {
 // gives the panel something to show on day-1 testnet stacks.
 const FALLBACK_WINDOWS_HOURS = [24, 24 * 7, 24 * 30, 24 * 365];
 
-export function ResearchSplitDonut() {
+export function ResearchSplitDonut({
+  initialData = null,
+}: {
+  initialData?: Split | null;
+} = {}) {
   const theme = useTheme();
   const tm = useTimeMachine();
-  const [data, setData] = useState<Split | null>(null);
-  const [windowHours, setWindowHours] = useState<number>(24);
+  const [data, setData] = useState<Split | null>(initialData);
+  const [windowHours, setWindowHours] = useState<number>(initialData?.hours ?? 24);
 
   const cancelledRef = useRef(false);
+  const skipFirstFetchRef = useRef(initialData !== null);
   const refresh = useCallback(async () => {
     for (const hours of FALLBACK_WINDOWS_HOURS) {
       if (cancelledRef.current) return;
@@ -57,34 +63,31 @@ export function ResearchSplitDonut() {
 
   useEffect(() => {
     cancelledRef.current = false;
-    refresh();
+    if (skipFirstFetchRef.current) {
+      skipFirstFetchRef.current = false;
+    } else {
+      refresh();
+    }
     return () => { cancelledRef.current = true; };
   }, [refresh]);
 
-  // Live updates ride on `metrics.tick` — same SSE topic the funds-flow
-  // chart uses. Debounced to a slow cadence because each refresh
-  // walks the fallback ladder, which can issue up to four
-  // `/metrics/research-split` requests per attempt during early
-  // testnet when the recent windows are empty.
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useSSE(['metrics.tick'], (_topic, payload) => {
-    if (tm.isReplay) return;
-    const m = payload as { granularity: string };
-    if (m.granularity !== '1h') return;
-    if (debounceRef.current) return;
-    debounceRef.current = setTimeout(() => {
-      debounceRef.current = null;
-      refresh();
-    }, 30_000);
+  // Live updates ride on `metrics.tick` (1h granularity). The chart
+  // reads from the most recent 1h bucket via a fallback ladder, so its
+  // displayed value can only shift when a 1h bucket actually finalises.
+  // 5-minute debounce matches that cadence without flooding the
+  // endpoint with up-to-four-call ladder walks per block.
+  useSSEDebounced(['metrics.tick'], refresh, 5 * 60 * 1000, {
+    skip: tm.isReplay,
+    predicate: (_t, p) => (p as { granularity?: string }).granularity === '1h',
   });
-  useEffect(() => () => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-  }, []);
 
-  // Safety-net poll for when the SSE stream drops.
+  // Safety-net poll. SSE auto-reconnects but doesn't replay, and
+  // useSSE drops events while the tab is backgrounded. 30 min bounds
+  // staleness without overlapping the 5-min debounce above on every
+  // active dashboard.
   useEffect(() => {
     if (tm.isReplay) return undefined;
-    const id = setInterval(refresh, 5 * 60 * 1000);
+    const id = setInterval(refresh, 30 * 60 * 1000);
     return () => clearInterval(id);
   }, [refresh, tm.isReplay]);
 
@@ -141,6 +144,18 @@ export function ResearchSplitDonut() {
             )}
           </Stack>
         </Stack>
+        {/* Maps the two donut slice colours (same theme tokens as the
+            `slices` fills) so it's clear which wedge is which. Hidden in
+            the empty state, where the donut is a single grey placeholder. */}
+        {!empty && (
+          <Box sx={{ mt: 2, display: 'flex', justifyContent: 'center' }}>
+            <ChartLegend items={[
+              { label: 'Research reward', color: theme.palette.secondary.main },
+              { label: 'Block reward', color: theme.palette.primary.main },
+            ]}
+            />
+          </Box>
+        )}
       </CardContent>
     </Card>
   );

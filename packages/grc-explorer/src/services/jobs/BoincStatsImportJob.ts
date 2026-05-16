@@ -2,15 +2,16 @@ import { createGunzip } from 'node:zlib';
 import { Readable } from 'node:stream';
 import { ch } from '../../lib/ch';
 import { log } from '../../lib/log';
-import { enqueueMeiliBatch, MeiliEnvelope } from '../../lib/meili';
+import { nextSeq } from '../../lib/redis';
+import { tsToUnix } from '../../lib/time';
 import { loadNameDenylist } from '../../lib/boincDenylist';
+import { normalizeProjectName } from '../../lib/projectName';
 
 // Nightly import of BOINC project user-stats. For each whitelisted
 // project, we fetch `<base_url>/stats/user.gz`, stream-decompress,
 // parse the `<user>...</user>` blocks, and upsert into
-// `project_users`. CPIDs that also exist in our `beacons` table
-// (i.e. attested to Gridcoin) get enqueued onto Meili's `cpid_names`
-// index so global search resolves usernames to CPIDs.
+// `project_users`. The `/cpids/resolve` route queries that CH table
+// directly to resolve a typed-in username to its CPID.
 //
 // The user.gz file is the standard BOINC export every project runs
 // nightly (see boinc.berkeley.edu/trac/wiki/UserData). Format is a
@@ -26,6 +27,19 @@ const REIMPORT_MIN_AGE_SECONDS = 20 * 3600; // ~20h: skip projects we already pu
 const BODY_TIMEOUT_MS = 10 * 60_000;
 const BATCH_SIZE = 5_000;
 const MAX_DECOMPRESSED_BYTES = 4 * 1024 * 1024 * 1024; // 4 GB sanity ceiling.
+
+// Soft-skip: when a project has been failing for this long without a
+// successful import, drop it to a backoff retry schedule. Defaults are
+// 3 days to enter soft-skip, then retry every 7 days. Both are env-
+// tunable so an operator can tighten the loop while diagnosing a
+// flaky source.
+const SOFT_SKIP_AFTER_SECONDS = parseHours(process.env.BOINC_SOFTSKIP_AFTER_HOURS, 72) * 3600;
+const SOFT_SKIP_RETRY_SECONDS = parseHours(process.env.BOINC_SOFTSKIP_RETRY_HOURS, 168) * 3600;
+
+function parseHours(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
 
 interface WhitelistedProject {
   name: string;
@@ -45,6 +59,8 @@ interface ParsedUser {
 interface ImportStatus {
   project_name: string;
   last_success_at: string | null;
+  last_attempted_at: string | null;
+  last_status: string;
 }
 
 export interface BoincImportOptions {
@@ -55,22 +71,21 @@ export interface BoincImportOptions {
 }
 
 export class BoincStatsImportJob {
-  private seq = Date.now();
-
   private readonly force: boolean;
 
   private readonly projectFilter: string | null;
 
+  // Per-process set of projects we've already announced as "soft-
+  // skipped". Used to ensure the loud warning fires exactly once per
+  // transition into soft-skip, instead of every tick. Cleared when the
+  // project recovers (success after soft-skip).
+  private readonly softSkipLogged = new Set<string>();
+
   constructor(opts: BoincImportOptions = {}) {
     this.force = Boolean(opts.force);
     this.projectFilter = opts.projectFilter
-      ? opts.projectFilter.trim().toLowerCase() || null
+      ? normalizeProjectName(opts.projectFilter) || null
       : null;
-  }
-
-  private nextSeq(): number {
-    this.seq += 1;
-    return this.seq;
   }
 
   async tick(): Promise<void> {
@@ -78,7 +93,7 @@ export class BoincStatsImportJob {
       let projects = await this.loadWhitelist();
       if (this.projectFilter) {
         const needle = this.projectFilter;
-        projects = projects.filter((p) => p.name.toLowerCase().includes(needle));
+        projects = projects.filter((p) => p.name.includes(needle));
       }
       if (projects.length === 0) {
         // Indexer hasn't crossed any project ADD events yet, or the
@@ -87,27 +102,69 @@ export class BoincStatsImportJob {
       }
       const statuses = await this.loadStatuses();
       const denyCpids = await loadNameDenylist();
-      const beaconCpids = await this.loadBeaconCpids();
 
       const nowSec = Math.floor(Date.now() / 1000);
       for (const project of projects) {
         const status = statuses.get(project.name);
-        const lastSec = status?.last_success_at
-          ? Math.floor(new Date(status.last_success_at).getTime() / 1000)
-          : 0;
-        if (!this.force && nowSec - lastSec < REIMPORT_MIN_AGE_SECONDS) continue;
+        const lastSuccessSec = tsToUnix(status?.last_success_at) ?? 0;
+        const lastAttemptSec = tsToUnix(status?.last_attempted_at) ?? 0;
+        const secondsSinceSuccess = nowSec - lastSuccessSec;
+        const secondsSinceAttempt = nowSec - lastAttemptSec;
+        const inSoftSkip = status?.last_status === 'error'
+          && secondsSinceSuccess > SOFT_SKIP_AFTER_SECONDS;
+
+        if (!this.force) {
+          // Cooldown gates on last_ATTEMPTED_at (not last_success_at):
+          // last_attempted_at is persisted by recordStatus on EVERY
+          // attempt (success or failure), so this is restart-proof —
+          // a never-succeeded or failing project is contacted at most
+          // once per ~20h no matter how many times the process hot-
+          // reloads. Gating on last_success_at meant a project that
+          // never succeeded had no cooldown at all and was re-fetched
+          // on every boot, hammering BOINC servers (ban risk).
+          // Soft-skipped projects keep the slower weekly retry.
+          if (inSoftSkip) {
+            if (secondsSinceAttempt < SOFT_SKIP_RETRY_SECONDS) continue;
+          } else if (secondsSinceAttempt < REIMPORT_MIN_AGE_SECONDS) {
+            continue;
+          }
+        }
 
         try {
           // eslint-disable-next-line no-await-in-loop
-          const userCount = await this.importProject(project, denyCpids, beaconCpids);
+          const userCount = await this.importProject(project, denyCpids);
           // eslint-disable-next-line no-await-in-loop
           await this.recordStatus(project.name, 'ok', userCount, '');
+          if (this.softSkipLogged.delete(project.name)) {
+            log.info(`BoincStatsImportJob: ${project.name} recovered from soft-skip`);
+          }
           log.info(`BoincStatsImportJob: imported ${userCount} users from ${project.name}`);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           // eslint-disable-next-line no-await-in-loop
           await this.recordStatus(project.name, 'error', 0, msg);
-          log.warn(`BoincStatsImportJob: ${project.name} import failed: ${msg}`);
+          if (inSoftSkip) {
+            // Retry attempt during soft-skip failed again — already
+            // announced, stay quiet at warn level so logs don't churn.
+            log.debug(`BoincStatsImportJob: ${project.name} soft-skip retry still failing: ${msg}`);
+          } else if (
+            status?.last_status === 'error'
+            && secondsSinceSuccess > SOFT_SKIP_AFTER_SECONDS
+            && !this.softSkipLogged.has(project.name)
+          ) {
+            // This failure pushed us across the threshold. Loud one-
+            // time announcement, then back off to the retry cadence.
+            this.softSkipLogged.add(project.name);
+            const days = Math.round(secondsSinceSuccess / 86400);
+            const retryDays = Math.round(SOFT_SKIP_RETRY_SECONDS / 86400);
+            log.warn(
+              `BoincStatsImportJob: ${project.name} moved to soft-skip after `
+              + `${days}d without a successful import (last error: ${msg}); `
+              + `will retry every ${retryDays}d`,
+            );
+          } else {
+            log.warn(`BoincStatsImportJob: ${project.name} import failed: ${msg}`);
+          }
         }
       }
     } catch (err) {
@@ -135,13 +192,24 @@ export class BoincStatsImportJob {
     const rows = await result.json<{ project_name: string; latest_action: string; latest_url: string }>();
     return rows
       .filter((r) => r.latest_url && /^https?:\/\//.test(r.latest_url))
-      .map((r) => ({ name: r.project_name, baseUrl: r.latest_url.replace(/\/+$/, '') }));
+      // Strip any trailing `@` and `/` runs. Many on-chain BOINC URLs
+      // are stored with a trailing `@` (wallet's legacy separator) —
+      // without this, the user.gz URL ends up `<base>/@/stats/user.gz`
+      // and 404s on every healthy project.
+      .map((r) => ({
+        name: normalizeProjectName(r.project_name),
+        baseUrl: r.latest_url.replace(/[/@]+$/, ''),
+      }));
   }
 
   private async loadStatuses(): Promise<Map<string, ImportStatus>> {
     const result = await ch.query({
       query: `
-        SELECT project_name, toString(last_success_at) AS last_success_at
+        SELECT
+          project_name,
+          toString(last_success_at)   AS last_success_at,
+          toString(last_attempted_at) AS last_attempted_at,
+          last_status
         FROM project_user_imports FINAL
       `,
       format: 'JSONEachRow',
@@ -150,24 +218,9 @@ export class BoincStatsImportJob {
     return new Map(rows.map((r) => [r.project_name, r]));
   }
 
-  private async loadBeaconCpids(): Promise<Set<string>> {
-    // Every CPID we've ever indexed a beacon for — the universe of
-    // CPIDs that could plausibly need a display name surfaced. Limits
-    // Meili enqueues to ~50k rows instead of millions.
-    const result = await ch.query({
-      query: 'SELECT DISTINCT cpid FROM beacons FINAL',
-      format: 'JSONEachRow',
-    });
-    const rows = await result.json<{ cpid: string }>();
-    const set = new Set<string>();
-    for (const r of rows) if (r.cpid) set.add(r.cpid);
-    return set;
-  }
-
   private async importProject(
     project: WhitelistedProject,
     denyCpids: Set<string>,
-    beaconCpids: Set<string>,
   ): Promise<number> {
     const url = `${project.baseUrl}/stats/user.gz`;
     const controller = new AbortController();
@@ -176,7 +229,18 @@ export class BoincStatsImportJob {
     try {
       res = await fetch(url, {
         signal: controller.signal,
-        headers: { 'User-Agent': 'gridcoin-explorer/1 (+https://explorer.gridcoin.club)' },
+        headers: {
+          'User-Agent': 'gridcoin-explorer/1 (+https://explorer.gridcoin.club)',
+          // undici defaults to Accept-Encoding: gzip, deflate and will
+          // auto-decompress when the response carries Content-Encoding.
+          // Some BOINC projects (mis)configure their servers to set
+          // `Content-Encoding: gzip` on `.gz` static assets, so undici
+          // strips one gzip layer before we ever see the bytes — our
+          // createGunzip() then chokes on raw XML with "incorrect
+          // header check". `identity` opts out of HTTP-level encoding
+          // and leaves the .gz body untouched.
+          'Accept-Encoding': 'identity',
+        },
       });
     } catch (err) {
       clearTimeout(timer);
@@ -189,20 +253,28 @@ export class BoincStatsImportJob {
 
     const gunzip = createGunzip();
     const upstream = Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
+    // `pipe()` does not propagate errors from source to destination —
+    // an upstream socket abort would leave gunzip waiting forever and
+    // our `for await` hangs until BODY_TIMEOUT_MS. Forward errors
+    // explicitly so they surface as a thrown error instead.
+    upstream.on('error', (err) => gunzip.destroy(err));
     upstream.pipe(gunzip);
 
     let buffer = '';
     let decompressedBytes = 0;
     let batch: ParsedUser[] = [];
-    let meiliBatch: MeiliEnvelope[] = [];
     let totalUsers = 0;
-    const seq0 = this.nextSeq();
 
     const flushDb = async () => {
       if (batch.length === 0) return;
-      const rows = batch.map((u, i) => ({
+      // One _seq per batch — rows in the batch have distinct
+      // (cpid, project_name) sort keys so no in-batch collisions are
+      // possible against ReplacingMergeTree(_seq). Each subsequent
+      // batch picks a higher _seq so re-imports always win the merge.
+      const seq = (await nextSeq()).toString();
+      const rows = batch.map((u) => ({
         cpid: u.cpid,
-        project_name: project.name,
+        project_name: normalizeProjectName(project.name),
         user_id: u.user_id,
         // Empty / explicitly anonymised names persist as empty; the
         // frontend renders that as "Anonymous". Storing the empty
@@ -213,16 +285,10 @@ export class BoincStatsImportJob {
         total_credit: u.total_credit,
         expavg_credit: u.expavg_credit,
         create_time: u.create_time,
-        _seq: seq0 + i,
+        _seq: seq,
       }));
       await ch.insert({ table: 'project_users', format: 'JSONEachRow', values: rows });
       batch = [];
-    };
-
-    const flushMeili = async () => {
-      if (meiliBatch.length === 0) return;
-      await enqueueMeiliBatch(meiliBatch);
-      meiliBatch = [];
     };
 
     try {
@@ -251,31 +317,12 @@ export class BoincStatsImportJob {
           if (!user) continue;
           totalUsers += 1;
           batch.push(user);
-          // Only on-chain CPIDs reach Meili. Anonymous / empty names
-          // are skipped because there's nothing to search by.
-          if (user.name && !denyCpids.has(user.cpid) && beaconCpids.has(user.cpid)) {
-            meiliBatch.push({
-              index: 'cpid_names',
-              action: 'upsert',
-              doc: {
-                id: `${user.cpid}:${project.name}`,
-                cpid: user.cpid,
-                project_name: project.name,
-                name: user.name,
-                total_credit: user.total_credit,
-              },
-            });
-          }
           if (batch.length >= BATCH_SIZE) {
             await flushDb();
-          }
-          if (meiliBatch.length >= 500) {
-            await flushMeili();
           }
         }
       }
       await flushDb();
-      await flushMeili();
     } finally {
       clearTimeout(timer);
       // Drain any remaining body so the connection can be reused.
@@ -315,13 +362,13 @@ export class BoincStatsImportJob {
       table: 'project_user_imports',
       format: 'JSONEachRow',
       values: [{
-        project_name: projectName,
+        project_name: normalizeProjectName(projectName),
         last_attempted_at: now,
         last_success_at: lastSuccess ?? prevSuccess ?? '1970-01-01 00:00:00.000',
         user_count: userCount,
         last_status: status,
         last_error: error,
-        _seq: this.nextSeq(),
+        _seq: (await nextSeq()).toString(),
       }],
     });
   }

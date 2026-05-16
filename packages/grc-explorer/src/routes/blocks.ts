@@ -1,6 +1,7 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { ch } from '../lib/ch';
+import { cpidDisplayName, resolveCpidNames } from '../lib/cpidNames';
 import { ErrorModel } from '../lib/errors';
 import { halford2grc } from '../lib/halford';
 import { getPagination } from '../lib/pagination';
@@ -35,14 +36,9 @@ interface BlockRow {
   // (excluding coinbase/coinstake). Halford strings.
   value_moved?: string;
   fee_total?: string;
-}
-
-// CH JSONEachRow returns DateTime as ISO string. Coerce to unix seconds
-// to match the legacy Prisma shape the presenter+frontend expect.
-function coerceTime(t: number | string): number {
-  if (typeof t === 'number') return t;
-  const ms = new Date(t).getTime();
-  return Number.isFinite(ms) ? Math.floor(ms / 1000) : 0;
+  // Server-side resolved BOINC display name for `staker_cpid` (absent
+  // when not enriched or anonymous; frontend falls back to the hash).
+  staker_name?: string | null;
 }
 
 // Presenter expects mint/money_supply as bigint (matches the legacy
@@ -57,7 +53,7 @@ function presentRow(r: BlockRow): Omit<BlockRow, 'mint' | 'money_supply' | 'is_m
 } {
   return {
     ...r,
-    time: coerceTime(r.time),
+    time: tsToUnix(r.time) ?? 0,
     mint: BigInt(r.mint),
     money_supply: BigInt(r.money_supply),
     is_mrc: Boolean(r.is_mrc),
@@ -71,29 +67,56 @@ blocksRouter.get('/', async (req: Request, res: Response) => {
   const at = parseInt(String(req.query.at ?? ''), 10);
   const useAt = Number.isFinite(at) && at > 0;
 
-  // ANY LEFT JOIN against claims so the list can render an MRC chip
-  // alongside PoS/SB without a per-row lookup. claims is sort-key by
-  // (block_height) so the join is a sorted-key probe per page row.
-  // Count query uses the unaliased base — no need to drag the JOIN
-  // through count(), and the time predicate references blocks.time.
-  const timeFilter = useAt ? 'WHERE b.time <= toDateTime({at: UInt32})' : '';
+  // The list bounds claims to the page's heights (claims is sort-keyed
+  // by block_height); the count and the deduped blocks-tail subqueries
+  // share this unaliased time predicate (no `b.` alias inside them).
   const countTimeFilter = useAt ? 'WHERE time <= toDateTime({at: UInt32})' : '';
   const params = useAt ? { at } : {};
 
   const [rowsResult, countResult] = await Promise.all([
     ch.query({
+      // The previous form put `LIMIT 1 BY height` over `SELECT *` of
+      // the WHOLE blocks table before the outer LIMIT — a stateful
+      // dedup with no short-circuit, so a 25-row page read ~7.3M rows
+      // / 1.09 GiB (measured). Fix: resolve the page's heights from
+      // the `height` column alone first (height is the sort key, so
+      // `ORDER BY height DESC LIMIT/OFFSET` reads the tail; the time
+      // filter rides idx_blocks_time) — that's a few KB. Then fetch
+      // and per-_seq-dedup only those ≤limit heights via the PK, and
+      // bound the claims join the same way. Byte-identical result.
       query: `
+        WITH page_heights AS (
+          SELECT height
+          FROM blocks
+          ${countTimeFilter}
+          GROUP BY height
+          ORDER BY height DESC
+          LIMIT {limit: UInt32} OFFSET {offset: UInt32}
+        )
         SELECT b.*, c.is_mrc AS is_mrc
-        FROM blocks AS b FINAL
-        ANY LEFT JOIN claims AS c FINAL ON c.block_height = b.height
-        ${timeFilter}
-        ORDER BY b.height DESC LIMIT {limit: UInt32} OFFSET {offset: UInt32}
+        FROM (
+          SELECT * FROM blocks
+          WHERE height IN (SELECT height FROM page_heights)
+          ORDER BY height DESC, _seq DESC
+          LIMIT 1 BY height
+        ) AS b
+        ANY LEFT JOIN (
+          SELECT block_height, is_mrc
+          FROM claims
+          WHERE block_height IN (SELECT height FROM page_heights)
+          ORDER BY _seq DESC
+          LIMIT 1 BY block_height
+        ) AS c ON c.block_height = b.height
+        ORDER BY b.height DESC
       `,
       query_params: { ...params, limit, offset },
       format: 'JSONEachRow',
     }),
     ch.query({
-      query: `SELECT count() AS c FROM blocks FINAL ${countTimeFilter}`,
+      // No FINAL: `count() FROM blocks FINAL` is a full merge scan of
+      // every column. Distinct heights == block count and reads only
+      // the `height` column (time filter prunes via idx_blocks_time).
+      query: `SELECT count() AS c FROM (SELECT height FROM blocks ${countTimeFilter} GROUP BY height)`,
       query_params: params,
       format: 'JSONEachRow',
     }),
@@ -131,12 +154,19 @@ blocksRouter.get('/', async (req: Request, res: Response) => {
       aggMap.set(a.block_height, { value_moved: a.value_moved, fee_total: a.fee_total });
     }
   }
+  // Resolve staker display names server-side so the SSR seed (home
+  // LiveBlockTicker, /blocks page) renders names without a second
+  // /cpids/names round trip.
+  const stakerNames = await resolveCpidNames(
+    rawRows.map((r) => r.staker_cpid).filter((c): c is string => !!c),
+  );
   const rows = rawRows.map((r) => {
     const a = aggMap.get(r.height);
     return presentRow({
       ...r,
       value_moved: a?.value_moved ?? '0',
       fee_total: a?.fee_total ?? '0',
+      staker_name: cpidDisplayName(stakerNames, r.staker_cpid),
     });
   });
 
@@ -204,6 +234,17 @@ blocksRouter.get('/:height', async (req: Request, res: Response) => {
     getCursor(),
   ]);
 
+  // One server-side name resolution for everything CPID-bearing on
+  // the page (block staker + claim + MRC claims) so BlockDetail's SSR
+  // seed needs no /cpids/names round trip.
+  const claim = claimResult[0] ?? null;
+  const detailNames = await resolveCpidNames([
+    blockRows[0].staker_cpid,
+    (claim?.cpid as string | null | undefined) ?? null,
+    ...mrcResult.map((m) => m.cpid),
+  ].filter((c): c is string => !!c));
+  row.staker_name = cpidDisplayName(detailNames, blockRows[0].staker_cpid);
+
   const txAttributes = txResult.map((t) => ({
     txId: t.tx_id,
     isCoinbase: t.is_coinbase,
@@ -212,10 +253,10 @@ blocksRouter.get('/:height', async (req: Request, res: Response) => {
     fee: halford2grc(BigInt(t.fee)),
   }));
 
-  const claim = claimResult[0] ?? null;
   const claimAttributes = claim
     ? {
       ...claim,
+      cpidName: cpidDisplayName(detailNames, (claim.cpid as string | null | undefined) ?? null),
       block_subsidy: halford2grc(BigInt(claim.block_subsidy as string)),
       research_subsidy: halford2grc(BigInt(claim.research_subsidy as string)),
       mrc_foundation_fees: halford2grc(BigInt((claim.mrc_foundation_fees as string | undefined) ?? '0')),
@@ -225,6 +266,7 @@ blocksRouter.get('/:height', async (req: Request, res: Response) => {
 
   const mrcAttributes = mrcResult.map((m) => ({
     cpid: m.cpid,
+    cpidName: cpidDisplayName(detailNames, m.cpid),
     miningId: m.mining_id,
     clientVersion: m.client_version,
     researchSubsidy: halford2grc(BigInt(m.research_subsidy)),
@@ -272,6 +314,79 @@ interface SnapshotRow {
 
 // Per-block mempool snapshot — what was sitting in mempool when this
 // block landed. `was_included` flags the txs this same block then
+// Mandatory-sidestake payouts attached to this block's coinstake.
+// Joined with the registry at the block's height so each row carries
+// the recipient's allocation_pct and description as-of that block.
+// Empty for pre-V13 blocks (the parser doesn't capture coinstake
+// extras there). 200 OK with empty payouts is the steady-state for
+// the vast majority of blocks even post-V13 — the home tile uses
+// /metrics/mandatory-sidestakes for aggregates instead.
+blocksRouter.get('/:height/sidestakes', async (req: Request, res: Response) => {
+  const height = parseInt(param(req, 'height'), 10);
+  if (Number.isNaN(height)) {
+    res.status(StatusCodes.BAD_REQUEST).send({
+      errors: [new ErrorModel(StatusCodes.BAD_REQUEST, 'Bad height', 'height must be an integer')],
+    });
+    return;
+  }
+  // Registry-at-height = last row per address with block_height <= H,
+  // filtered to status='MANDATORY'. Same shape as in
+  // mandatorySidestakes.ts but scoped to this height for the LEFT JOIN.
+  const result = await ch.query({
+    query: `
+      WITH registry AS (
+        SELECT address,
+               argMax(status, block_height)         AS status,
+               argMax(allocation_pct, block_height) AS allocation_pct,
+               argMax(description, block_height)    AS description
+        FROM mandatory_sidestakes FINAL
+        WHERE block_height <= {h: UInt32}
+        GROUP BY address
+      )
+      SELECT
+        cs.address                              AS address,
+        cs.vout_idx                             AS vout_idx,
+        cs.tx_id                                AS tx_id,
+        toString(cs.amount)                     AS amount,
+        toUnixTimestamp(cs.time)                AS time,
+        coalesce(r.allocation_pct, 0.0)         AS allocation_pct,
+        coalesce(r.description, '')             AS description,
+        coalesce(r.status, '')                  AS status
+      FROM coinstake_sidestakes AS cs FINAL
+      LEFT JOIN registry r ON r.address = cs.address
+      WHERE cs.block_height = {h: UInt32}
+      ORDER BY cs.vout_idx
+    `,
+    query_params: { h: height },
+    format: 'JSONEachRow',
+  });
+  const rows = await result.json<{
+    address: string; vout_idx: number; tx_id: string;
+    amount: string; time: number;
+    allocation_pct: number; description: string; status: string;
+  }>();
+  res.status(StatusCodes.OK).send(withMeta({
+    data: rows.map((r) => ({
+      type: 'block_sidestake',
+      id: `${height}:${r.vout_idx}`,
+      attributes: {
+        address: r.address,
+        voutIdx: r.vout_idx,
+        txId: r.tx_id,
+        amount: halford2grc(BigInt(r.amount)),
+        time: r.time,
+        allocationPct: r.allocation_pct,
+        description: r.description,
+        // 'MANDATORY' if the recipient is in the active registry at
+        // this height, '' if the recipient isn't registered (i.e.
+        // the staker's local/voluntary sidestake to a non-protocol
+        // address). The frontend uses this to badge MSS vs voluntary.
+        registryStatus: r.status,
+      },
+    })),
+  }));
+});
+
 // confirmed. Empty for any block ingested before MempoolWatcher
 // started (deep-history blocks have no observation to draw from).
 blocksRouter.get('/:height/mempool-snapshot', async (req: Request, res: Response) => {

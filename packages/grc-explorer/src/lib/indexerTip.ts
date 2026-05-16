@@ -1,4 +1,5 @@
 import { ch } from './ch';
+import { tsToUnix } from './time';
 
 // Block-time of the indexer's most recent applied block, or 0 when the
 // blocks table is empty. Used by routes and jobs that need to anchor
@@ -6,17 +7,34 @@ import { ch } from './ch';
 // rather than wall-clock — during a deep backfill those diverge by
 // years, and showing today's peer count alongside a 2016-era tip would
 // mislead the user.
+//
+// 5s memoised + concurrent-call coalesced: SSR home-page fan-out hits
+// this from ~18 endpoints in one render, all within a single block's
+// cadence (~90s). Without the cache that's 18 identical
+// `SELECT max(time) FROM blocks` round trips per page load.
+const TIP_TIME_TTL_MS = 5_000;
+let cachedTipTime: { value: number; expiresAt: number } | null = null;
+let pendingTipTimeQuery: Promise<number> | null = null;
+
 export async function getIndexerTipTime(): Promise<number> {
-  const result = await ch.query({
-    query: 'SELECT max(time) AS t FROM blocks',
-    format: 'JSONEachRow',
-  });
-  const rows = await result.json<{ t: number | string | null }>();
-  const raw = rows[0]?.t;
-  if (raw === null || raw === undefined || raw === '' || raw === 0) return 0;
-  // CH JSONEachRow returns DateTime as ISO string by default; coerce.
-  const n = typeof raw === 'number' ? raw : Math.floor(new Date(raw).getTime() / 1000);
-  return Number.isFinite(n) ? n : 0;
+  const now = Date.now();
+  if (cachedTipTime && now < cachedTipTime.expiresAt) return cachedTipTime.value;
+  if (pendingTipTimeQuery) return pendingTipTimeQuery;
+  pendingTipTimeQuery = (async () => {
+    try {
+      const result = await ch.query({
+        query: 'SELECT max(time) AS t FROM blocks',
+        format: 'JSONEachRow',
+      });
+      const rows = await result.json<{ t: number | string | null }>();
+      const value = tsToUnix(rows[0]?.t) ?? 0;
+      cachedTipTime = { value, expiresAt: Date.now() + TIP_TIME_TTL_MS };
+      return value;
+    } finally {
+      pendingTipTimeQuery = null;
+    }
+  })();
+  return pendingTipTimeQuery;
 }
 
 // If the indexer is more than ~5 minutes behind wall-clock, return its
@@ -70,4 +88,29 @@ export async function getV11BlockTimestamp(): Promise<number | null> {
     }
   })();
   return pendingV11Query;
+}
+
+// One-shot point lookup of `blocks.time` keyed by `height`. Returns
+// a Map for O(1) lookup downstream; heights not yet indexed are simply
+// absent. No FINAL: it forces the merge path and ignores PK pruning;
+// `argMax(time, _seq) GROUP BY height` reproduces FINAL's "latest
+// version per block" on the `height IN (...)` PK-pruned set without
+// the full-table merge scan.
+export async function getBlockTimes(heights: ReadonlyArray<number>): Promise<Map<number, number>> {
+  const out = new Map<number, number>();
+  const unique = Array.from(new Set(heights.filter((h) => Number.isFinite(h) && h >= 0)));
+  if (unique.length === 0) return out;
+  const result = await ch.query({
+    query: `
+      SELECT height, toUnixTimestamp(argMax(time, _seq)) AS t
+      FROM blocks
+      WHERE height IN ({heights: Array(UInt32)})
+      GROUP BY height
+    `,
+    query_params: { heights: unique },
+    format: 'JSONEachRow',
+  });
+  const rows = await result.json<{ height: number; t: number }>();
+  for (const r of rows) out.set(Number(r.height), Number(r.t));
+  return out;
 }

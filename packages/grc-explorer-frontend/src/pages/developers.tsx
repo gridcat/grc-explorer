@@ -11,6 +11,7 @@ import {
   Cpids,
   Errors,
   Mempool,
+  MandatorySidestakes,
   Metrics,
   MrcRequests,
   Network,
@@ -68,6 +69,7 @@ export default function DevelopersPage() {
             <MrcRequests />
             <Network />
             <Metrics />
+            <MandatorySidestakes />
             <Search />
           </Grid>
         </Grid>

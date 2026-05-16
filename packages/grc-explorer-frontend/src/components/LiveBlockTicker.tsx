@@ -15,7 +15,7 @@ import { CpidLabel } from './CpidLabel';
 import { HashTrim } from './HashTrim';
 import { TimeAgo } from './TimeAgo';
 
-interface BlockEntry {
+export interface BlockEntry {
   height: number;
   hash: string;
   time: number;
@@ -27,14 +27,24 @@ interface BlockEntry {
   fee_total: string;
   miner_address?: string | null;
   staker_cpid?: string | null;
+  // Server-resolved staker name from the REST seed (absent on the SSE
+  // live path — useCpidNames resolves those client-side).
+  staker_name?: string | null;
 }
 
 const MAX_VISIBLE = 12;
 
-export function LiveBlockTicker() {
+export function LiveBlockTicker({
+  initialBlocks = [],
+  initialNames,
+}: {
+  initialBlocks?: BlockEntry[];
+  initialNames?: Record<string, string>;
+} = {}) {
   const router = useRouter();
   const tm = useTimeMachine();
-  const [blocks, setBlocks] = useState<BlockEntry[]>([]);
+  const [blocks, setBlocks] = useState<BlockEntry[]>(initialBlocks);
+  const skipFirstFetchRef = useRef(initialBlocks.length > 0);
 
   // SSE-aware fallback fetch. SSE `block.new` is the primary update
   // channel; the polled fetch is a safety net for when the EventSource
@@ -112,7 +122,11 @@ export function LiveBlockTicker() {
         return sliced;
       });
     }).catch(() => { /* ignore */ });
-    fetchOnce();
+    if (skipFirstFetchRef.current) {
+      skipFirstFetchRef.current = false;
+    } else {
+      fetchOnce();
+    }
     lastEventAtRef.current = Date.now();
     if (tm.isReplay) return () => { cancelled = true; };
     // Re-fetch only when SSE has been silent for STALE_MS. The check
@@ -187,7 +201,7 @@ export function LiveBlockTicker() {
   const stakerCpids = blocks
     .map((b) => b.staker_cpid)
     .filter((c): c is string => typeof c === 'string' && c.length > 0);
-  const names = useCpidNames(stakerCpids);
+  const names = useCpidNames(stakerCpids, initialNames);
 
   return (
     <Card variant="outlined">

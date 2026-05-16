@@ -3,6 +3,7 @@ import {
 } from 'react';
 import { api } from '../lib/api';
 import { TIME_MACHINE_ENABLED } from '../lib/featureFlags';
+import { nowSec } from '../lib/format';
 
 /**
  * Time-machine clock. When `at` is null the dashboard is in live mode
@@ -154,7 +155,7 @@ export function TimeMachineProvider({ children }: { children: ReactNode }) {
     if (target !== undefined) setAtState(target);
     else if (at === null) {
       // Default: 1 hour back from the latest indexed block.
-      const seed = bounds?.maxTs ? bounds.maxTs - 3600 : Math.floor(Date.now() / 1000) - 3600;
+      const seed = bounds?.maxTs ? bounds.maxTs - 3600 : nowSec() - 3600;
       setAtState(seed);
     }
   }, [at, bounds?.maxTs]);

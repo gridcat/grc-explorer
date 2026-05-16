@@ -8,29 +8,37 @@ import {
   useCallback, useEffect, useRef, useState,
 } from 'react';
 import { api } from '../lib/api';
-import { useSSE } from '../hooks/useSSE';
+import { nowSec } from '../lib/format';
+import { useSSEDebounced } from '../hooks/useSSE';
 import { useTimeMachine } from '../hooks/useTimeMachine';
+import { EmptyState } from './EmptyState';
+import { SeeMoreButton } from './SeeMoreButton';
 
-interface CohortPoint { monthOffset: number; bucketTs: number; active: number }
-interface CohortPayload {
+export interface CohortPoint { monthOffset: number; bucketTs: number; active: number }
+export interface CohortPayload {
   cohort: string;
   horizon: number;
   cohortSize: number;
   points: CohortPoint[];
 }
 
-const COHORTS_BACK = 4;
-const HORIZON = 12;
+export const COHORTS_BACK = 4;
+export const HORIZON = 12;
 
 /**
  * Compact preview of CPID cohort retention — last 4 cohort months,
  * each as a tiny normalised sparkline. Links to /cpids/cohorts for
  * the full small-multiples page.
  */
-export function CohortRetentionPreview() {
+export function CohortRetentionPreview({
+  initialCohorts = [],
+}: {
+  initialCohorts?: CohortPayload[];
+} = {}) {
   const tm = useTimeMachine();
-  const [cohorts, setCohorts] = useState<CohortPayload[]>([]);
+  const [cohorts, setCohorts] = useState<CohortPayload[]>(initialCohorts);
   const cancelledRef = useRef(false);
+  const skipFirstFetchRef = useRef(initialCohorts.length > 0);
 
   // We anchor the cohort labels on the indexer's latest indexed-block
   // time, not wall-clock. Wall-clock would request "April 2026"
@@ -41,9 +49,9 @@ export function CohortRetentionPreview() {
     try {
       const latestBlock = await api.get('/blocks', { params: { 'page[size]': 1 } });
       const t = latestBlock.data?.data?.[0]?.attributes?.time;
-      anchorTs = typeof t === 'number' && t > 0 ? t : Math.floor(Date.now() / 1000);
+      anchorTs = typeof t === 'number' && t > 0 ? t : nowSec();
     } catch {
-      anchorTs = Math.floor(Date.now() / 1000);
+      anchorTs = nowSec();
     }
     const monthLabels = lastNCohortMonths(COHORTS_BACK, anchorTs);
     const results = await Promise.all(
@@ -57,25 +65,18 @@ export function CohortRetentionPreview() {
 
   useEffect(() => {
     cancelledRef.current = false;
-    refresh();
+    if (skipFirstFetchRef.current) {
+      skipFirstFetchRef.current = false;
+    } else {
+      refresh();
+    }
     return () => { cancelledRef.current = true; };
   }, [refresh]);
 
-  // Cohorts only shift at month boundaries of chain-time, but we
-  // listen to block.new with a slow debounce so a fresh cohort lands
-  // on the dashboard within minutes of the indexer crossing a month.
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useSSE(['block.new'], () => {
-    if (tm.isReplay) return;
-    if (debounceRef.current) return;
-    debounceRef.current = setTimeout(() => {
-      debounceRef.current = null;
-      refresh();
-    }, 10 * 60 * 1000);
-  });
-  useEffect(() => () => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-  }, []);
+  // Cohorts only shift at month boundaries of chain-time; we listen
+  // to block.new with a slow debounce so a fresh cohort lands within
+  // minutes of the indexer crossing a month.
+  useSSEDebounced(['block.new'], refresh, 10 * 60 * 1000, { skip: tm.isReplay });
 
   // Safety-net poll — cohorts shift on month boundaries of chain-time;
   // a slow cadence is plenty.
@@ -97,34 +98,15 @@ export function CohortRetentionPreview() {
               {`Last ${COHORTS_BACK} cohort months · share still active.`}
             </Typography>
           </Box>
-          <Button
-            component={Link}
-            href="/cpids/cohorts"
-            size="small"
-            color="primary"
-            endIcon={<ChevronRightIcon fontSize="small" />}
-            sx={{
-              textTransform: 'none',
-              fontSize: 13,
-              fontWeight: 500,
-              minWidth: 0,
-              px: 1,
-              py: 0.25,
-            }}
-          >
-            See all
-          </Button>
+          <SeeMoreButton href="/cpids/cohorts" />
         </Stack>
 
         {cohorts.length === 0 ? (
-          <Box sx={{
-            mt: 2, p: 2, borderRadius: 1, color: 'text.disabled', textAlign: 'center', border: 1, borderStyle: 'dashed', borderColor: 'divider',
-          }}
-          >
+          <EmptyState>
             <Typography variant="body2">
               No cohort data yet. Populates as the indexer catches up.
             </Typography>
-          </Box>
+          </EmptyState>
         ) : (
           <Box sx={{
             mt: 1.5, display: 'grid', gap: 1, gridTemplateColumns: { xs: '1fr 1fr', sm: 'repeat(4, 1fr)' },
@@ -171,7 +153,7 @@ function CohortMini({ cohort }: { cohort: CohortPayload }) {
   );
 }
 
-function lastNCohortMonths(n: number, anchorUnixSeconds: number): string[] {
+export function lastNCohortMonths(n: number, anchorUnixSeconds: number): string[] {
   const anchor = new Date(anchorUnixSeconds * 1000);
   const out: string[] = [];
   for (let i = 1; i <= n; i += 1) {

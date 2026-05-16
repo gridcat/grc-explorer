@@ -46,7 +46,7 @@
 //   npm run wipe -- --from-height 1234567
 
 import { config } from '../config';
-import { meili, MeiliIndexName } from '../lib/meili';
+import { clearMeiliCursor, meili, MeiliIndexName } from '../lib/meili';
 import {
   clearWipeLock, getCursor, redis, redisPrefix, redisStreams, redisSub, redisPub,
   setCursor, setWipeLock,
@@ -57,14 +57,18 @@ const CH_URL = config.CLICKHOUSE_URL.replace(/\/$/, '');
 const CH_DB = config.CLICKHOUSE_DATABASE;
 
 // Chain-derived Meili indexes — always wiped on a full reset.
+// `addresses`, `cpid_names`, `blocks`, `transactions` and `claims`
+// were dropped (see `lib/meili.ts`); kept out of this list so wipes
+// don't try to delete from nonexistent indexes.
 const CHAIN_MEILI_INDEXES: MeiliIndexName[] = [
-  'blocks', 'transactions', 'addresses', 'claims',
   'superblocks', 'polls', 'beacons', 'messages',
 ];
 
-// Off-chain BOINC enrichment. Opt-in via --include-boinc because
-// rebuilding takes a 24h cadence across the project whitelist.
-const BOINC_MEILI_INDEXES: MeiliIndexName[] = ['cpid_names'];
+// Off-chain BOINC enrichment used to live in a `cpid_names` Meili
+// index, but the resolver was moved to CH `project_users` directly so
+// there's no Meili-side state to wipe any more. List kept (empty) so
+// the call sites that loop over it remain neutral.
+const BOINC_MEILI_INDEXES: MeiliIndexName[] = [];
 
 // CH tables that mirror off-chain BOINC user stats. Same opt-in
 // semantics as the Meili index above.
@@ -96,9 +100,6 @@ const HEIGHT_TABLES: Array<{ table: string; column: string }> = [
 // returns one column `id` — the value is the Meili primary key for
 // that index (see buildMeiliEnvelopes in BlockWriter).
 const MEILI_HEIGHT_INDEXES: Array<{ name: MeiliIndexName; idSql: (h: number) => string }> = [
-  { name: 'blocks', idSql: (h) => `SELECT toString(height) AS id FROM blocks WHERE height >= ${h}` },
-  { name: 'transactions', idSql: (h) => `SELECT tx_id AS id FROM transactions WHERE block_height >= ${h}` },
-  { name: 'claims', idSql: (h) => `SELECT toString(block_height) AS id FROM claims WHERE block_height >= ${h}` },
   { name: 'superblocks', idSql: (h) => `SELECT toString(height) AS id FROM superblocks WHERE height >= ${h}` },
   { name: 'polls', idSql: (h) => `SELECT poll_id AS id FROM polls WHERE block_height >= ${h}` },
   { name: 'beacons', idSql: (h) => `SELECT concat(cpid, ':', tx_id) AS id FROM beacons WHERE block_height >= ${h}` },
@@ -292,21 +293,26 @@ const SYNC_MUTATION = { mutations_sync: '2' };
 // `_migrations` is always preserved so the next boot doesn't replay
 // every DDL. Mempool + BOINC tables are preserved unless their
 // matching --include-* flag was passed.
-function preservedTables(includeMempool: boolean, includeBoinc: boolean): Set<string> {
+interface FullWipeOpts {
+  includeMempool: boolean;
+  includeBoinc: boolean;
+}
+
+function preservedTables(opts: FullWipeOpts): Set<string> {
   const set = new Set(['_migrations']);
-  if (!includeMempool) {
+  if (!opts.includeMempool) {
     set.add('mempool_txs');
     set.add('mempool_snapshots');
     set.add('mrc_requests');
   }
-  if (!includeBoinc) {
+  if (!opts.includeBoinc) {
     for (const t of BOINC_CH_TABLES) set.add(t);
   }
   return set;
 }
 
-async function wipeClickhouseFull(includeMempool: boolean, includeBoinc: boolean): Promise<void> {
-  const preserved = preservedTables(includeMempool, includeBoinc);
+async function wipeClickhouseFull(opts: FullWipeOpts): Promise<void> {
+  const preserved = preservedTables(opts);
   // DROP DATABASE only when there's nothing left to preserve besides
   // `_migrations`. With anything else preserved we fall back to the
   // per-table TRUNCATE path so the opted-in carve-outs survive.
@@ -390,7 +396,8 @@ async function wipeRedisFull(): Promise<void> {
   console.log(`  ${removed} key(s) deleted`);
 }
 
-async function wipeMeiliFull(includeBoinc: boolean): Promise<void> {
+async function wipeMeiliFull(opts: FullWipeOpts): Promise<void> {
+  const { includeBoinc } = opts;
   console.log(`→ Meili: DELETE indexes ${config.MEILI_INDEX_PREFIX}_*`);
   const targets = includeBoinc
     ? [...CHAIN_MEILI_INDEXES, ...BOINC_MEILI_INDEXES]
@@ -585,7 +592,12 @@ async function rewindRedisToHeight(fromHeight: number): Promise<void> {
   // re-emit clean envelopes for >= N as it walks the chain. Keys are
   // auto-prefixed by the ioredis client; pass the unprefixed form.
   await redis.del('meili:queue');
-  console.log('  meili:queue: dropped');
+  // Drop the persisted MeiliIndexer position too. If the indexer is
+  // down during the wipe its run() wipe-branch never fires, so a stale
+  // saved id would survive and, once the stream is reborn, point past
+  // the new first entry — silently skipping post-wipe envelopes.
+  await clearMeiliCursor();
+  console.log('  meili:queue + cursor: dropped');
 
   // Reset the cursor to N-1 so the HistoricalBackfiller picks up at
   // exactly N. Pull the hash of N-1 from CH (rows < N survived the wipe);
@@ -607,6 +619,34 @@ async function rewindRedisToHeight(fromHeight: number): Promise<void> {
   }
   await setCursor({ height: fromHeight - 1, hash, status: 'backfilling' });
   console.log(`  cursor: set to height=${fromHeight - 1} status=backfilling`);
+}
+
+// Renew the wipe lock every `intervalMs` so it can't expire mid-wipe.
+// The static TTL approach (set once, wait it out) is unsafe: real wipes
+// — especially partial ones with 11 MV rebuilds across millions of rows
+// + Meili paging — can outrun any conservative ceiling we'd pick, and
+// once the TTL lapses the indexer wakes up and starts inserting while
+// the wipe is still deleting. The heartbeat caps the worst-case "stuck
+// lock after crash" window at `ttlSeconds` instead of unbounded; the
+// wipe also calls `clearWipeLock()` on the happy path for instant
+// resume.
+function startWipeLockHeartbeat(intervalMs: number, ttlSeconds: number): () => void {
+  let stopped = false;
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      await setWipeLock(ttlSeconds);
+    } catch (err) {
+      // Redis hiccup — log and let the next tick try again. If Redis
+      // is truly down the wipe has bigger problems than the lock.
+      console.warn(`  wipe-lock heartbeat: renew failed (${(err as Error).message})`);
+    }
+  };
+  const handle = setInterval(tick, intervalMs);
+  return () => {
+    stopped = true;
+    clearInterval(handle);
+  };
 }
 
 // Block until the indexer's cursor has stopped advancing for `requiredStableMs`,
@@ -741,33 +781,40 @@ async function main(): Promise<void> {
   console.log(`  Meili:       ${config.MEILI_HOST} prefix=${config.MEILI_INDEX_PREFIX}_*`);
   console.log('');
 
-  // Partial wipes do far more CH work (multiple ALTER TABLE DELETEs on
-  // tables that may carry millions of rows, plus 11 MV rebuilds) than
-  // a full wipe's single DROP DATABASE. Lift the lock TTL accordingly
-  // so the indexer can't re-enter mid-rewrite if a delete drags.
-  const lockTtl = args.fromHeight === null ? 120 : 1800;
-  console.log(`→ Acquiring wipe lock (TTL ${lockTtl}s)…`);
+  // The lock is renewed by a heartbeat (see below). Set a short TTL so
+  // a crashed wipe self-clears in ~2 minutes instead of blocking the
+  // indexer for half an hour; the heartbeat keeps the live wipe safe
+  // for as long as it needs to run.
+  const lockTtl = 120;
+  const heartbeatInterval = 30_000;
+  console.log(`→ Acquiring wipe lock (TTL ${lockTtl}s, renew every ${heartbeatInterval / 1000}s)…`);
   await setWipeLock(lockTtl);
-  console.log('→ Waiting for indexer to quiesce…');
-  await waitForIndexerQuiesce();
-  console.log('');
+  const stopHeartbeat = startWipeLockHeartbeat(heartbeatInterval, lockTtl);
+  try {
+    console.log('→ Waiting for indexer to quiesce…');
+    await waitForIndexerQuiesce();
+    console.log('');
 
-  if (args.fromHeight === null) {
-    await wipeClickhouseFull(args.includeMempool, args.includeBoinc);
-    await wipeRedisFull();
-    await wipeMeiliFull(args.includeBoinc);
-  } else {
-    // Order: Meili IDs come from CH, so collect+delete them BEFORE we
-    // wipe CH. Then CH base tables. Then Redis rewind (which reads the
-    // surviving address_balance_history). Cursor reset at the end.
-    await wipeMeiliFromHeight(args.fromHeight);
-    await wipeClickhouseFromHeight(args.fromHeight);
-    await rewindRedisToHeight(args.fromHeight);
-    // Full wipe drops the prefixed namespace which removes the lock
-    // along the way. Partial wipe leaves the namespace intact, so we
-    // explicitly clear the lock here — otherwise scheduled jobs idle
-    // until the TTL expires before resuming.
-    await clearWipeLock();
+    if (args.fromHeight === null) {
+      const fullOpts: FullWipeOpts = { includeMempool: args.includeMempool, includeBoinc: args.includeBoinc };
+      await wipeClickhouseFull(fullOpts);
+      await wipeRedisFull();
+      await wipeMeiliFull(fullOpts);
+    } else {
+      // Order: Meili IDs come from CH, so collect+delete them BEFORE we
+      // wipe CH. Then CH base tables. Then Redis rewind (which reads the
+      // surviving address_balance_history). Cursor reset at the end.
+      await wipeMeiliFromHeight(args.fromHeight);
+      await wipeClickhouseFromHeight(args.fromHeight);
+      await rewindRedisToHeight(args.fromHeight);
+      // Full wipe drops the prefixed namespace which removes the lock
+      // along the way. Partial wipe leaves the namespace intact, so we
+      // explicitly clear the lock here — otherwise scheduled jobs idle
+      // until the TTL expires before resuming.
+      await clearWipeLock();
+    }
+  } finally {
+    stopHeartbeat();
   }
 
   // Close every Redis connection lib/redis.ts opened so node can exit

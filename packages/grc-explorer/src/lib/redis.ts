@@ -247,6 +247,25 @@ export async function applyWalletDelta(
   return newBalance;
 }
 
+// Batched balance-only lookup. Backs combined-balance over a wallet's
+// cluster; the input is bounded by CLUSTER_MEMBER_CAP (lib/cluster),
+// so this is at most a few thousand concurrent HGETs on a local
+// Redis. One HGET per address via Promise.all rather than a
+// pipeline because the security hook keyword-bans the pipeline-flush
+// call; the cap makes the fan-out acceptable. Missing → 0n.
+export async function getWalletBalances(
+  addresses: ReadonlyArray<string>,
+): Promise<Map<string, bigint>> {
+  const out = new Map<string, bigint>();
+  const unique = Array.from(new Set(addresses));
+  if (unique.length === 0) return out;
+  const vals = await Promise.all(
+    unique.map((a) => redis.hget(walletKey(a), 'balance')),
+  );
+  unique.forEach((a, i) => out.set(a, vals[i] ? BigInt(vals[i] as string) : 0n));
+  return out;
+}
+
 export async function getWallet(address: string): Promise<WalletState | null> {
   const raw = await redis.hgetall(walletKey(address));
   return readWalletHash(address, raw);
@@ -272,6 +291,24 @@ export async function getRichList(offset: number, limit: number): Promise<Wallet
 
 export async function getWalletCount(): Promise<number> {
   return redis.zcard(BY_BALANCE);
+}
+
+// Every positive wallet balance, descending. Backs the wealth
+// snapshot's steady-state (current-tip) path: Gini / top-N share /
+// holder count only need the sorted balance magnitudes, and
+// `wallets:by_balance` already maintains them — same f64-score
+// precision the CH path truncated to anyway (the whale caveat is
+// shared). Avoids a 20M-row `address_balance_history` FINAL scan.
+export async function positiveBalancesDesc(): Promise<number[]> {
+  // ZREVRANGE WITHSCORES → flat [member, score, member, score, ...]
+  // already ordered by score desc; keep scores, drop non-positive.
+  const flat = await redis.zrevrange(BY_BALANCE, 0, -1, 'WITHSCORES');
+  const out: number[] = [];
+  for (let i = 1; i < flat.length; i += 2) {
+    const bal = Number(flat[i]);
+    if (bal > 0) out.push(bal);
+  }
+  return out;
 }
 
 // Prefix lookup over wallet members. Uses ZSCAN over the by_balance

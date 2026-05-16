@@ -44,6 +44,12 @@ interface Config {
   // Indexer cadence + sizing.
   TIP_POLL_INTERVAL_MS: number;
   MEMPOOL_POLL_INTERVAL_MS: number;
+  // Set to `false` to stop polling the daemon's mempool entirely.
+  // Useful on dev/replica boxes that get switched on and off — once
+  // the indexer is offline the wallet's mempool keeps churning, so
+  // entered/exited transitions are lost and the persisted state
+  // drifts from reality. Prod (always-on) should leave this `true`.
+  MEMPOOL_WATCHER_ENABLED: boolean;
   REORG_SAFETY_SWEEP_INTERVAL_MS: number;
   NETWORK_STATS_INTERVAL_MS: number;
   // PollRescanner cadence. The job is single-flight via `schedule()` —
@@ -167,6 +173,7 @@ nconf
       'PORT',
       'TIP_POLL_INTERVAL_MS',
       'MEMPOOL_POLL_INTERVAL_MS',
+      'MEMPOOL_WATCHER_ENABLED',
       'REORG_SAFETY_SWEEP_INTERVAL_MS',
       'NETWORK_STATS_INTERVAL_MS',
       'POLL_RESCAN_INTERVAL_MS',
@@ -211,6 +218,7 @@ nconf
     HALFORD: 100_000_000,
     TIP_POLL_INTERVAL_MS: 8_000,
     MEMPOOL_POLL_INTERVAL_MS: 3_000,
+    MEMPOOL_WATCHER_ENABLED: true,
     REORG_SAFETY_SWEEP_INTERVAL_MS: 60_000,
     NETWORK_STATS_INTERVAL_MS: 15_000,
     POLL_RESCAN_INTERVAL_MS: 60 * 60_000,

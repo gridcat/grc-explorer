@@ -6,17 +6,14 @@ import Head from 'next/head';
 import { Layout } from '../../../layouts/Layout';
 import { MonthDayGrid } from '../../../components/CalendarHeatmap';
 import { Crumbs } from '../../../components/Crumbs';
-import { formatNumber } from '../../../lib/format';
+import { formatNumber, MONTHS_FULL } from '../../../lib/format';
 import { PeriodStatRow } from './PeriodStats';
 import { EmptyPeriodBanner } from './EmptyPeriodBanner';
 import type { MonthArchiveData } from './types';
 
-const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December'];
-
 export function MonthArchive({ data }: { data: MonthArchiveData }) {
   const { year, month, days } = data;
-  const monthName = MONTH_NAMES[month - 1];
+  const monthName = MONTHS_FULL[month - 1];
   const isEmpty = data.blockCount === 0;
   const title = `Gridcoin in ${monthName} ${year} — block archive`;
   const description = isEmpty

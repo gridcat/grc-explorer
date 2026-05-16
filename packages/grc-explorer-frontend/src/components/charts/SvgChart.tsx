@@ -1,5 +1,8 @@
 import { Box, useTheme } from '@mui/material';
-import { ReactNode, useEffect, useRef, useState } from 'react';
+import {
+  ReactNode, useEffect, useMemo, useRef, useState,
+} from 'react';
+import { useFlipNearRightEdge } from './useFlipNearRightEdge';
 
 /**
  * Inline-SVG chart primitives. Replaces recharts for the dashboard's
@@ -91,6 +94,26 @@ export function ChartFrameProvider({
 }
 
 /** Linear scale `[domainMin..domainMax] → [rangeMin..rangeMax]`. */
+/**
+ * Build an SVG `path` `d` string from a list of (x, y) pixel pairs.
+ * `M x,y L x,y …` — every sparkline / line chart in this repo wants
+ * the same shape, so centralising the join saves a regex worth of
+ * concatenation per render and one place to evolve smoothing later.
+ *
+ * Skips non-finite points (sparse series with gaps render as multi-
+ * segment paths) so callers don't have to pre-filter.
+ */
+export function buildLinePath(points: ReadonlyArray<readonly [number, number]>): string {
+  let out = '';
+  let needsMove = true;
+  for (const [x, y] of points) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) { needsMove = true; continue; }
+    out += needsMove ? `M${x.toFixed(2)},${y.toFixed(2)}` : ` L${x.toFixed(2)},${y.toFixed(2)}`;
+    needsMove = false;
+  }
+  return out;
+}
+
 export function linearScale(
   domainMin: number,
   domainMax: number,
@@ -237,25 +260,36 @@ export function BarChartCanvas({
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
-  if (frame.width === 0 || data.length === 0) return null;
-  let yMax = yMinHint ?? 0;
-  for (const d of data) {
-    const v = getValue(d);
-    if (v > yMax) yMax = v;
-  }
-  const yTicks = niceTicks(0, yMax || 1, 5, integerTicks);
-  const yScale = linearScale(0, yTicks[yTicks.length - 1] ?? 1, frame.innerHeight, 0);
+  // Scales + tick layout depend only on data shape + frame geometry,
+  // never on hoverIdx. Memo so a per-pixel mousemove (which sets
+  // hoverIdx) doesn't recompute niceTicks/linearScale every frame.
+  const layout = useMemo(() => {
+    if (frame.width === 0 || data.length === 0) return null;
+    let yMax = yMinHint ?? 0;
+    for (const d of data) {
+      const v = getValue(d);
+      if (v > yMax) yMax = v;
+    }
+    const yTicks = niceTicks(0, yMax || 1, 5, integerTicks);
+    const yScale = linearScale(0, yTicks[yTicks.length - 1] ?? 1, frame.innerHeight, 0);
+    const barSlot = frame.innerWidth / data.length;
+    const barW = Math.max(1, barSlot * 0.7);
+    const barOffset = (barSlot - barW) / 2;
+    // Render at most ~10 x-tick labels; otherwise the axis text overlaps.
+    const xLabelCount = Math.min(10, data.length);
+    const xLabelStep = Math.max(1, Math.floor(data.length / xLabelCount));
+    const xTicks = data
+      .map((d, i) => ({ value: i, x: i * barSlot + barSlot / 2, raw: d }))
+      .filter((t) => t.value % xLabelStep === 0);
+    return {
+      yTicks, yScale, barSlot, barW, barOffset, xTicks,
+    };
+  }, [data, frame.width, frame.innerWidth, frame.innerHeight, getValue, integerTicks, yMinHint]);
 
-  const barSlot = frame.innerWidth / data.length;
-  const barW = Math.max(1, barSlot * 0.7);
-  const barOffset = (barSlot - barW) / 2;
-
-  // Render at most ~10 x-tick labels; otherwise the axis text overlaps.
-  const xLabelCount = Math.min(10, data.length);
-  const xLabelStep = Math.max(1, Math.floor(data.length / xLabelCount));
-  const xTicks = data
-    .map((d, i) => ({ value: i, x: i * barSlot + barSlot / 2, raw: d }))
-    .filter((t) => t.value % xLabelStep === 0);
+  if (!layout) return null;
+  const {
+    yTicks, yScale, barSlot, barW, barOffset, xTicks,
+  } = layout;
 
   const handleMove = (e: React.MouseEvent<SVGSVGElement>) => {
     const svg = svgRef.current;
@@ -349,14 +383,28 @@ export function ChartTooltip({
   y: number;
   content: ReactNode;
 }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  // Flip the tooltip to the cursor's left when it would overflow the
+  // chart's right edge — otherwise the parent Card / Paper clips it.
+  const flipLeft = useFlipNearRightEdge(ref, (el) => {
+    if (!visible) return null;
+    const parent = el.offsetParent as HTMLElement | null;
+    if (!parent || el.offsetWidth === 0) return null;
+    return { unflippedRight: x + 8 + el.offsetWidth, bound: parent.clientWidth };
+  });
   if (!visible) return null;
   return (
     <Box
+      ref={ref}
       sx={{
         position: 'absolute',
         left: x,
         top: y,
-        transform: 'translate(8px, -100%)',
+        // Flip places the right edge 8px before `x` instead. Same y
+        // anchor either way (tooltip rises above the cursor).
+        transform: flipLeft
+          ? 'translate(calc(-100% - 8px), -100%)'
+          : 'translate(8px, -100%)',
         pointerEvents: 'none',
         bgcolor: 'background.paper',
         color: 'text.primary',
@@ -372,6 +420,48 @@ export function ChartTooltip({
       }}
     >
       {content}
+    </Box>
+  );
+}
+
+/**
+ * Horizontal swatch + label row shared by chart legends. Every
+ * dashboard chart has the same `<Box width=10 height=10 borderRadius=0.5
+ * />` + `<Typography variant="caption">` pair; this centralises it so
+ * the swatch shape stays consistent across panels.
+ */
+export function ChartLegend({
+  items,
+  spacing = 2,
+  size = 10,
+  flexWrap = 'wrap',
+}: {
+  items: ReadonlyArray<{ label: string; color: string }>;
+  spacing?: number;
+  size?: number;
+  flexWrap?: 'wrap' | 'nowrap';
+}) {
+  return (
+    <Box
+      sx={{
+        display: 'flex',
+        flexWrap,
+        gap: spacing,
+        alignItems: 'center',
+        rowGap: 0.5,
+      }}
+    >
+      {items.map((it) => (
+        <Box key={it.label} sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+          <Box sx={{
+            width: size, height: size, bgcolor: it.color, borderRadius: 0.5,
+          }}
+          />
+          <Box component="span" sx={{ fontSize: 12, color: 'text.secondary' }}>
+            {it.label}
+          </Box>
+        </Box>
+      ))}
     </Box>
   );
 }

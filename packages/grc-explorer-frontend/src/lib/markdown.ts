@@ -16,6 +16,10 @@ import { safeUrl } from './safeUrl';
  *   - paragraphs separated by blank lines
  *   - `**bold**`, `*italic*`, `` `code` ``
  *   - `[label](url)` links
+ *   - `[^label](url)` source-citation links — always rel="nofollow
+ *     noopener noreferrer" regardless of domain (the dofollow allowlist
+ *     does NOT apply to citations; references never pass link equity and
+ *     never leak a referrer, by editorial policy)
  *   - bullet lists (lines starting with `- `)
  *   - inline `{{stat:KEY}}` placeholders replaced by `stats[KEY]`
  *
@@ -175,15 +179,23 @@ function renderInline(s: string): ReactNode[] {
           break;
         }
         const isExternal = /^https?:\/\//i.test(safe);
-        const dofollow = isExternal && DOFOLLOW_DOMAINS.test(safe);
-        const rel = isExternal && !dofollow ? 'nofollow noopener' : (isExternal ? 'noopener' : undefined);
+        // `[^label](url)` marks a source citation. Citations never pass
+        // link equity and never leak a referrer, even to family domains,
+        // so they bypass the dofollow allowlist entirely.
+        const isRef = tok.raw.startsWith('^');
+        const label = isRef ? tok.raw.slice(1) : tok.raw;
+        const dofollow = isExternal && !isRef && DOFOLLOW_DOMAINS.test(safe);
+        const rel = !isExternal ? undefined
+          : dofollow ? 'noopener'
+            : isRef ? 'nofollow noopener noreferrer'
+              : 'nofollow noopener';
         const target = isExternal ? '_blank' : undefined;
         out.push(createElement('a', {
           key,
           href: safe,
           target,
           rel,
-        }, ...renderInline(tok.raw)));
+        }, ...renderInline(label)));
         break;
       }
       default:

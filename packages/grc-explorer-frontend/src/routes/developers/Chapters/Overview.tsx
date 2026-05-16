@@ -3,10 +3,7 @@ import {
 } from '@mui/material';
 import { CodeBlock } from '../../../components/CodeBlock/CodeBlock';
 import { IS_TESTNET } from '../../../lib/network';
-
-const MAINNET_BASE = 'https://explorer.gridcoin.club/api';
-const TESTNET_BASE = 'https://testnet-explorer.gridcoin.club/api';
-const BASE = IS_TESTNET ? TESTNET_BASE : MAINNET_BASE;
+import { API_BASE, MAINNET_API_BASE, TESTNET_API_BASE } from './apiBase';
 
 export function Overview() {
   return (
@@ -28,13 +25,13 @@ export function Overview() {
       <List dense>
         <ListItem disableGutters>
           <ListItemText
-            primary={<><strong>Mainnet:</strong> <code>{MAINNET_BASE}</code></>}
+            primary={<><strong>Mainnet:</strong> <code>{MAINNET_API_BASE}</code></>}
             secondary="The canonical Gridcoin chain."
           />
         </ListItem>
         <ListItem disableGutters>
           <ListItemText
-            primary={<><strong>Testnet:</strong> <code>{TESTNET_BASE}</code></>}
+            primary={<><strong>Testnet:</strong> <code>{TESTNET_API_BASE}</code></>}
             secondary="A separate stack indexing the Gridcoin testnet wallet. Same shape, separate data."
           />
         </ListItem>
@@ -51,7 +48,7 @@ export function Overview() {
       <CodeBlock
         caption="Request"
         language="bash"
-        code={`curl '${BASE}/status'`}
+        code={`curl '${API_BASE}/status'`}
       />
       <CodeBlock
         caption="Response — 200 OK"

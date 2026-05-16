@@ -8,7 +8,9 @@ import {
 import { api } from '../lib/api';
 import { useSSE } from '../hooks/useSSE';
 import { atParam, useTimeMachine } from '../hooks/useTimeMachine';
-import { formatCompact, formatDuration, formatTime } from '../lib/format';
+import {
+  formatCompact, formatDuration, formatTime, nowSec,
+} from '../lib/format';
 
 export interface NetworkStats {
   /** Daemon chain tip. May be null on first paint when the indexer
@@ -27,6 +29,13 @@ export interface NetworkStats {
    *  `"v5.5.0.1-unk"`. We accept either. */
   net_version?: string | number;
   rpc_version?: string | number;
+  /** Per-fork activation status keyed against the indexer's current
+   *  height. `forks.v13` flips to true automatically as soon as the
+   *  chain crosses the V13 height (3,989,800 mainnet / 2,870,000
+   *  testnet), so MSS-related UI panels can gate their visibility on
+   *  this without a deploy. Optional because pre-this-feature responses
+   *  may not carry it; treat missing as "all false". */
+  forks?: Record<string, boolean>;
 }
 
 interface NetworkVitalsProps {
@@ -186,7 +195,7 @@ function LastBlockTile() {
   }, []);
 
   const ago = lastBlockTime
-    ? `${formatDuration(Math.max(0, Math.floor(Date.now() / 1000) - lastBlockTime))} ago`
+    ? `${formatDuration(Math.max(0, nowSec() - lastBlockTime))} ago`
     : '—';
   // Compact date-only line so the on-chain year is visible at a glance
   // during long backfills (when the headline reads "10y ago"). Once
@@ -474,10 +483,11 @@ function ActiveStakersTile() {
       .catch(() => { /* ignore */ });
     fetchOnce();
     if (tm.isReplay) return () => { alive = false; };
-    // 1-min poll: distinct-CPID-in-last-24h drifts slowly. Bumping on
-    // every block.new SSE would refetch many times per minute during
-    // backfill bursts for marginal value.
-    const id = setInterval(fetchOnce, 60_000);
+    // 5-min poll: distinct-CPID-in-last-24h drifts slowly. The
+    // debounced block.new nudge below already fires on every block
+    // (capped at 1 per 30 s), so this is just the safety floor for
+    // when SSE is silent.
+    const id = setInterval(fetchOnce, 5 * 60 * 1000);
     return () => { alive = false; clearInterval(id); };
   }, [tm.at, tm.isReplay]);
 

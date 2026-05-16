@@ -1,6 +1,7 @@
 import { log } from '../../lib/log';
 import {
-  meili, meiliIndexId, MeiliEnvelope, MEILI_STREAM_KEY, MeiliIndexName,
+  meili, meiliIndexId, meiliIndexIdRaw, MeiliEnvelope, MEILI_STREAM_KEY, MeiliIndexName,
+  loadMeiliCursor, saveMeiliCursor, clearMeiliCursor,
 } from '../../lib/meili';
 import { isWipeInProgress, redisStreams } from '../../lib/redis';
 
@@ -24,6 +25,20 @@ export class MeiliIndexer {
 
   private static readonly BLOCK_MS = 2000;
 
+  // The `meili:queue` Redis stream is durable and never trimmed, so a
+  // restart replays it from 0-0 — and after a from-genesis backfill
+  // that's ~19M historical envelopes, including ones for indexes that
+  // have since been removed from `MeiliIndexName` (blocks / transactions
+  // / claims moved to ClickHouse — see lib/meili.ts). Without this guard
+  // `flush()` would happily `addDocuments` against those stale index
+  // names and re-create the multi-GB indexes Option A dropped. Skipping
+  // them here makes the replay a cheap Redis-read/JSON-parse drain with
+  // zero Meili work. Keep in sync with `settings` in `ensureIndices`;
+  // the `MeiliIndexName` type bounds the literals.
+  private static readonly ACTIVE_INDEXES: ReadonlySet<MeiliIndexName> = new Set<MeiliIndexName>([
+    'superblocks', 'polls', 'beacons', 'messages',
+  ]);
+
   private aborted = false;
 
   private lastId = '0-0';
@@ -34,6 +49,12 @@ export class MeiliIndexer {
 
   async run(): Promise<void> {
     await this.ensureIndices();
+
+    // Resume from the persisted position. Absent (first run ever, or
+    // post-wipe) → 0-0, which reads the stream from the start exactly
+    // once; every later restart picks up where the drain left off
+    // instead of replaying millions of historical envelopes.
+    this.lastId = (await loadMeiliCursor()) ?? '0-0';
 
     while (!this.aborted) {
       try {
@@ -47,6 +68,11 @@ export class MeiliIndexer {
           // eslint-disable-next-line no-await-in-loop
           await new Promise<void>((r) => { setTimeout(r, 1000); });
           this.lastId = '0-0';
+          // Drop the saved position too, so a restart mid-wipe also
+          // starts from the reborn (flushed) stream rather than a
+          // stale id that now points past the new first entry.
+          // eslint-disable-next-line no-await-in-loop
+          await clearMeiliCursor();
           continue;
         }
         // eslint-disable-next-line no-await-in-loop
@@ -82,6 +108,10 @@ export class MeiliIndexer {
         // eslint-disable-next-line no-await-in-loop
         await this.flush(envelopes);
         this.lastId = highest;
+        // Persist AFTER the flush so the saved position never points
+        // ahead of what Meili actually has. At-least-once on crash.
+        // eslint-disable-next-line no-await-in-loop
+        await saveMeiliCursor(highest);
       } catch (err) {
         log.warn('MeiliIndexer: drain loop error', err);
         // eslint-disable-next-line no-await-in-loop
@@ -97,6 +127,10 @@ export class MeiliIndexer {
     const upserts = new Map<MeiliIndexName, Record<string, unknown>[]>();
     const deletes = new Map<MeiliIndexName, string[]>();
     for (const env of envelopes) {
+      // Drop envelopes for indexes no longer served by Meili (stale
+      // stream replay after a backfill). env.index is typed but at
+      // runtime carries whatever the historical envelope wrote.
+      if (!MeiliIndexer.ACTIVE_INDEXES.has(env.index)) continue;
       if (env.action === 'upsert') {
         const arr = upserts.get(env.index) ?? [];
         arr.push(env.doc);
@@ -108,23 +142,25 @@ export class MeiliIndexer {
       }
     }
 
-    for (const [index, docs] of upserts.entries()) {
-      try {
-        // eslint-disable-next-line no-await-in-loop
-        await meili.index(meiliIndexId(index)).addDocuments(docs);
-      } catch (err) {
-        log.warn(`MeiliIndexer: addDocuments(${index}) failed`, err);
-      }
-    }
-
-    for (const [index, ids] of deletes.entries()) {
-      try {
-        // eslint-disable-next-line no-await-in-loop
-        await meili.index(meiliIndexId(index)).deleteDocuments(ids);
-      } catch (err) {
-        log.warn(`MeiliIndexer: deleteDocuments(${index}) failed`, err);
-      }
-    }
+    // Meili tolerates concurrent writes across distinct indices, so the
+    // upsert and delete fan-outs run in parallel — backfill catch-up
+    // used to serialise 9 indices for ~9× the wallclock.
+    await Promise.all([
+      ...Array.from(upserts.entries()).map(async ([index, docs]) => {
+        try {
+          await meili.index(meiliIndexId(index)).addDocuments(docs);
+        } catch (err) {
+          log.warn(`MeiliIndexer: addDocuments(${index}) failed`, err);
+        }
+      }),
+      ...Array.from(deletes.entries()).map(async ([index, ids]) => {
+        try {
+          await meili.index(meiliIndexId(index)).deleteDocuments(ids);
+        } catch (err) {
+          log.warn(`MeiliIndexer: deleteDocuments(${index}) failed`, err);
+        }
+      }),
+    ]);
   }
 
   private async ensureIndices(): Promise<void> {
@@ -135,49 +171,62 @@ export class MeiliIndexer {
       filterable?: string[];
       sortable?: string[];
     };
+    // Each `searchable` field builds a full inverted index, which is
+    // where Meili's RAM cost comes from. Keep only the keys the search
+    // bar actually has to resolve; lookups by address/cpid/etc. that
+    // already have a direct backend path (Redis, CH primary key) stay
+    // there. See `MeiliIndexName` for why `addresses` and `cpid_names`
+    // were removed.
     const settings: IndexSetting[] = [
+      // blocks / transactions / claims are intentionally absent — they
+      // moved to ClickHouse point lookups (see `MeiliIndexName`). The
+      // remaining indexes are the fuzzy-text corpora only.
+      //
+      // `cpids` was the biggest single bloat source (1 KB+ of joined
+      // CPID strings per doc × thousands of superblocks → multi-GB
+      // inverted index). Users looking for a CPID hit `/cpids/<id>` or
+      // the claims index instead.
       {
-        name: 'blocks', primaryKey: 'id', searchable: ['hash', 'prev_hash', 'miner_address', 'staker_cpid'], filterable: ['is_pos', 'is_superblock', 'height'], sortable: ['height', 'time'],
-      },
-      {
-        name: 'transactions', primaryKey: 'id', searchable: ['tx_id', 'block_hash', 'hashboinc'], filterable: ['is_coinbase', 'is_coinstake', 'has_contract', 'block_height'], sortable: ['time'],
-      },
-      {
-        name: 'addresses', primaryKey: 'id', searchable: ['address'], filterable: [], sortable: ['balance', 'tx_count'],
-      },
-      {
-        name: 'claims', primaryKey: 'id', searchable: ['cpid', 'organization', 'client_version', 'mining_id'], filterable: ['is_mrc'], sortable: ['block_height'],
-      },
-      // Searchable on quorum hash, on the height (string-form so users
-      // can type "89000"), and on the per-project / per-CPID
-      // breakdowns so a query for a project name like "Enigma@Home"
-      // surfaces every superblock that included it.
-      {
-        name: 'superblocks', primaryKey: 'id', searchable: ['quorum_hash', 'height_str', 'projects', 'cpids'], filterable: [], sortable: ['height', 'total_magnitude'],
+        name: 'superblocks', primaryKey: 'id', searchable: ['quorum_hash', 'height_str', 'projects'], filterable: [], sortable: ['height', 'total_magnitude'],
       },
       {
         name: 'polls', primaryKey: 'id', searchable: ['title', 'question', 'options'], filterable: ['response_type', 'weight_type'], sortable: ['start_time', 'end_time'],
       },
       {
-        name: 'beacons', primaryKey: 'id', searchable: ['cpid', 'address'], filterable: ['status'], sortable: ['block_height', 'expiration'],
+        name: 'beacons', primaryKey: 'id', searchable: ['cpid'], filterable: ['status'], sortable: ['block_height', 'expiration'],
       },
       // Free-form transaction messages (`MESSAGE` contracts). The
       // entire payload IS the message text — searchable on `message`,
       // sortable by `time` so the search page can rank recent first.
       {
-        name: 'messages', primaryKey: 'id', searchable: ['message', 'sender_address'], filterable: [], sortable: ['time', 'block_height'],
-      },
-      // BOINC project usernames → CPID. Search-by-name resolves an
-      // alias the user typed in the search bar back to the canonical
-      // CPID detail page. `name` first in searchableAttributes so a
-      // matching name outranks an incidental CPID-substring match;
-      // `total_credit` sortable so the per-project list on the CPID
-      // page can pick the highest-credit project's name as the
-      // canonical display.
-      {
-        name: 'cpid_names', primaryKey: 'id', searchable: ['name', 'cpid'], filterable: ['cpid', 'project_name'], sortable: ['total_credit'],
+        name: 'messages', primaryKey: 'id', searchable: ['message'], filterable: [], sortable: ['time', 'block_height'],
       },
     ];
+
+    // One-shot cleanup: indexes that used to be in the schema but were
+    // dropped from `MeiliIndexName`. Fire-and-forget the deletion task —
+    // we don't await it, because when Meili has a deep task backlog
+    // (right after a wipe) `waitForTask` will time out before the task
+    // is even picked up. The enqueue itself is the load-bearing call;
+    // Meili processes it on its own clock. Idempotent: deleting a
+    // non-existent index 404s and we swallow that case.
+    // `blocks` / `transactions` / `claims` join the list: existing
+    // deployments carry ~31 GiB of those inverted indexes that this
+    // boot reclaims now that the same lookups are served from CH.
+    const obsoleteIndexes = ['addresses', 'cpid_names', 'blocks', 'transactions', 'claims'];
+    for (const obsolete of obsoleteIndexes) {
+      const id = meiliIndexIdRaw(obsolete);
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await meili.deleteIndex(id);
+        log.info(`MeiliIndexer: enqueued drop of obsolete index ${id}`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!/not found|index_not_found/i.test(message)) {
+          log.warn(`MeiliIndexer: deleteIndex(${id}) failed`, err);
+        }
+      }
+    }
 
     for (const s of settings) {
       const id = meiliIndexId(s.name);
