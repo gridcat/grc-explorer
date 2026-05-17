@@ -1,3 +1,10 @@
+# [grc-explorer-frontend-v1.3.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.2.1...grc-explorer-frontend-v1.3.0) (2026-05-17)
+
+
+### Features
+
+* improve blocks page, add usernames ([c29ae24](https://github.com/gridcat/grc-explorer/commit/c29ae24de4c5fce436bb58f133bae74650a4af42))
+
 # [grc-explorer-frontend-v1.2.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.2.0...grc-explorer-frontend-v1.2.1) (2026-05-17)
 
 
