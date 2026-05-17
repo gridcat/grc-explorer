@@ -1,3 +1,10 @@
+# [grc-explorer-v1.4.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.3.0...grc-explorer-v1.4.0) (2026-05-17)
+
+
+### Features
+
+* improve blocks page, add usernames ([c29ae24](https://github.com/gridcat/grc-explorer/commit/c29ae24de4c5fce436bb58f133bae74650a4af42))
+
 # [grc-explorer-v1.3.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.2.2...grc-explorer-v1.3.0) (2026-05-16)
 
 
