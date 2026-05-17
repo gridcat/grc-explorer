@@ -1,3 +1,10 @@
+# [grc-explorer-frontend-v1.2.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.2.0...grc-explorer-frontend-v1.2.1) (2026-05-17)
+
+
+### Bug Fixes
+
+* update homepage to be lighter ([dbca306](https://github.com/gridcat/grc-explorer/commit/dbca306b97d124d452473f28b36a865af0dd3cde))
+
 # [grc-explorer-frontend-v1.2.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.1.1...grc-explorer-frontend-v1.2.0) (2026-05-16)
 
 
