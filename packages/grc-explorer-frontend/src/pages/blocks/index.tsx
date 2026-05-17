@@ -4,12 +4,14 @@ import {
 import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useSSE } from '../../hooks/useSSE';
+import { useCpidNames } from '../../hooks/useCpidNames';
 import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
 import { formatGrc, formatTime, timeAgo } from '../../lib/format';
 import { track } from '../../lib/track';
+import { CpidLabel } from '../../components/CpidLabel';
 import { Crumbs } from '../../components/Crumbs';
 import { HashTrim } from '../../components/HashTrim';
 import { fetchYearList, type YearListItem } from '../../routes/blocks/archive/fetch';
@@ -29,6 +31,11 @@ interface Block {
   valueMoved?: string;
   feeTotal?: string;
   stakerCpid: string | null;
+  // Server-side resolved BOINC display name for `stakerCpid` (the API
+  // already serializes it; see presenters/index.ts). Used to seed
+  // useCpidNames so the SSR rows show names on first paint; the hook
+  // resolves SSE-arrived CPIDs client-side, same as LiveBlockTicker.
+  stakerName?: string | null;
   minerAddress?: string | null;
   difficulty?: string;
 }
@@ -73,6 +80,26 @@ export default function BlocksList({ initialRows, years }: BlocksListProps) {
       return merged.slice(0, PAGE_SIZE);
     });
   });
+
+  // Staker display names — identical pattern to LiveBlockTicker. Seed
+  // useCpidNames from the SSR-resolved `stakerName` on the initial rows
+  // so the first paint already shows names, then let the hook resolve
+  // any CPID that arrives later via SSE (its module cache fetches each
+  // CPID at most once per session).
+  const initialCpidNames = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const b of initialRows) {
+      if (b.stakerCpid && b.stakerName) m[b.stakerCpid] = b.stakerName;
+    }
+    return m;
+  }, [initialRows]);
+  const stakerCpids = useMemo(
+    () => rows
+      .map((b) => b.stakerCpid)
+      .filter((c): c is string => typeof c === 'string' && c.length > 0),
+    [rows],
+  );
+  const names = useCpidNames(stakerCpids, initialCpidNames);
 
   return (
     <Layout>
@@ -156,14 +183,16 @@ export default function BlocksList({ initialRows, years }: BlocksListProps) {
                         : <Chip label="PoW" size="small" variant="outlined" />}
                     </Box>
                   </TableCell>
-                  <TableCell sx={{ fontSize: 12 }}>
+                  <TableCell sx={{ fontSize: 12, maxWidth: 220 }}>
                     {b.stakerCpid ? (
                       <Link
                         href={`/cpids/${b.stakerCpid}`}
-                        style={{ color: 'inherit', textDecoration: 'none', fontFamily: 'monospace' }}
+                        style={{
+                          color: 'inherit', textDecoration: 'none', display: 'block', minWidth: 0,
+                        }}
                         onClick={(e) => e.stopPropagation()}
                       >
-                        {b.stakerCpid}
+                        <CpidLabel cpid={b.stakerCpid} name={names.get(b.stakerCpid)} />
                       </Link>
                     ) : (
                       <Box sx={{ color: 'text.disabled', fontStyle: 'italic' }}>investor</Box>

@@ -113,10 +113,15 @@ blocksRouter.get('/', async (req: Request, res: Response) => {
       format: 'JSONEachRow',
     }),
     ch.query({
-      // No FINAL: `count() FROM blocks FINAL` is a full merge scan of
-      // every column. Distinct heights == block count and reads only
-      // the `height` column (time filter prunes via idx_blocks_time).
-      query: `SELECT count() AS c FROM (SELECT height FROM blocks ${countTimeFilter} GROUP BY height)`,
+      // Heights are contiguous genesis→tip (HistoricalBackfiller
+      // commits strictly in order — no gaps even mid-backfill), so the
+      // listable block count is exactly max-min+1. min()/max() over the
+      // `height` sort key resolve from per-part min/max metadata: no row
+      // scan. The previous `count() … GROUP BY height` aggregated the
+      // whole height column (~millions of rows) on every page load.
+      // For the `at` path the predicate still prunes via
+      // idx_blocks_time. Empty/clamped result → NULL, handled JS-side.
+      query: `SELECT toUInt64(max(height) - min(height) + 1) AS c FROM blocks ${countTimeFilter}`,
       query_params: params,
       format: 'JSONEachRow',
     }),
@@ -132,34 +137,37 @@ blocksRouter.get('/', async (req: Request, res: Response) => {
   // `valueMoved` / `feeTotal` on each row alongside `mint` (block
   // reward) so consumers can distinguish "what users moved" from
   // "what the block emitted".
+  // Both the per-block value/fee aggregate and the staker-name
+  // resolution depend only on rawRows, so run them concurrently —
+  // saves one CH round trip on the SSR path (they used to await in
+  // series). Staker display names are resolved server-side so the SSR
+  // seed (home LiveBlockTicker, /blocks page) renders names without a
+  // second /cpids/names round trip.
+  type AggRow = { block_height: number; value_moved: string; fee_total: string };
   const heights = rawRows.map((r) => r.height);
+  const [aggRows, stakerNames] = await Promise.all([
+    heights.length > 0
+      ? ch.query({
+        query: `
+          SELECT
+            block_height,
+            toString(sum(total_out)) AS value_moved,
+            toString(sum(fee))       AS fee_total
+          FROM transactions FINAL
+          WHERE block_height IN ({heights: Array(UInt32)})
+            AND NOT is_coinbase AND NOT is_coinstake
+          GROUP BY block_height
+        `,
+        query_params: { heights },
+        format: 'JSONEachRow',
+      }).then((r) => r.json<AggRow>())
+      : Promise.resolve([] as AggRow[]),
+    resolveCpidNames(rawRows.map((r) => r.staker_cpid).filter((c): c is string => !!c)),
+  ]);
   const aggMap = new Map<number, { value_moved: string; fee_total: string }>();
-  if (heights.length > 0) {
-    const aggResult = await ch.query({
-      query: `
-        SELECT
-          block_height,
-          toString(sum(total_out)) AS value_moved,
-          toString(sum(fee))       AS fee_total
-        FROM transactions FINAL
-        WHERE block_height IN ({heights: Array(UInt32)})
-          AND NOT is_coinbase AND NOT is_coinstake
-        GROUP BY block_height
-      `,
-      query_params: { heights },
-      format: 'JSONEachRow',
-    });
-    const aggRows = await aggResult.json<{ block_height: number; value_moved: string; fee_total: string }>();
-    for (const a of aggRows) {
-      aggMap.set(a.block_height, { value_moved: a.value_moved, fee_total: a.fee_total });
-    }
+  for (const a of aggRows) {
+    aggMap.set(a.block_height, { value_moved: a.value_moved, fee_total: a.fee_total });
   }
-  // Resolve staker display names server-side so the SSR seed (home
-  // LiveBlockTicker, /blocks page) renders names without a second
-  // /cpids/names round trip.
-  const stakerNames = await resolveCpidNames(
-    rawRows.map((r) => r.staker_cpid).filter((c): c is string => !!c),
-  );
   const rows = rawRows.map((r) => {
     const a = aggMap.get(r.height);
     return presentRow({
