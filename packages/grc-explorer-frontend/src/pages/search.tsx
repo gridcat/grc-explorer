@@ -1,5 +1,5 @@
 import {
-  Card, CardContent, CircularProgress, Stack, Typography,
+  Button, Card, CardContent, CircularProgress, Stack, Typography,
 } from '@mui/material';
 import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
@@ -27,6 +27,13 @@ export default function SearchPage({ initialQ, initialResults, initialLoaded }: 
   const q = String(router.query.q ?? '');
   const [results, setResults] = useState<IndexResult[]>(initialResults);
   const [loaded, setLoaded] = useState(initialLoaded);
+  // Per-bucket "Show more" bookkeeping. `loadingMore` disables the
+  // button mid-fetch; `exhausted` hides it once a page comes back
+  // empty — Meili's estimatedTotalHits is an estimate, so it can claim
+  // more hits than are actually retrievable, and we must not leave a
+  // button that fetches nothing.
+  const [loadingMore, setLoadingMore] = useState<Record<string, boolean>>({});
+  const [exhausted, setExhausted] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (!q) {
@@ -36,12 +43,38 @@ export default function SearchPage({ initialQ, initialResults, initialLoaded }: 
     }
     if (q === initialQ && initialLoaded) return;
     setLoaded(false);
+    setExhausted({});
     api.get('/search', { params: { q, limit: 20 } }).then((r) => {
       setResults((r.data?.data ?? []) as IndexResult[]);
     }).catch(() => {
       setResults([]);
     }).finally(() => setLoaded(true));
   }, [q, initialQ, initialLoaded]);
+
+  // Fetch the next page for a single bucket and append it. Scoped to
+  // the one index via `indices=`, so the other buckets aren't re-run.
+  const loadMore = (index: string, currentCount: number) => {
+    setLoadingMore((m) => ({ ...m, [index]: true }));
+    track('Search: show more', { index });
+    api.get('/search', {
+      params: { q, indices: index, limit: 20, offset: currentCount },
+    }).then((r) => {
+      const more = ((r.data?.data ?? []) as IndexResult[]).find((b) => b.index === index);
+      if (!more || more.hits.length === 0) {
+        setExhausted((e) => ({ ...e, [index]: true }));
+        return;
+      }
+      setResults((prev) => prev.map((b) => (b.index === index
+        ? {
+          ...b,
+          hits: [...b.hits, ...more.hits],
+          estimatedTotalHits: more.estimatedTotalHits ?? b.estimatedTotalHits,
+        }
+        : b)));
+    }).catch(() => {
+      /* swallow — leave the already-shown hits in place */
+    }).finally(() => setLoadingMore((m) => ({ ...m, [index]: false })));
+  };
 
   // Hide indices that returned nothing — the API queries every index
   // (blocks, transactions, addresses, claims, superblocks, polls,
@@ -82,6 +115,16 @@ export default function SearchPage({ initialQ, initialResults, initialLoaded }: 
                   <Hit key={`${r.index}:${i}`} index={r.index} hit={hit} />
                 ))}
               </Stack>
+              {(r.estimatedTotalHits ?? r.hits.length) > r.hits.length && !exhausted[r.index] && (
+                <Button
+                  size="small"
+                  onClick={() => loadMore(r.index, r.hits.length)}
+                  disabled={!!loadingMore[r.index]}
+                  sx={{ mt: 1, alignSelf: 'flex-start' }}
+                >
+                  {loadingMore[r.index] ? 'Loading…' : 'Show more'}
+                </Button>
+              )}
             </CardContent>
           </Card>
         ))}

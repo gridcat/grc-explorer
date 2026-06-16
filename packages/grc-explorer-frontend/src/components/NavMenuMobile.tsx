@@ -9,6 +9,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
 import { IS_TESTNET } from '../lib/network';
+import { activeChildHref } from '../lib/navActive';
 import { track } from '../lib/track';
 import { ModeToggle } from './ModeToggle';
 
@@ -150,7 +151,7 @@ export function NavMenuMobile({ items }: { items: NavEntry[] }) {
                     {entry.label}
                   </Typography>
                   {entry.children.map((c) => {
-                    const isCurrent = router.pathname === c.href || router.pathname.startsWith(`${c.href}/`);
+                    const isCurrent = activeChildHref(router.pathname, entry.children) === c.href;
                     return (
                       <Link
                         key={c.href}

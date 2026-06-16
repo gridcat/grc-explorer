@@ -1,4 +1,4 @@
-import { ch } from '../lib/ch';
+import { query } from '../lib/db';
 import { log } from '../lib/log';
 import { applyWalletDelta, clearWalletProjections } from '../lib/redis';
 
@@ -21,30 +21,27 @@ export async function rebuildWallets(): Promise<number> {
   let total = 0;
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    // eslint-disable-next-line no-await-in-loop
-    const result = await ch.query({
-      query: `
-        SELECT
-          address,
-          valid_from_height,
-          toString(delta)    AS delta,
-          toString(received) AS received,
-          toString(sent)     AS sent,
-          tx_count_delta
-        FROM address_balance_history FINAL
-        WHERE address != ''
-        ORDER BY address, valid_from_height
-        LIMIT {limit: UInt32} OFFSET {offset: UInt32}
-      `,
-      query_params: { limit: PAGE_SIZE, offset },
-      format: 'JSONEachRow',
-    });
     type Row = {
       address: string; valid_from_height: number;
       delta: string; received: string; sent: string; tx_count_delta: number;
     };
     // eslint-disable-next-line no-await-in-loop
-    const rows = await result.json<Row>();
+    const rows = await query<Row>(
+      `
+        SELECT
+          address,
+          valid_from_height,
+          delta,
+          received,
+          sent,
+          tx_count_delta
+        FROM address_balance_history
+        WHERE address != ''
+        ORDER BY address, valid_from_height
+        LIMIT ${PAGE_SIZE} OFFSET $offset
+      `,
+      { offset },
+    );
     if (rows.length === 0) break;
 
     for (const r of rows) {

@@ -72,6 +72,13 @@ module.exports = {
   // anything we aren't already careful about. Keep off; flip to true
   // when intentionally hunting effect-cleanup bugs.
   reactStrictMode: false,
+  // The production build does NOT re-run type-checking or ESLint: CircleCI
+  // runs `npm run typecheck` and `npm run test:lint` for this package on
+  // every commit (see .circleci/config.yml), so doing it again inside
+  // `next build` is redundant and is the slowest, most stall-prone phase of
+  // the build. Keep the checks in CI/dev; keep them out of the image build.
+  eslint: { ignoreDuringBuilds: true },
+  typescript: { ignoreBuildErrors: true },
   async headers() {
     return [
       {

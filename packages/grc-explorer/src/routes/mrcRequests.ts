@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { ch } from '../lib/ch';
+import { query } from '../lib/db';
 import { halford2grc } from '../lib/halford';
 import { getTipAnchor } from '../lib/indexerTip';
 import { statusOf, waitSecondsOf } from '../lib/mrcStatus';
@@ -59,23 +59,23 @@ function presentRow(r: MrcRow) {
 // lives on the same tx_id in mempool_txs.
 const SELECT_MRC = `
   SELECT
-    m.tx_id                        AS tx_id,
-    m.version                      AS version,
-    m.cpid                         AS cpid,
-    m.client_version               AS client_version,
-    m.organization                 AS organization,
-    toString(m.research_subsidy)   AS research_subsidy,
-    toString(m.fee_offered)        AS fee_offered,
-    m.magnitude                    AS magnitude,
-    m.magnitude_unit               AS magnitude_unit,
-    m.last_block_hash              AS last_block_hash,
-    m.pay_to_address               AS pay_to_address,
-    toUnixTimestamp(m.first_seen)  AS first_seen,
-    m.block_height                 AS block_height,
-    toUnixTimestamp(m.block_time)  AS block_time,
-    toUnixTimestamp(mt.evicted_at) AS evicted_at
-  FROM mrc_requests AS m FINAL
-  ANY LEFT JOIN mempool_txs AS mt FINAL ON mt.tx_id = m.tx_id
+    m.tx_id                              AS tx_id,
+    m.version                            AS version,
+    m.cpid                               AS cpid,
+    m.client_version                     AS client_version,
+    m.organization                       AS organization,
+    CAST(m.research_subsidy AS VARCHAR)  AS research_subsidy,
+    CAST(m.fee_offered AS VARCHAR)       AS fee_offered,
+    m.magnitude                          AS magnitude,
+    m.magnitude_unit                     AS magnitude_unit,
+    m.last_block_hash                    AS last_block_hash,
+    m.pay_to_address                     AS pay_to_address,
+    CAST(epoch(m.first_seen) AS BIGINT)  AS first_seen,
+    m.block_height                       AS block_height,
+    CAST(epoch(m.block_time) AS BIGINT)  AS block_time,
+    CAST(epoch(mt.evicted_at) AS BIGINT) AS evicted_at
+  FROM mrc_requests AS m
+  LEFT JOIN mempool_txs AS mt ON mt.tx_id = m.tx_id
 `;
 
 // Whitelist of sortable columns mapped to their SQL expression. Inputs
@@ -119,9 +119,9 @@ mrcRequestsRouter.get('/', async (req: Request, res: Response) => {
   const sort = parseSort(req.query.sort);
 
   const filters: string[] = [];
-  const params: Record<string, unknown> = { limit, offset };
+  const params: Record<string, unknown> = {};
   if (cpid) {
-    filters.push('m.cpid = {cpid: String}');
+    filters.push('m.cpid = $cpid');
     params.cpid = cpid;
   }
   if (status === 'confirmed') filters.push('m.block_height IS NOT NULL');
@@ -129,30 +129,28 @@ mrcRequestsRouter.get('/', async (req: Request, res: Response) => {
   else if (status === 'evicted') filters.push('m.block_height IS NULL AND mt.evicted_at IS NOT NULL');
   const where = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
 
-  const [rowsResult, countResult] = await Promise.all([
-    ch.query({
-      query: `
+  const [rawRows, countRows] = await Promise.all([
+    query<MrcRow>(
+      `
         ${SELECT_MRC}
         ${where}
         ORDER BY ${sort.sql}
-        LIMIT {limit: UInt32} OFFSET {offset: UInt32}
+        LIMIT ${Number(limit)} OFFSET ${Number(offset)}
       `,
-      query_params: params,
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `
-        SELECT count() AS c
-        FROM mrc_requests AS m FINAL
-        ANY LEFT JOIN mempool_txs AS mt FINAL ON mt.tx_id = m.tx_id
+      params,
+    ),
+    query<{ c: string | number }>(
+      `
+        SELECT count(*) AS c
+        FROM mrc_requests AS m
+        LEFT JOIN mempool_txs AS mt ON mt.tx_id = m.tx_id
         ${where}
       `,
-      query_params: params,
-      format: 'JSONEachRow',
-    }),
+      params,
+    ),
   ]);
-  const rows = (await rowsResult.json<MrcRow>()).map(presentRow);
-  const total = Number((await countResult.json<{ c: string | number }>())[0]?.c ?? 0);
+  const rows = rawRows.map(presentRow);
+  const total = Number(countRows[0]?.c ?? 0);
   res.status(StatusCodes.OK).send(withMeta({
     data: rows.map((r) => ({ id: r.txId, type: 'mrc_request', attributes: r })),
     meta: { count: total },
@@ -166,42 +164,40 @@ mrcRequestsRouter.get('/summary', async (_req: Request, res: Response) => {
   // during a deep backfill the freshest block_time may be months behind
   // now(), and the wall-clock window would always read zero.
   const anchor = await getTipAnchor();
-  // Two independent CH queries — pending/evicted breakdown needs the
+  const since24h = anchor - 86400;
+  // Two independent queries — pending/evicted breakdown needs the
   // mempool_txs JOIN, totals don't. Run in parallel to save a round trip.
-  const [result, statusResult] = await Promise.all([
-    ch.query({
-      query: `
+  const [rows, statusRows] = await Promise.all([
+    query<{
+      confirmed_count: number;
+      confirmed_research_total: string;
+      confirmed_fee_total: string;
+      recent_count: number;
+      recent_research_total: string;
+      distinct_cpids: number;
+    }>(
+      `
         SELECT
-          toUInt32(countIf(block_height IS NOT NULL))                                            AS confirmed_count,
-          toString(sumIf(research_subsidy, block_height IS NOT NULL))                            AS confirmed_research_total,
-          toString(sumIf(fee_offered, block_height IS NOT NULL))                                 AS confirmed_fee_total,
-          toUInt32(countIf(first_seen >= toDateTime({anchor: UInt64}) - 86400))                  AS recent_count,
-          toString(sumIf(research_subsidy, first_seen >= toDateTime({anchor: UInt64}) - 86400))  AS recent_research_total,
-          toUInt32(uniqIf(cpid, block_height IS NOT NULL))                                       AS distinct_cpids
-        FROM mrc_requests FINAL
+          CAST(count(*) FILTER (WHERE block_height IS NOT NULL) AS UINTEGER)                          AS confirmed_count,
+          CAST(coalesce(sum(research_subsidy) FILTER (WHERE block_height IS NOT NULL), 0) AS VARCHAR)  AS confirmed_research_total,
+          CAST(coalesce(sum(fee_offered) FILTER (WHERE block_height IS NOT NULL), 0) AS VARCHAR)       AS confirmed_fee_total,
+          CAST(count(*) FILTER (WHERE first_seen >= make_timestamp($since::BIGINT * 1000000)) AS UINTEGER)                         AS recent_count,
+          CAST(coalesce(sum(research_subsidy) FILTER (WHERE first_seen >= make_timestamp($since::BIGINT * 1000000)), 0) AS VARCHAR) AS recent_research_total,
+          CAST(count(DISTINCT cpid) FILTER (WHERE block_height IS NOT NULL) AS UINTEGER)               AS distinct_cpids
+        FROM mrc_requests
       `,
-      query_params: { anchor },
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `
+      { since: since24h },
+    ),
+    query<{ pending: number; evicted: number }>(
+      `
         SELECT
-          toUInt32(countIf(m.block_height IS NULL AND mt.evicted_at IS NULL))     AS pending,
-          toUInt32(countIf(m.block_height IS NULL AND mt.evicted_at IS NOT NULL)) AS evicted
-        FROM mrc_requests AS m FINAL
-        ANY LEFT JOIN mempool_txs AS mt FINAL ON mt.tx_id = m.tx_id
+          CAST(count(*) FILTER (WHERE m.block_height IS NULL AND mt.evicted_at IS NULL) AS UINTEGER)     AS pending,
+          CAST(count(*) FILTER (WHERE m.block_height IS NULL AND mt.evicted_at IS NOT NULL) AS UINTEGER) AS evicted
+        FROM mrc_requests AS m
+        LEFT JOIN mempool_txs AS mt ON mt.tx_id = m.tx_id
       `,
-      format: 'JSONEachRow',
-    }),
+    ),
   ]);
-  const rows = await result.json<{
-    confirmed_count: number;
-    confirmed_research_total: string;
-    confirmed_fee_total: string;
-    recent_count: number;
-    recent_research_total: string;
-    distinct_cpids: number;
-  }>();
   const r = rows[0] ?? {
     confirmed_count: 0,
     confirmed_research_total: '0',
@@ -210,8 +206,7 @@ mrcRequestsRouter.get('/summary', async (_req: Request, res: Response) => {
     recent_research_total: '0',
     distinct_cpids: 0,
   };
-  const status = (await statusResult.json<{ pending: number; evicted: number }>())[0]
-    ?? { pending: 0, evicted: 0 };
+  const status = statusRows[0] ?? { pending: 0, evicted: 0 };
 
   res.status(StatusCodes.OK).send(withMeta({
     data: {
@@ -238,28 +233,27 @@ mrcRequestsRouter.get('/summary', async (_req: Request, res: Response) => {
 mrcRequestsRouter.get('/timeline', async (req: Request, res: Response) => {
   const days = clampedQueryInt(req, 'days', { def: 30, min: 1, max: 365 });
   const anchor = await getTipAnchor();
+  const since = anchor - days * 86400;
 
-  const result = await ch.query({
-    query: `
+  const samples = (await query<{
+    bucket_ts: number; count: number;
+    research_total: string; fee_total: string; distinct_cpids: number;
+  }>(
+    `
       SELECT
-        toUnixTimestamp(toStartOfDay(block_time)) AS bucket_ts,
-        toUInt32(count())                         AS count,
-        toString(sum(research_subsidy))           AS research_total,
-        toString(sum(fee_offered))                AS fee_total,
-        toUInt32(uniq(cpid))                      AS distinct_cpids
-      FROM mrc_requests FINAL
+        CAST(epoch(date_trunc('day', block_time)) AS BIGINT) AS bucket_ts,
+        CAST(count(*) AS UINTEGER)                           AS count,
+        CAST(coalesce(sum(research_subsidy), 0) AS VARCHAR)  AS research_total,
+        CAST(coalesce(sum(fee_offered), 0) AS VARCHAR)       AS fee_total,
+        CAST(count(DISTINCT cpid) AS UINTEGER)               AS distinct_cpids
+      FROM mrc_requests
       WHERE block_height IS NOT NULL
-        AND block_time >= toDateTime({anchor: UInt64}) - {seconds: UInt32}
+        AND block_time >= make_timestamp($since::BIGINT * 1000000)
       GROUP BY bucket_ts
       ORDER BY bucket_ts ASC
     `,
-    query_params: { anchor, seconds: days * 86400 },
-    format: 'JSONEachRow',
-  });
-  const samples = (await result.json<{
-    bucket_ts: number; count: number;
-    research_total: string; fee_total: string; distinct_cpids: number;
-  }>()).map((s) => ({
+    { since },
+  )).map((s) => ({
     ts: s.bucket_ts,
     count: s.count,
     researchTotal: halford2grc(BigInt(s.research_total)),
@@ -282,34 +276,36 @@ mrcRequestsRouter.get('/timeline', async (req: Request, res: Response) => {
 //   historical replay rows where first_seen == block_time.
 mrcRequestsRouter.get('/wait-distribution', async (req: Request, res: Response) => {
   const days = clampedQueryInt(req, 'days', { def: 90, min: 1, max: 730 });
+  const since = Math.floor(Date.now() / 1000) - days * 86400;
 
   // Buckets in seconds: < 30s, 30–60s, 1–5m, 5–15m, 15m–1h, 1–6h, > 6h.
-  const result = await ch.query({
-    query: `
-      WITH (toUnixTimestamp(block_time) - toUnixTimestamp(first_seen)) AS wait_s
-      SELECT
-        toUInt32(countIf(wait_s < 30))                       AS b_lt30s,
-        toUInt32(countIf(wait_s >= 30 AND wait_s < 60))      AS b_30s_1m,
-        toUInt32(countIf(wait_s >= 60 AND wait_s < 300))     AS b_1m_5m,
-        toUInt32(countIf(wait_s >= 300 AND wait_s < 900))    AS b_5m_15m,
-        toUInt32(countIf(wait_s >= 900 AND wait_s < 3600))   AS b_15m_1h,
-        toUInt32(countIf(wait_s >= 3600 AND wait_s < 21600)) AS b_1h_6h,
-        toUInt32(countIf(wait_s >= 21600))                   AS b_gt6h,
-        quantile(0.5)(wait_s)                                AS p50,
-        quantile(0.95)(wait_s)                               AS p95
-      FROM mrc_requests FINAL
-      WHERE block_height IS NOT NULL
-        AND block_time > first_seen
-        AND first_seen >= now() - {seconds: UInt32}
-    `,
-    query_params: { seconds: days * 86400 },
-    format: 'JSONEachRow',
-  });
-  const r = (await result.json<{
+  const r = (await query<{
     b_lt30s: number; b_30s_1m: number; b_1m_5m: number; b_5m_15m: number;
     b_15m_1h: number; b_1h_6h: number; b_gt6h: number;
     p50: number | null; p95: number | null;
-  }>())[0] ?? {
+  }>(
+    `
+      WITH w AS (
+        SELECT CAST(epoch(block_time) AS BIGINT) - CAST(epoch(first_seen) AS BIGINT) AS wait_s
+        FROM mrc_requests
+        WHERE block_height IS NOT NULL
+          AND block_time > first_seen
+          AND first_seen >= make_timestamp($since::BIGINT * 1000000)
+      )
+      SELECT
+        CAST(count(*) FILTER (WHERE wait_s < 30) AS UINTEGER)                       AS b_lt30s,
+        CAST(count(*) FILTER (WHERE wait_s >= 30 AND wait_s < 60) AS UINTEGER)      AS b_30s_1m,
+        CAST(count(*) FILTER (WHERE wait_s >= 60 AND wait_s < 300) AS UINTEGER)     AS b_1m_5m,
+        CAST(count(*) FILTER (WHERE wait_s >= 300 AND wait_s < 900) AS UINTEGER)    AS b_5m_15m,
+        CAST(count(*) FILTER (WHERE wait_s >= 900 AND wait_s < 3600) AS UINTEGER)   AS b_15m_1h,
+        CAST(count(*) FILTER (WHERE wait_s >= 3600 AND wait_s < 21600) AS UINTEGER) AS b_1h_6h,
+        CAST(count(*) FILTER (WHERE wait_s >= 21600) AS UINTEGER)                   AS b_gt6h,
+        quantile_cont(wait_s, 0.5)  AS p50,
+        quantile_cont(wait_s, 0.95) AS p95
+      FROM w
+    `,
+    { since },
+  ))[0] ?? {
     b_lt30s: 0,
     b_30s_1m: 0,
     b_1m_5m: 0,
@@ -351,26 +347,25 @@ mrcRequestsRouter.get('/bid-vs-payout', async (req: Request, res: Response) => {
   const days = clampedQueryInt(req, 'days', { def: 30, min: 1, max: 365 });
   const limit = clampedQueryInt(req, 'limit', { def: 500, min: 1, max: 5000 });
   const anchor = await getTipAnchor();
+  const since = anchor - days * 86400;
 
-  const result = await ch.query({
-    query: `
-      SELECT
-        toString(research_subsidy)    AS research_subsidy,
-        toString(fee_offered)         AS fee_offered,
-        toUnixTimestamp(block_time)   AS block_time,
-        cpid
-      FROM mrc_requests FINAL
-      WHERE block_height IS NOT NULL
-        AND block_time >= toDateTime({anchor: UInt64}) - {seconds: UInt32}
-      ORDER BY block_time DESC
-      LIMIT {limit: UInt32}
-    `,
-    query_params: { anchor, seconds: days * 86400, limit },
-    format: 'JSONEachRow',
-  });
-  const points = (await result.json<{
+  const points = (await query<{
     research_subsidy: string; fee_offered: string; block_time: number; cpid: string;
-  }>()).map((p) => ({
+  }>(
+    `
+      SELECT
+        CAST(research_subsidy AS VARCHAR)   AS research_subsidy,
+        CAST(fee_offered AS VARCHAR)        AS fee_offered,
+        CAST(epoch(block_time) AS BIGINT)   AS block_time,
+        cpid
+      FROM mrc_requests
+      WHERE block_height IS NOT NULL
+        AND block_time >= make_timestamp($since::BIGINT * 1000000)
+      ORDER BY block_time DESC
+      LIMIT ${Number(limit)}
+    `,
+    { since },
+  )).map((p) => ({
     researchSubsidy: halford2grc(BigInt(p.research_subsidy)),
     feeOffered: halford2grc(BigInt(p.fee_offered)),
     blockTime: p.block_time,
@@ -395,26 +390,25 @@ mrcRequestsRouter.get('/bid-vs-payout', async (req: Request, res: Response) => {
 mrcRequestsRouter.get('/staker-take', async (req: Request, res: Response) => {
   const days = clampedQueryInt(req, 'days', { def: 30, min: 1, max: 365 });
   const anchor = await getTipAnchor();
+  const since = anchor - days * 86400;
 
-  const result = await ch.query({
-    query: `
+  const samples = (await query<{
+    bucket_ts: number; staker_total: string; foundation_total: string; mrc_blocks: number;
+  }>(
+    `
       SELECT
-        toUnixTimestamp(toStartOfDay(block_time)) AS bucket_ts,
-        toString(sum(mrc_staker_fees))            AS staker_total,
-        toString(sum(mrc_foundation_fees))        AS foundation_total,
-        toUInt32(countIf(mrc_staker_fees > 0))    AS mrc_blocks
-      FROM claims FINAL
-      WHERE block_time >= toDateTime({anchor: UInt64}) - {seconds: UInt32}
+        CAST(epoch(date_trunc('day', block_time)) AS BIGINT) AS bucket_ts,
+        CAST(coalesce(sum(mrc_staker_fees), 0) AS VARCHAR)   AS staker_total,
+        CAST(coalesce(sum(mrc_foundation_fees), 0) AS VARCHAR) AS foundation_total,
+        CAST(count(*) FILTER (WHERE mrc_staker_fees > 0) AS UINTEGER) AS mrc_blocks
+      FROM claims
+      WHERE block_time >= make_timestamp($since::BIGINT * 1000000)
         AND (mrc_staker_fees > 0 OR mrc_foundation_fees > 0)
       GROUP BY bucket_ts
       ORDER BY bucket_ts ASC
     `,
-    query_params: { anchor, seconds: days * 86400 },
-    format: 'JSONEachRow',
-  });
-  const samples = (await result.json<{
-    bucket_ts: number; staker_total: string; foundation_total: string; mrc_blocks: number;
-  }>()).map((s) => ({
+    { since },
+  )).map((s) => ({
     ts: s.bucket_ts,
     stakerTotal: halford2grc(BigInt(s.staker_total)),
     foundationTotal: halford2grc(BigInt(s.foundation_total)),

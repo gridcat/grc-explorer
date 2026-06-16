@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { ch } from '../lib/ch';
+import { query } from '../lib/db';
 import { ErrorModel } from '../lib/errors';
 import { liveRpc } from '../lib/gridcoin';
 import { log } from '../lib/log';
@@ -155,8 +155,8 @@ async function buildSnapshot(): Promise<ProjectSnapshot> {
   let rows: LatestEventRow[] = [];
   let cursorTime: number | null = null;
   try {
-    const result = await ch.query({
-      query: `
+    rows = await query<LatestEventRow>(
+      `
         -- Group case-INSENSITIVELY: project_contracts stores the name
         -- verbatim as submitted, so the same project recurs under
         -- several casings over time (asteroids@home vs Asteroids@home,
@@ -167,11 +167,10 @@ async function buildSnapshot(): Promise<ProjectSnapshot> {
         -- lower(project_name); status = the newest action across all
         -- casings; display name = the casing of that newest contract.
         -- Inner alias is canonical_name (NOT project_name): aliasing
-        -- the argMax to project_name would shadow the column, so
-        -- GROUP BY lower(project_name) binds to the aggregate →
-        -- ILLEGAL_AGGREGATION, the catch swallows it, and the page
-        -- shows 0/0. Rename back in the outer SELECT so consumers and
-        -- LatestEventRow stay unchanged.
+        -- the arg_max to project_name would shadow the column, so
+        -- GROUP BY lower(project_name) binds to the aggregate. Rename
+        -- back in the outer SELECT so consumers and LatestEventRow stay
+        -- unchanged.
         SELECT
           canonical_name AS project_name,
           latest_action,
@@ -180,20 +179,18 @@ async function buildSnapshot(): Promise<ProjectSnapshot> {
           at_time
         FROM (
           SELECT
-            argMax(project_name, block_height) AS canonical_name,
-            argMax(action, block_height)       AS latest_action,
-            argMax(base_url, block_height)     AS latest_url,
-            max(block_height)                  AS at_height,
-            toUnixTimestamp(argMax(time, block_height)) AS at_time
-          FROM project_contracts FINAL
-          WHERE block_height <= {cursor: UInt32}
+            arg_max(project_name, block_height) AS canonical_name,
+            arg_max(action, block_height)       AS latest_action,
+            arg_max(base_url, block_height)     AS latest_url,
+            max(block_height)                   AS at_height,
+            CAST(epoch(arg_max(time, block_height)) AS BIGINT) AS at_time
+          FROM project_contracts
+          WHERE block_height <= $cursor
           GROUP BY lower(project_name)
         )
       `,
-      query_params: { cursor: cursorHeight },
-      format: 'JSONEachRow',
-    });
-    rows = await result.json<LatestEventRow>();
+      { cursor: cursorHeight },
+    );
   } catch (err) {
     log.warn('projects snapshot: project_contracts query failed', err);
   }
@@ -202,12 +199,10 @@ async function buildSnapshot(): Promise<ProjectSnapshot> {
   // the snapshot ("as of block N · 5 May 2020"). Cheap point lookup.
   if (cursorHeight > 0) {
     try {
-      const tres = await ch.query({
-        query: 'SELECT toUnixTimestamp(time) AS t FROM blocks FINAL WHERE height = {h: UInt32} LIMIT 1',
-        query_params: { h: cursorHeight },
-        format: 'JSONEachRow',
-      });
-      const trow = (await tres.json<{ t: number }>())[0];
+      const trow = (await query<{ t: number }>(
+        'SELECT CAST(epoch(time) AS BIGINT) AS t FROM blocks WHERE height = $h LIMIT 1',
+        { h: cursorHeight },
+      ))[0];
       if (trow) cursorTime = trow.t;
     } catch (err) {
       log.warn('projects snapshot: cursor-time lookup failed', err);
@@ -239,10 +234,17 @@ async function buildSnapshot(): Promise<ProjectSnapshot> {
   // doesn't carry these). Require post-Fern contract activity so the
   // count matches reality (real projects were re-added at block 3.1M+).
   const v11Height = forkHeight('v11');
+  // Only gate "active" on the post-Fern whitelist once the indexer has
+  // actually crossed Fern. Below V11 every latest contract is pre-Fern,
+  // so the gate would read "0 whitelisted" during backfill despite real
+  // pre-Fern whitelist activity; fall back to plain "latest action = add"
+  // until a post-Fern contract is seen. On the full chain (prod) this is
+  // always true, so behaviour there is unchanged.
+  const reachedFern = v11Height !== null && rows.some((r) => r.at_height >= v11Height);
 
   for (const r of rows) {
     const isActive = r.latest_action === 'add'
-      && (v11Height === null || r.at_height >= v11Height);
+      && (!reachedFern || r.at_height >= v11Height);
     const daemon = overlay.get(r.project_name);
     const entry: ProjectEntry = {
       name: r.project_name,
@@ -376,17 +378,13 @@ async function buildHistory(): Promise<HistoryPoint[]> {
   // timeline in JS is straightforward and cheap.
   let events: ProjectEventRow[] = [];
   try {
-    const result = await ch.query({
-      query: `
-        SELECT project_name, action, block_height,
-               toString(toDate(time)) AS date,
-               toUnixTimestamp(time)  AS ts
-        FROM project_contracts FINAL
-        ORDER BY time ASC, action ASC
-      `,
-      format: 'JSONEachRow',
-    });
-    events = await result.json<ProjectEventRow>();
+    events = await query<ProjectEventRow>(`
+      SELECT project_name, action, block_height,
+             CAST(CAST(time AS DATE) AS VARCHAR) AS date,
+             CAST(epoch(time) AS BIGINT)         AS ts
+      FROM project_contracts
+      ORDER BY time ASC, action ASC
+    `);
   } catch (err) {
     log.warn('projects history: project_contracts query failed', err);
     return [];
@@ -413,7 +411,15 @@ async function buildHistory(): Promise<HistoryPoint[]> {
       canonicalByLc.set(lc, e.project_name);
     }
   }
-  const isLegacy = (lc: string): boolean => v11Height !== null
+  // The legacy exclusion only makes sense once the indexer has actually
+  // crossed Fern. While the backfill is still below V11, EVERY project's
+  // latest contract is pre-Fern, so this would flag them all legacy and
+  // erase the entire timeline — even though the pre-Fern add/remove
+  // history is real and worth showing. Engage the filter only after a
+  // post-Fern contract has been indexed (steady state on the full chain).
+  const reachedFern = v11Height !== null
+    && [...maxHeightByLc.values()].some((h) => h >= v11Height);
+  const isLegacy = (lc: string): boolean => reachedFern
     && (maxHeightByLc.get(lc) ?? 0) < v11Height;
 
   const active = new Set<string>();
@@ -479,19 +485,18 @@ projectsRouter.get('/history', async (req: Request, res: Response) => {
   }));
 });
 
-// Per-section CH query wrapper. Returns an empty array on any error
+// Per-section query wrapper. Returns an empty array on any error
 // and warns; the per-project page is read-only and can render its
 // other sections without one of them. Most common cause: an absent
 // table immediately after a fresh deploy where migrate.mjs hasn't run
 // yet (e.g. 0009 lands but the explorer hasn't restarted).
 async function runOrEmpty<T>(
-  query: string,
+  sql: string,
   params: Record<string, unknown>,
   context: string,
 ): Promise<T[]> {
   try {
-    const result = await ch.query({ query, query_params: params, format: 'JSONEachRow' });
-    return await result.json<T>();
+    return await query<T>(sql, params);
   } catch (err) {
     log.warn(`projects route: ${context} query failed`, err);
     return [];
@@ -526,19 +531,27 @@ projectsRouter.get('/:name', async (req: Request, res: Response) => {
   // trimmed-lowercase everywhere (see lib/projectName + migration
   // 0035), so an old mixed-case URL still resolves to the one project.
   const name = normalizeProjectName(param(req, 'name'));
+  // superblock_projects spells project names in the compact
+  // superblock-manifest form (separators stripped: 'tngrid',
+  // 'worldcommunitygrid'), while project_contracts and the page URL keep
+  // them ('tn-grid'). normalizeProjectName only lowercases, so the two
+  // never match for hyphen/underscore names and the RAC chart came up
+  // empty. Bridge to the manifest form by stripping space/underscore/hyphen
+  // for the superblock lookup only — the contract lookup stays on `name`.
+  const sbName = name.replace(/[ _-]+/g, '');
   try {
     const snap = await getSnapshot();
     const status = [...snap.active, ...snap.delisted]
       .find((p) => p.name === name) ?? null;
 
-    // Per-project history pulls from three CH tables we already index:
+    // Per-project history pulls from three tables we already index:
     //   • project_contracts: ADD / REMOVE events from chain.
     //   • superblock_projects: every superblock's RAC / total_credit.
     //   • polls (filtered by title) for community-driven listing
     //     proposals — best-effort string-match since Gridcoin doesn't
     //     tag polls with a structured "subject project" field.
     //
-    // Each query is independently wrapped: one section's CH failure
+    // Each query is independently wrapped: one section's failure
     // (e.g. project_contracts table absent before migration 0009 has
     // been applied) shouldn't blank the whole page. The remaining
     // sections still render.
@@ -546,9 +559,9 @@ projectsRouter.get('/:name', async (req: Request, res: Response) => {
       runOrEmpty<ProjectContractRow>(`
         SELECT
           action, base_url, contract_version, tx_id, block_height,
-          toUnixTimestamp(time) AS time
-        FROM project_contracts FINAL
-        WHERE project_name = {name: String}
+          CAST(epoch(time) AS BIGINT) AS time
+        FROM project_contracts
+        WHERE project_name = $name
         ORDER BY block_height ASC
       `, { name }, 'project_contracts'),
       // Sample one row per ~256 superblocks for the chart so the
@@ -559,24 +572,24 @@ projectsRouter.get('/:name', async (req: Request, res: Response) => {
       runOrEmpty<SuperblockSampleRow>(`
         SELECT
           superblock_height,
-          argMin(rac, superblock_height)         AS rac,
-          argMin(average_rac, superblock_height) AS average_rac,
-          argMin(total_credit, superblock_height) AS total_credit
-        FROM superblock_projects FINAL
-        WHERE project_name = {name: String}
-        GROUP BY intDiv(superblock_height, 256), superblock_height
+          arg_min(rac, superblock_height)         AS rac,
+          arg_min(average_rac, superblock_height) AS average_rac,
+          arg_min(total_credit, superblock_height) AS total_credit
+        FROM superblock_projects
+        WHERE lower(regexp_replace(project_name, '[ _-]', '', 'g')) = $sbName
+        GROUP BY superblock_height // 256, superblock_height
         ORDER BY superblock_height ASC
-      `, { name }, 'superblock_projects'),
+      `, { sbName }, 'superblock_projects'),
       // Loose matching: a poll about "asteroids@home" usually puts
       // the project name in the title verbatim. Imperfect but cheap;
       // the table is small (a few thousand polls over chain history).
       runOrEmpty<PollMatchRow>(`
-        SELECT poll_id, title, block_height, toUnixTimestamp(end_time) AS end_time
-        FROM polls FINAL
-        WHERE positionCaseInsensitive(title, {needle: String}) > 0
+        SELECT poll_id, title, block_height, CAST(epoch(end_time) AS BIGINT) AS end_time
+        FROM polls
+        WHERE contains(lower(title), $needle)
         ORDER BY block_height ASC
         LIMIT 50
-      `, { needle: name }, 'polls'),
+      `, { needle: name.toLowerCase() }, 'polls'),
     ]);
 
     if (!status && contracts.length === 0 && samples.length === 0) {

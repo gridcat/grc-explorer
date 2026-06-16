@@ -11,9 +11,11 @@ import {
   useEffect, useMemo, useRef, useState,
 } from 'react';
 import {
-  Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Scatter, ScatterChart,
-  Tooltip, XAxis, YAxis, ZAxis,
+  Bar, BarChart, CartesianGrid, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer,
+  Scatter, ScatterChart, Tooltip, XAxis, YAxis, ZAxis,
 } from 'recharts';
+import { useRechartsXZoom } from '../components/charts/useRechartsXZoom';
+import { ZoomResetButton } from '../components/charts/useXZoom';
 import { Layout } from '../layouts/Layout';
 import { api } from '../lib/api';
 import {
@@ -23,6 +25,7 @@ import { makeRechartsTooltip } from '../components/charts/RechartsTooltip';
 import { HashTrim } from '../components/HashTrim';
 import { TimeAgo } from '../components/TimeAgo';
 import { Crumbs, RESEARCHERS_CRUMB } from '../components/Crumbs';
+import { CopyLinkButton } from '../components/CopyLinkButton';
 import {
   PAGE_SIZE_OPTIONS, pushPaginationQuery, readPageFromQuery, readPageSizeFromQuery,
 } from '../lib/pagination';
@@ -124,6 +127,7 @@ export default function MrcDashboard({
   initialRecent, initialRecentTotal, initialPage, initialPageSize, initialSort,
 }: MrcDashboardProps) {
   const theme = useTheme();
+  const timelineZoom = useRechartsXZoom('z');
   const router = useRouter();
   const [summary, setSummary] = useState<Summary | null>(initialSummary);
   const [timeline, setTimeline] = useState<TimelinePoint[]>(initialTimeline);
@@ -270,10 +274,12 @@ export default function MrcDashboard({
   return (
     <Layout>
       <Stack spacing={3}>
-        <Crumbs items={[
-          RESEARCHERS_CRUMB,
-          { label: 'MRC requests' },
-        ]}
+        <Crumbs
+          items={[
+            RESEARCHERS_CRUMB,
+            { label: 'MRC requests' },
+          ]}
+          trailing={<CopyLinkButton />}
         />
         <Box>
           <Typography variant="h4" sx={{ fontWeight: 700 }}>MRC requests</Typography>
@@ -304,11 +310,23 @@ export default function MrcDashboard({
               <Typography variant="subtitle2" color="text.secondary">
                 Daily activity · last {TIMELINE_DAYS} days
               </Typography>
+              <Box sx={{ position: 'relative' }}>
+              <ZoomResetButton zoom={timelineZoom} />
               <ResponsiveContainer width="100%" height={220}>
-                <LineChart data={timeline} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                <LineChart
+                  data={timeline}
+                  margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+                  onMouseDown={timelineZoom.onMouseDown}
+                  onMouseMove={timelineZoom.onMouseMove}
+                  onMouseUp={timelineZoom.onMouseUp}
+                  style={{ cursor: 'crosshair' }}
+                >
                   <CartesianGrid strokeDasharray="3 3" stroke={theme.palette.divider} />
                   <XAxis
                     dataKey="ts"
+                    type="number"
+                    domain={timelineZoom.domain ?? ['dataMin', 'dataMax']}
+                    allowDataOverflow
                     tickFormatter={formatUnixDateShort}
                     fontSize={11}
                   />
@@ -318,43 +336,61 @@ export default function MrcDashboard({
                     content={<TimelineTooltip />}
                   />
                   <Line type="monotone" dataKey="count" stroke={theme.palette.primary.main} strokeWidth={2} dot={false} />
+                  {timelineZoom.refLeft !== null && timelineZoom.refRight !== null && (
+                    <ReferenceArea
+                      x1={timelineZoom.refLeft}
+                      x2={timelineZoom.refRight}
+                      strokeOpacity={0.3}
+                      fill={theme.palette.primary.main}
+                      fillOpacity={0.12}
+                    />
+                  )}
+                  {timelineZoom.marker !== null && (
+                    <ReferenceLine
+                      x={timelineZoom.marker}
+                      stroke={theme.palette.secondary.main}
+                      strokeDasharray="2 3"
+                      strokeWidth={1.5}
+                      ifOverflow="hidden"
+                    />
+                  )}
                 </LineChart>
               </ResponsiveContainer>
+              </Box>
             </CardContent>
           </Card>
 
-          <Card variant="outlined">
-            <CardContent>
-              <Stack direction="row" sx={{ alignItems: 'baseline', justifyContent: 'space-between' }}>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Wait time distribution · last {WAIT_DAYS} days
-                </Typography>
-                {wait && wait.p50Seconds !== null && (
+          {/* Hidden until the window has live-observed MRCs (p50 is non-null
+              only then). Historical replay rows have first_seen == block_time
+              and an undefined wait, so an instance without the mempool watcher
+              never populates this — render nothing rather than an empty chart.
+              Reappears automatically once mempool→confirm data flows. */}
+          {wait && wait.p50Seconds !== null && (
+            <Card variant="outlined">
+              <CardContent>
+                <Stack direction="row" sx={{ alignItems: 'baseline', justifyContent: 'space-between' }}>
+                  <Typography variant="subtitle2" color="text.secondary">
+                    Wait time distribution · last {WAIT_DAYS} days
+                  </Typography>
                   <Typography variant="caption" color="text.secondary">
                     p50 {formatDuration(wait.p50Seconds)} · p95 {formatDuration(wait.p95Seconds ?? 0)}
                   </Typography>
-                )}
-              </Stack>
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={wait?.buckets ?? []} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={theme.palette.divider} />
-                  <XAxis dataKey="label" fontSize={11} />
-                  <YAxis fontSize={11} allowDecimals={false} />
-                  <Tooltip
-                    cursor={{ fill: theme.palette.action.hover }}
-                    content={<WaitTooltip />}
-                  />
-                  <Bar dataKey="count" fill={theme.palette.primary.main} />
-                </BarChart>
-              </ResponsiveContainer>
-              {(wait?.p50Seconds ?? null) === null && (
-                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
-                  No live-observed MRCs in the window — historical replay rows are excluded
-                  because their wait time is undefined.
-                </Typography>
-              )}
-            </CardContent>
-          </Card>
+                </Stack>
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={wait.buckets} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={theme.palette.divider} />
+                    <XAxis dataKey="label" fontSize={11} />
+                    <YAxis fontSize={11} allowDecimals={false} />
+                    <Tooltip
+                      cursor={{ fill: theme.palette.action.hover }}
+                      content={<WaitTooltip />}
+                    />
+                    <Bar dataKey="count" fill={theme.palette.primary.main} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          )}
 
           <Card variant="outlined">
             <CardContent>

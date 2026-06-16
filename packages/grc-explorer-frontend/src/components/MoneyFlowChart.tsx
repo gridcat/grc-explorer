@@ -14,7 +14,7 @@ import {
   linearScale,
   niceTicks,
 } from './charts/SvgChart';
-import { useSSE } from '../hooks/useSSE';
+import { useSSE, useSSEFallbackPoll } from '../hooks/useSSE';
 import { atParam, useTimeMachine } from '../hooks/useTimeMachine';
 import { formatGrcCompact } from '../lib/format';
 
@@ -111,14 +111,9 @@ export function MoneyFlowChart({ initialBuckets }: MoneyFlowChartProps = {}) {
   });
 
   // Safety-net poll: SSE merge keeps the chart fresh during normal
-  // operation, but if the stream drops or the tab was hidden (we skip
-  // dispatch in the SSE provider for hidden tabs) we want a cold
-  // catch-up within a few minutes.
-  useEffect(() => {
-    if (tm.isReplay) return undefined;
-    const id = setInterval(fetchBuckets, 5 * 60 * 1000);
-    return () => clearInterval(id);
-  }, [fetchBuckets, tm.isReplay]);
+  // operation; polling kicks in only while the stream is unhealthy,
+  // plus one catch-up fetch when it recovers.
+  useSSEFallbackPoll(fetchBuckets, 5 * 60 * 1000, { skip: tm.isReplay });
 
   // Aggregate stats across the visible window — totals for the
   // headline numbers, hourly averages so the magnitude is comparable

@@ -33,19 +33,27 @@ export interface CrumbItem {
 // is a single-line edit, not a 14-site sweep.
 export const RESEARCHERS_CRUMB: CrumbItem = { label: 'Researchers', href: '/superblocks' };
 
-export function Crumbs({ items, sx }: { items: CrumbItem[]; sx?: object }) {
+// Parent-section crumb for pages under the "Wallets" nav group. Points
+// at the rich list (the group's landing child).
+export const WALLETS_CRUMB: CrumbItem = { label: 'Wallets', href: '/wallets' };
+
+export function Crumbs({
+  items, sx, trailing,
+}: { items: CrumbItem[]; sx?: object; trailing?: ReactNode }) {
   return (
     <Box
-      component="nav"
-      aria-label="breadcrumb"
       sx={{
         // Slim vertical spacing — the breadcrumb sits right above a
         // page title so it shouldn't push the title down. Horizontal
         // padding inherits from the surrounding Layout.
         py: 0.5,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1,
         ...sx,
       }}
     >
+      <Box component="nav" aria-label="breadcrumb" sx={{ flexGrow: 1, minWidth: 0 }}>
       <Breadcrumbs
         separator={(
           <NavigateNextIcon
@@ -95,7 +103,10 @@ export function Crumbs({ items, sx }: { items: CrumbItem[]; sx?: object }) {
             <Link
               key={idx}
               href={item.href}
-              style={{ textDecoration: 'none' }}
+              // inline-flex + center so the anchor box aligns with the
+              // bare-Typography text crumbs in the breadcrumb flex row;
+              // a plain inline <a> floats its label a couple pixels up.
+              style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}
             >
               <Typography
                 component="span"
@@ -119,6 +130,8 @@ export function Crumbs({ items, sx }: { items: CrumbItem[]; sx?: object }) {
           );
         })}
       </Breadcrumbs>
+      </Box>
+      {trailing}
     </Box>
   );
 }

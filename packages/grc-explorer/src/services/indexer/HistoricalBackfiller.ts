@@ -1,4 +1,5 @@
 import { config } from '../../config';
+import { query } from '../../lib/db';
 import { heavyRpc, liveRpc, simpleRpc } from '../../lib/gridcoin';
 import { log } from '../../lib/log';
 import { events } from '../../lib/emitter';
@@ -30,12 +31,33 @@ export class HistoricalBackfiller {
   /** Returns true if a handoff to TipFollower is now possible. */
   async run(): Promise<boolean> {
     const state = await getCursor();
-    const nextHeight = state ? state.height + 1 : 0;
     const status = state?.status ?? 'backfilling';
     if (status !== 'backfilling') {
       // Already past backfill.
       return true;
     }
+
+    // Reconcile the cursor against the actual indexed data before
+    // resuming. The Redis cursor is a mirror of write progress; if it
+    // lags the data — a crash between the DuckDB commit and setCursor, or
+    // a manually reset cursor — resuming from the stale value would
+    // RE-APPLY already-committed blocks. Re-applying funnels mass writes
+    // through the chain tables' ON CONFLICT path, which is what corrupts
+    // DuckDB's secondary indexes. Blocks are written last and in strict
+    // height order, so max(height) is the highest fully-committed block
+    // and the data is contiguous up to it — resume from there whenever it
+    // is ahead of the cursor so we only ever move forward.
+    const indexed = await this.getMaxIndexedBlock();
+    const cursorHeight = state?.height ?? -1;
+    const dataHeight = indexed?.height ?? -1;
+    if (indexed && dataHeight > cursorHeight) {
+      log.warn(
+        `Cursor (${state?.height ?? 'none'}) is behind indexed data (height ${indexed.height}); reconciling forward to avoid re-applying committed blocks`,
+      );
+      await setCursor({ height: indexed.height, hash: indexed.hash, status: 'backfilling' });
+    }
+    // Resume from whichever is higher so we only ever move forward.
+    const nextHeight = Math.max(cursorHeight, dataHeight) + 1;
 
     const tipHeight = await this.getTipHeight();
     const targetHeight = Math.max(0, tipHeight - config.SAFE_CONFIRMATIONS);
@@ -79,6 +101,16 @@ export class HistoricalBackfiller {
   private async getTipHeight(): Promise<number> {
     const info = await liveRpc.getBlockchainInfo();
     return info.blocks;
+  }
+
+  // Highest fully-committed block in DuckDB (blocks-row is written last,
+  // in strict height order, so this is a reliable contiguous watermark).
+  // Returns null on an empty database.
+  private async getMaxIndexedBlock(): Promise<{ height: number; hash: string } | null> {
+    const rows = await query<{ height: number; hash: string }>(
+      'SELECT height, hash FROM blocks ORDER BY height DESC LIMIT 1',
+    );
+    return rows[0] ?? null;
   }
 
   private async markLive(): Promise<void> {
@@ -129,7 +161,13 @@ export class HistoricalBackfiller {
 
       const lookup = await buildPrevOutputsLookupMulti([block.tx]);
       const parsed = parseBlock(block, lookup);
-      await applyBlocks([parsed], { emitLiveEvents: true, deferPostCommit: true });
+      // emitLiveEvents:false — backfill must NOT fire the per-block live
+      // event cascade (block.new + address/cpid/metrics fanouts). Across
+      // millions of catch-up blocks that floods the SSE socket buffers and
+      // Redis fanout and OOMs the Node heap. `backfill.progress` (below)
+      // is the only thing the UI needs while catching up; full live events
+      // resume once TipFollower takes over at the tip.
+      await applyBlocks([parsed], { emitLiveEvents: false, deferPostCommit: true });
 
       const pct = tipHeight > 0 ? (height / tipHeight) * 100 : 0;
       events.publish({
@@ -250,7 +288,7 @@ class BackfillJob {
     // `deferPostCommit: true` lets the drain return as soon as the
     // CH inserts commit; SSE publishes + Meili enqueue for this batch
     // run in the background while drain starts parsing the next.
-    await applyBlocks(group, { emitLiveEvents: true, deferPostCommit: true });
+    await applyBlocks(group, { emitLiveEvents: false, deferPostCommit: true });
 
     const lastHeight = group[group.length - 1].block.height;
     const pct = this.tipHeight > 0 ? (lastHeight / this.tipHeight) * 100 : 0;

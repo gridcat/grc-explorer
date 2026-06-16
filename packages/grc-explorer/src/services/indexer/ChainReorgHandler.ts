@@ -1,5 +1,6 @@
 import { config } from '../../config';
-import { ch } from '../../lib/ch';
+import { deleteChainRowsAtOrAboveHeight } from '../../lib/chainTables';
+import { query } from '../../lib/db';
 import { events } from '../../lib/emitter';
 import { liveRpc } from '../../lib/gridcoin';
 import { log } from '../../lib/log';
@@ -11,19 +12,15 @@ interface CursorPosition {
   hash: string;
 }
 
-// Reorg semantics on ClickHouse are much simpler than on MySQL.
-//
-// Old MySQL flow: walk back, DELETE rows from blocks/transactions/
-// tx_outputs/tx_inputs/address_balance_history/etc. for each rolled-back
-// height, in a single transaction per height. Slow, lots of code.
-//
-// New CH flow: just move the Redis cursor back to the fork point. The
-// TipFollower's next tick will re-walk forward from cursor+1 and call
-// `applyBlock`, which assigns a fresh `_seq` (Redis INCR). Every CH
-// table is `ReplacingMergeTree(_seq)`, so the new versions of rows at
-// those heights supersede the old ones at merge time; queries that
-// need eager correctness use FINAL or argMax(_seq, …). No DELETEs,
-// no per-table walks, no transaction-management.
+// Reorg semantics: delete every chain row above the fork point, then
+// move the Redis cursor back to it. The TipFollower's next tick re-walks
+// forward from cursor+1 and re-applies the new chain into the now-empty
+// gap. The DELETE walk is required because chain tables are written ON
+// CONFLICT DO NOTHING (see BlockWriter): without first clearing the
+// abandoned rows, a re-applied height would be skipped as a no-op and
+// keep its stale (abandoned-chain) values. Clearing the range also
+// removes the orphan rows the old upsert-overwrite-in-place design left
+// behind.
 //
 // Two entry points are preserved on the public surface:
 //   - `handle()` — called by TipFollower on a `previousblockhash`
@@ -55,8 +52,14 @@ export class ChainReorgHandler {
     // re-populates the set with whichever UTXOs the new chain spends.
     await this.releaseAbandonedUtxos(fork.height + 1, cursor.height);
 
-    // Move cursor; TipFollower's next tick re-applies fork+1 onward with
-    // a fresh _seq, naturally superseding the abandoned chain.
+    // Delete the abandoned chain rows (fork+1 .. cursor) so the forward
+    // replay re-inserts into a clean gap. Must happen before the cursor
+    // moves: chain writes are DO NOTHING, so a height that still has its
+    // abandoned row would be skipped instead of replaced.
+    await deleteChainRowsAtOrAboveHeight(fork.height + 1);
+
+    // Move cursor; TipFollower's next tick re-applies fork+1 onward into
+    // the cleared range.
     await setCursor({ height: fork.height, hash: fork.hash, status: 'live' });
 
     events.publish({
@@ -76,18 +79,16 @@ export class ChainReorgHandler {
     if (!cursor || cursor.status !== 'live') return;
 
     const startHeight = Math.max(0, cursor.height - 20);
-    const result = await ch.query({
-      query: `
+    const stored = await query<{ height: number; hash: string }>(
+      `
         SELECT height, hash
-        FROM blocks FINAL
-        WHERE height >= {start: UInt32}
+        FROM blocks
+        WHERE height >= $start
         ORDER BY height DESC
         LIMIT 20
       `,
-      query_params: { start: startHeight },
-      format: 'JSONEachRow',
-    });
-    const stored = await result.json<{ height: number; hash: string }>();
+      { start: startHeight },
+    );
 
     for (const row of stored) {
       // eslint-disable-next-line no-await-in-loop
@@ -124,44 +125,38 @@ export class ChainReorgHandler {
     // non-phantom rows. `is_phantom_spend` defaults to false on
     // pre-migration rows, which is the correct interpretation for
     // pre-existing data.
-    const result = await ch.query({
-      query: `
+    const rows = await query<{ prev_tx: string; prev_vout: number }>(
+      `
         SELECT prev_tx, prev_vout
-        FROM tx_inputs FINAL
-        WHERE block_height >= {from: UInt32}
-          AND block_height <= {to: UInt32}
+        FROM tx_inputs
+        WHERE block_height >= $from
+          AND block_height <= $to
           AND prev_tx IS NOT NULL
           AND is_phantom_spend = false
       `,
-      query_params: { from, to },
-      format: 'JSONEachRow',
-    });
-    const rows = await result.json<{ prev_tx: string; prev_vout: number }>();
+      { from, to },
+    );
     await releaseSpentUtxos(rows.map((r) => `${r.prev_tx}:${r.prev_vout}`));
   }
 
   private async collectAbandonedHashes(from: number, to: number): Promise<string[]> {
     if (to < from) return [];
-    const result = await ch.query({
-      query: `
-        SELECT hash FROM blocks FINAL
-        WHERE height >= {from: UInt32} AND height <= {to: UInt32}
+    const rows = await query<{ hash: string }>(
+      `
+        SELECT hash FROM blocks
+        WHERE height >= $from AND height <= $to
         ORDER BY height
       `,
-      query_params: { from, to },
-      format: 'JSONEachRow',
-    });
-    const rows = await result.json<{ hash: string }>();
+      { from, to },
+    );
     return rows.map((r) => r.hash);
   }
 
   private async getStoredHash(height: number): Promise<string | null> {
-    const result = await ch.query({
-      query: 'SELECT hash FROM blocks FINAL WHERE height = {h: UInt32}',
-      query_params: { h: height },
-      format: 'JSONEachRow',
-    });
-    const rows = await result.json<{ hash: string }>();
+    const rows = await query<{ hash: string }>(
+      'SELECT hash FROM blocks WHERE height = $h',
+      { h: height },
+    );
     return rows[0]?.hash ?? null;
   }
 

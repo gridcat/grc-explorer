@@ -8,7 +8,7 @@ import {
 } from 'react';
 import { api } from '../lib/api';
 import { shortHash } from '../lib/format';
-import { useSSE } from '../hooks/useSSE';
+import { useSSE, useSSEFallbackPoll } from '../hooks/useSSE';
 
 // One-shot success pulse for rows transitioning to "confirmed". Holding
 // a permanent green wash made every confirmed row dominate the panel
@@ -79,11 +79,9 @@ export function LiveTxFeed({
     return () => { cancelledRef.current = true; };
   }, [refresh]);
 
-  // Safety-net poll for when SSE drops.
-  useEffect(() => {
-    const id = setInterval(refresh, 60 * 1000);
-    return () => clearInterval(id);
-  }, [refresh]);
+  // Safety-net poll: runs only while the SSE stream is unhealthy, plus
+  // one catch-up fetch when it recovers.
+  useSSEFallbackPoll(refresh, 60 * 1000);
 
   useSSE(['mempool.entered', 'mempool.exited'], (topic, payload) => {
     if (topic === 'mempool.entered') {

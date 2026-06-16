@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { ch } from '../lib/ch';
+import { query } from '../lib/db';
 import { ErrorModel } from '../lib/errors';
 import { liveRpc } from '../lib/gridcoin';
 import { halford2grc } from '../lib/halford';
@@ -58,42 +58,40 @@ pollsRouter.get('/', async (req: Request, res: Response) => {
   const hidden = hiddenPollIds();
 
   const conditions: string[] = [];
-  const params: Record<string, unknown> = { limit, offset };
+  // Params referenced only by the WHERE clause — shared by the list and
+  // count queries. The list query adds `offset` on top; DuckDB errors on
+  // a bound param the SQL doesn't reference, so the count query must not
+  // see `offset`.
+  const whereParams: Record<string, unknown> = {};
   if (filterActive) {
-    conditions.push('start_time <= toDateTime({now: UInt32}) AND end_time >= toDateTime({now: UInt32})');
-    params.now = now;
+    conditions.push('start_time <= make_timestamp($now::BIGINT * 1000000) AND end_time >= make_timestamp($now::BIGINT * 1000000)');
+    whereParams.now = now;
   }
   if (hidden.length > 0) {
-    conditions.push('poll_id NOT IN ({hidden: Array(String)})');
-    params.hidden = hidden;
+    conditions.push('NOT (poll_id = ANY($hidden))');
+    whereParams.hidden = hidden;
   }
   const whereSql = conditions.length === 0 ? '' : `WHERE ${conditions.join(' AND ')}`;
 
-  const [rowsResult, countResult] = await Promise.all([
-    ch.query({
-      query: `
+  const [rows, countRows] = await Promise.all([
+    query<PollRow>(
+      `
         SELECT
           poll_id, title, question, url, poll_type, response_type, weight_type,
-          toUnixTimestamp(start_time) AS start_time,
-          toUnixTimestamp(end_time)   AS end_time,
+          CAST(epoch(start_time) AS BIGINT) AS start_time,
+          CAST(epoch(end_time)   AS BIGINT) AS end_time,
           claim_tx, block_height, creator_address, magnitude_weight_factor,
-          toString(av_w_balance) AS av_w_balance,
+          CAST(av_w_balance AS VARCHAR) AS av_w_balance,
           av_w_magnitude, weights_computed_at_height
-        FROM polls FINAL ${whereSql}
+        FROM polls ${whereSql}
         ORDER BY end_time DESC, start_time DESC
-        LIMIT {limit: UInt32} OFFSET {offset: UInt32}
+        LIMIT ${limit} OFFSET $offset
       `,
-      query_params: params,
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `SELECT count() AS c FROM polls FINAL ${whereSql}`,
-      query_params: params,
-      format: 'JSONEachRow',
-    }),
+      { ...whereParams, offset },
+    ).then((r) => r.map(presentPoll)),
+    query<{ c: string | number }>(`SELECT count(*) AS c FROM polls ${whereSql}`, whereParams),
   ]);
-  const rows = (await rowsResult.json<PollRow>()).map(presentPoll);
-  const total = Number((await countResult.json<{ c: string | number }>())[0]?.c ?? 0);
+  const total = Number(countRows[0]?.c ?? 0);
 
   // Per-poll result aggregate. Two extra CH queries scoped to this
   // page's poll_ids — cheap (≤ 25 polls × ~5 options × ~handful of
@@ -102,33 +100,29 @@ pollsRouter.get('/', async (req: Request, res: Response) => {
   // JS keeps the SQL simple: per-option sums, then argmax in code.
   const pollIds = rows.map((p) => p.poll_id);
   if (pollIds.length > 0) {
-    const [tallyResult, optionsResult] = await Promise.all([
-      ch.query({
-        query: `
+    const [tallyRows, optionRows] = await Promise.all([
+      query<{
+        poll_id: string; choice_idx: number; option_weight: string; option_votes: number;
+      }>(
+        `
           SELECT poll_id, choice_idx,
-                 toString(sum(weight)) AS option_weight,
-                 toUInt32(count())     AS option_votes
-          FROM votes FINAL
-          WHERE poll_id IN ({ids: Array(String)})
+                 CAST(sum(weight) AS VARCHAR) AS option_weight,
+                 CAST(count(*) AS UINTEGER)   AS option_votes
+          FROM votes
+          WHERE poll_id = ANY($ids)
           GROUP BY poll_id, choice_idx
         `,
-        query_params: { ids: pollIds },
-        format: 'JSONEachRow',
-      }),
-      ch.query({
-        query: `
+        { ids: pollIds },
+      ),
+      query<{ poll_id: string; idx: number; label: string }>(
+        `
           SELECT poll_id, idx, label
-          FROM poll_options FINAL
-          WHERE poll_id IN ({ids: Array(String)})
+          FROM poll_options
+          WHERE poll_id = ANY($ids)
         `,
-        query_params: { ids: pollIds },
-        format: 'JSONEachRow',
-      }),
+        { ids: pollIds },
+      ),
     ]);
-    const tallyRows = await tallyResult.json<{
-      poll_id: string; choice_idx: number; option_weight: string; option_votes: number;
-    }>();
-    const optionRows = await optionsResult.json<{ poll_id: string; idx: number; label: string }>();
 
     const labelByKey = new Map<string, string>();
     for (const o of optionRows) labelByKey.set(`${o.poll_id}:${o.idx}`, o.label);
@@ -190,21 +184,19 @@ pollsRouter.get('/:poll_id', async (req: Request, res: Response) => {
     });
     return;
   }
-  const pollResult = await ch.query({
-    query: `
+  const pollRows = await query<PollRow>(
+    `
       SELECT
         poll_id, title, question, url, poll_type, response_type, weight_type,
-        toUnixTimestamp(start_time) AS start_time,
-        toUnixTimestamp(end_time)   AS end_time,
+        CAST(epoch(start_time) AS BIGINT) AS start_time,
+        CAST(epoch(end_time)   AS BIGINT) AS end_time,
         claim_tx, block_height, creator_address, magnitude_weight_factor,
-        toString(av_w_balance) AS av_w_balance,
+        CAST(av_w_balance AS VARCHAR) AS av_w_balance,
         av_w_magnitude, weights_computed_at_height
-      FROM polls FINAL WHERE poll_id = {id: String} LIMIT 1
+      FROM polls WHERE poll_id = $id LIMIT 1
     `,
-    query_params: { id: pollId },
-    format: 'JSONEachRow',
-  });
-  const pollRows = await pollResult.json<PollRow>();
+    { id: pollId },
+  );
   if (pollRows.length === 0) {
     res.status(StatusCodes.NOT_FOUND).send({
       errors: [new ErrorModel(StatusCodes.NOT_FOUND, 'Poll not found')],
@@ -213,43 +205,38 @@ pollsRouter.get('/:poll_id', async (req: Request, res: Response) => {
   }
   const poll = presentPoll(pollRows[0]);
 
-  const [optResult, voteResult] = await Promise.all([
-    ch.query({
-      query: 'SELECT idx, label FROM poll_options FINAL WHERE poll_id = {id: String} ORDER BY idx ASC',
-      query_params: { id: pollId },
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `
+  const [options, votes] = await Promise.all([
+    query<{ idx: number; label: string }>(
+      'SELECT idx, label FROM poll_options WHERE poll_id = $id ORDER BY idx ASC',
+      { id: pollId },
+    ),
+    query<{
+      voter_address: string; voter_cpid: string | null; mining_id: string | null;
+      choice_idx: number; weight: string; weight_balance: string; weight_magnitude: number;
+      tx_id: string; block_height: number;
+    }>(
+      `
         SELECT poll_id, voter_address, voter_cpid, mining_id, choice_idx,
-               toString(weight)         AS weight,
-               toString(weight_balance) AS weight_balance,
+               CAST(weight AS VARCHAR)         AS weight,
+               CAST(weight_balance AS VARCHAR) AS weight_balance,
                weight_magnitude, tx_id, block_height
-        FROM votes FINAL
-        WHERE poll_id = {id: String}
+        FROM votes
+        WHERE poll_id = $id
         ORDER BY block_height DESC
       `,
-      query_params: { id: pollId },
-      format: 'JSONEachRow',
-    }),
+      { id: pollId },
+    ),
   ]);
-  const options = await optResult.json<{ idx: number; label: string }>();
-  const votes = await voteResult.json<{
-    voter_address: string; voter_cpid: string | null; mining_id: string | null;
-    choice_idx: number; weight: string; weight_balance: string; weight_magnitude: number;
-    tx_id: string; block_height: number;
-  }>();
 
   // Block-time lookup for vote rows.
   const heights = Array.from(new Set(votes.map((v) => v.block_height)));
   const timeByHeight = new Map<number, number>();
   if (heights.length > 0) {
-    const r = await ch.query({
-      query: 'SELECT height, toUnixTimestamp(time) AS time FROM blocks FINAL WHERE height IN ({hs: Array(UInt32)})',
-      query_params: { hs: heights },
-      format: 'JSONEachRow',
-    });
-    for (const b of await r.json<{ height: number; time: number }>()) {
+    const blockRows = await query<{ height: number; time: number }>(
+      'SELECT height, CAST(epoch(time) AS BIGINT) AS time FROM blocks WHERE height = ANY($hs)',
+      { hs: heights },
+    );
+    for (const b of blockRows) {
       timeByHeight.set(b.height, b.time);
     }
   }

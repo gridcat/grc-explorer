@@ -1,8 +1,7 @@
 import { createGunzip } from 'node:zlib';
 import { Readable } from 'node:stream';
-import { ch } from '../../lib/ch';
+import { query, upsert } from '../../lib/db';
 import { log } from '../../lib/log';
-import { nextSeq } from '../../lib/redis';
 import { tsToUnix } from '../../lib/time';
 import { loadNameDenylist } from '../../lib/boincDenylist';
 import { normalizeProjectName } from '../../lib/projectName';
@@ -10,7 +9,7 @@ import { normalizeProjectName } from '../../lib/projectName';
 // Nightly import of BOINC project user-stats. For each whitelisted
 // project, we fetch `<base_url>/stats/user.gz`, stream-decompress,
 // parse the `<user>...</user>` blocks, and upsert into
-// `project_users`. The `/cpids/resolve` route queries that CH table
+// `project_users`. The `/cpids/resolve` route queries that table
 // directly to resolve a typed-in username to its CPID.
 //
 // The user.gz file is the standard BOINC export every project runs
@@ -20,7 +19,7 @@ import { normalizeProjectName } from '../../lib/projectName';
 // pulling sax just for this would dwarf the parse cost itself.
 //
 // Memory: large projects (WCG, Einstein) publish ~700k users. We flush
-// to ClickHouse every BATCH_SIZE users so we never hold more than one
+// to the database every BATCH_SIZE users so we never hold more than one
 // batch in memory at a time, regardless of project size.
 
 const REIMPORT_MIN_AGE_SECONDS = 20 * 3600; // ~20h: skip projects we already pulled today.
@@ -175,21 +174,19 @@ export class BoincStatsImportJob {
   private async loadWhitelist(): Promise<WhitelistedProject[]> {
     // Active projects only: take the latest action per project_name
     // and keep `add`. Mirrors the projection in routes/projects.ts.
-    const result = await ch.query({
-      query: `
+    const rows = await query<{ project_name: string; latest_action: string; latest_url: string }>(
+      `
         SELECT project_name, latest_action, latest_url FROM (
           SELECT
             project_name,
-            argMax(action, block_height)   AS latest_action,
-            argMax(base_url, block_height) AS latest_url
-          FROM project_contracts FINAL
+            arg_max(action, block_height)   AS latest_action,
+            arg_max(base_url, block_height) AS latest_url
+          FROM project_contracts
           GROUP BY project_name
         )
         WHERE latest_action = 'add'
       `,
-      format: 'JSONEachRow',
-    });
-    const rows = await result.json<{ project_name: string; latest_action: string; latest_url: string }>();
+    );
     return rows
       .filter((r) => r.latest_url && /^https?:\/\//.test(r.latest_url))
       // Strip any trailing `@` and `/` runs. Many on-chain BOINC URLs
@@ -203,18 +200,16 @@ export class BoincStatsImportJob {
   }
 
   private async loadStatuses(): Promise<Map<string, ImportStatus>> {
-    const result = await ch.query({
-      query: `
+    const rows = await query<ImportStatus>(
+      `
         SELECT
           project_name,
-          toString(last_success_at)   AS last_success_at,
-          toString(last_attempted_at) AS last_attempted_at,
+          CAST(last_success_at AS VARCHAR)   AS last_success_at,
+          CAST(last_attempted_at AS VARCHAR) AS last_attempted_at,
           last_status
-        FROM project_user_imports FINAL
+        FROM project_user_imports
       `,
-      format: 'JSONEachRow',
-    });
-    const rows = await result.json<ImportStatus>();
+    );
     return new Map(rows.map((r) => [r.project_name, r]));
   }
 
@@ -267,11 +262,8 @@ export class BoincStatsImportJob {
 
     const flushDb = async () => {
       if (batch.length === 0) return;
-      // One _seq per batch — rows in the batch have distinct
-      // (cpid, project_name) sort keys so no in-batch collisions are
-      // possible against ReplacingMergeTree(_seq). Each subsequent
-      // batch picks a higher _seq so re-imports always win the merge.
-      const seq = (await nextSeq()).toString();
+      // (cpid, project_name) is the PK, so each row upserts in place —
+      // a re-import overwrites the prior stats for that user/project.
       const rows = batch.map((u) => ({
         cpid: u.cpid,
         project_name: normalizeProjectName(project.name),
@@ -285,9 +277,8 @@ export class BoincStatsImportJob {
         total_credit: u.total_credit,
         expavg_credit: u.expavg_credit,
         create_time: u.create_time,
-        _seq: seq,
       }));
-      await ch.insert({ table: 'project_users', format: 'JSONEachRow', values: rows });
+      await upsert('project_users', rows, { pk: ['cpid', 'project_name'] });
       batch = [];
     };
 
@@ -337,40 +328,35 @@ export class BoincStatsImportJob {
     userCount: number,
     error: string,
   ): Promise<void> {
-    // ClickHouse's JSONEachRow can't parse ISO-8601 with a trailing 'Z'
-    // into DateTime64; it expects 'YYYY-MM-DD HH:MM:SS.fff'.
-    const now = new Date().toISOString().replace('T', ' ').replace('Z', '');
-    const lastSuccess = status === 'ok' ? now : null;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const lastSuccessSec = status === 'ok' ? nowSec : null;
     // We update last_success_at only on success — preserves the
     // previous value when the row is upserted. Fetch the prior value
-    // first since ReplacingMergeTree overwrites the whole row.
-    let prevSuccess: string | null = null;
-    if (lastSuccess === null) {
-      const r = await ch.query({
-        query: `
-          SELECT toString(last_success_at) AS last_success_at
-          FROM project_user_imports FINAL
-          WHERE project_name = {n: String} LIMIT 1
+    // first since the upsert overwrites every non-PK column.
+    let prevSuccessSec: number | null = null;
+    if (lastSuccessSec === null) {
+      const rows = await query<{ last_success_at: string }>(
+        `
+          SELECT CAST(last_success_at AS VARCHAR) AS last_success_at
+          FROM project_user_imports
+          WHERE project_name = $n LIMIT 1
         `,
-        query_params: { n: projectName },
-        format: 'JSONEachRow',
-      });
-      const rows = await r.json<{ last_success_at: string }>();
-      prevSuccess = rows[0]?.last_success_at ?? null;
+        { n: projectName },
+      );
+      prevSuccessSec = tsToUnix(rows[0]?.last_success_at) ?? null;
     }
-    await ch.insert({
-      table: 'project_user_imports',
-      format: 'JSONEachRow',
-      values: [{
+    await upsert(
+      'project_user_imports',
+      [{
         project_name: normalizeProjectName(projectName),
-        last_attempted_at: now,
-        last_success_at: lastSuccess ?? prevSuccess ?? '1970-01-01 00:00:00.000',
+        last_attempted_at: nowSec,
+        last_success_at: lastSuccessSec ?? prevSuccessSec ?? 0,
         user_count: userCount,
         last_status: status,
         last_error: error,
-        _seq: (await nextSeq()).toString(),
       }],
-    });
+      { pk: ['project_name'], tsCols: ['last_attempted_at', 'last_success_at'] },
+    );
   }
 }
 

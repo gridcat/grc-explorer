@@ -72,6 +72,8 @@ export interface MrcJson {
   client_version?: string;
   researchSubsidy?: number | string;
   research_subsidy?: number | string;
+  /** GRC deducted from the subsidy, split foundation/staker. */
+  fee?: number | string;
   magnitude?: number;
   payToAddress?: string;
   pay_to_address?: string;

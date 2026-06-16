@@ -1,16 +1,19 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { ch } from '../lib/ch';
+import packageJson from '../../package.json';
+import { query } from '../lib/db';
+import { blockUserActivity } from '../lib/blockAggregates';
 import { cpidDisplayName, resolveCpidNames } from '../lib/cpidNames';
 import { ErrorModel } from '../lib/errors';
 import { halford2grc } from '../lib/halford';
 import { getPagination } from '../lib/pagination';
-import { getCursor } from '../lib/redis';
+import { getCursor, redis } from '../lib/redis';
 import { param } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
 import { tsToUnix } from '../lib/time';
 import { BlockPresenter } from '../presenters';
 import { registerParamValidators } from '../lib/validators';
+import { buildBlockFlow } from '../services/blockFlow/buildBlockFlow';
 
 export const blocksRouter = Router();
 registerParamValidators(blocksRouter);
@@ -42,7 +45,7 @@ interface BlockRow {
 }
 
 // Presenter expects mint/money_supply as bigint (matches the legacy
-// Prisma row shape). CH JSONEachRow gives them as decimal strings —
+// Prisma row shape). DuckDB returns them as decimal strings —
 // coerce here so halford2grc gets the bigint it expects.
 function presentRow(r: BlockRow): Omit<BlockRow, 'mint' | 'money_supply' | 'is_mrc' | 'value_moved' | 'fee_total'> & {
   mint: bigint;
@@ -67,107 +70,56 @@ blocksRouter.get('/', async (req: Request, res: Response) => {
   const at = parseInt(String(req.query.at ?? ''), 10);
   const useAt = Number.isFinite(at) && at > 0;
 
-  // The list bounds claims to the page's heights (claims is sort-keyed
-  // by block_height); the count and the deduped blocks-tail subqueries
-  // share this unaliased time predicate (no `b.` alias inside them).
-  const countTimeFilter = useAt ? 'WHERE time <= toDateTime({at: UInt32})' : '';
+  // The list bounds claims to the page's heights (claims is keyed by
+  // block_height); the count and the page-tail subquery share this
+  // unaliased time predicate (no `b.` alias inside them).
+  const countTimeFilter = useAt ? 'WHERE time <= make_timestamp($at::BIGINT * 1000000)' : '';
   const params = useAt ? { at } : {};
 
-  const [rowsResult, countResult] = await Promise.all([
-    ch.query({
-      // The previous form put `LIMIT 1 BY height` over `SELECT *` of
-      // the WHOLE blocks table before the outer LIMIT — a stateful
-      // dedup with no short-circuit, so a 25-row page read ~7.3M rows
-      // / 1.09 GiB (measured). Fix: resolve the page's heights from
-      // the `height` column alone first (height is the sort key, so
-      // `ORDER BY height DESC LIMIT/OFFSET` reads the tail; the time
-      // filter rides idx_blocks_time) — that's a few KB. Then fetch
-      // and per-_seq-dedup only those ≤limit heights via the PK, and
-      // bound the claims join the same way. Byte-identical result.
-      query: `
+  const [rawRows, totalRows] = await Promise.all([
+    // height is the PRIMARY KEY (one row per block via upsert), so the
+    // page tail is `ORDER BY height DESC LIMIT/OFFSET` over the height
+    // index — no dedup needed. The page's heights bound a LEFT JOIN to
+    // claims (also PK by block_height) for the is_mrc flag.
+    query<BlockRow>(
+      `
         WITH page_heights AS (
           SELECT height
           FROM blocks
           ${countTimeFilter}
-          GROUP BY height
           ORDER BY height DESC
-          LIMIT {limit: UInt32} OFFSET {offset: UInt32}
+          LIMIT ${limit} OFFSET ${offset}
         )
         SELECT b.*, c.is_mrc AS is_mrc
-        FROM (
-          SELECT * FROM blocks
-          WHERE height IN (SELECT height FROM page_heights)
-          ORDER BY height DESC, _seq DESC
-          LIMIT 1 BY height
-        ) AS b
-        ANY LEFT JOIN (
-          SELECT block_height, is_mrc
-          FROM claims
-          WHERE block_height IN (SELECT height FROM page_heights)
-          ORDER BY _seq DESC
-          LIMIT 1 BY block_height
-        ) AS c ON c.block_height = b.height
+        FROM blocks AS b
+        LEFT JOIN claims AS c ON c.block_height = b.height
+        WHERE b.height IN (SELECT height FROM page_heights)
         ORDER BY b.height DESC
       `,
-      query_params: { ...params, limit, offset },
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      // Heights are contiguous genesis→tip (HistoricalBackfiller
-      // commits strictly in order — no gaps even mid-backfill), so the
-      // listable block count is exactly max-min+1. min()/max() over the
-      // `height` sort key resolve from per-part min/max metadata: no row
-      // scan. The previous `count() … GROUP BY height` aggregated the
-      // whole height column (~millions of rows) on every page load.
-      // For the `at` path the predicate still prunes via
-      // idx_blocks_time. Empty/clamped result → NULL, handled JS-side.
-      query: `SELECT toUInt64(max(height) - min(height) + 1) AS c FROM blocks ${countTimeFilter}`,
-      query_params: params,
-      format: 'JSONEachRow',
-    }),
+      params,
+    ),
+    // Heights are contiguous genesis→tip (HistoricalBackfiller commits
+    // strictly in order — no gaps even mid-backfill), so the listable
+    // block count is exactly max-min+1. For the `at` path the predicate
+    // still prunes via idx_blocks_time. Empty/clamped result → NULL,
+    // handled JS-side.
+    query<{ c: string | number }>(
+      `SELECT CAST(max(height) - min(height) + 1 AS BIGINT) AS c FROM blocks ${countTimeFilter}`,
+      params,
+    ),
   ]);
-  const rawRows = await rowsResult.json<BlockRow>();
-  const totalRows = await countResult.json<{ c: string | number }>();
   const total = Number(totalRows[0]?.c ?? 0);
 
-  // Per-block user activity: sum(total_out) + sum(fee) for non-coinbase
-  // non-coinstake txs. Cheap because `transactions` is sort-keyed by
-  // (block_height, index_in_blk) so the IN-list lookup is a multi-
-  // range sorted scan over the page's blocks. Aggregates surface as
-  // `valueMoved` / `feeTotal` on each row alongside `mint` (block
-  // reward) so consumers can distinguish "what users moved" from
-  // "what the block emitted".
-  // Both the per-block value/fee aggregate and the staker-name
-  // resolution depend only on rawRows, so run them concurrently —
-  // saves one CH round trip on the SSR path (they used to await in
-  // series). Staker display names are resolved server-side so the SSR
-  // seed (home LiveBlockTicker, /blocks page) renders names without a
-  // second /cpids/names round trip.
-  type AggRow = { block_height: number; value_moved: string; fee_total: string };
+  // Per-block user activity (value moved / fees) + staker-name
+  // resolution both depend only on rawRows, so run them concurrently —
+  // saves one round trip on the SSR path. Staker display names are
+  // resolved server-side so the SSR seed (home LiveBlockTicker, /blocks
+  // page) renders names without a second /cpids/names round trip.
   const heights = rawRows.map((r) => r.height);
-  const [aggRows, stakerNames] = await Promise.all([
-    heights.length > 0
-      ? ch.query({
-        query: `
-          SELECT
-            block_height,
-            toString(sum(total_out)) AS value_moved,
-            toString(sum(fee))       AS fee_total
-          FROM transactions FINAL
-          WHERE block_height IN ({heights: Array(UInt32)})
-            AND NOT is_coinbase AND NOT is_coinstake
-          GROUP BY block_height
-        `,
-        query_params: { heights },
-        format: 'JSONEachRow',
-      }).then((r) => r.json<AggRow>())
-      : Promise.resolve([] as AggRow[]),
+  const [aggMap, stakerNames] = await Promise.all([
+    blockUserActivity(heights),
     resolveCpidNames(rawRows.map((r) => r.staker_cpid).filter((c): c is string => !!c)),
   ]);
-  const aggMap = new Map<number, { value_moved: string; fee_total: string }>();
-  for (const a of aggRows) {
-    aggMap.set(a.block_height, { value_moved: a.value_moved, fee_total: a.fee_total });
-  }
   const rows = rawRows.map((r) => {
     const a = aggMap.get(r.height);
     return presentRow({
@@ -182,6 +134,20 @@ blocksRouter.get('/', async (req: Request, res: Response) => {
   res.status(StatusCodes.OK).send(withMeta(body));
 });
 
+// Deep-confirmed block payloads are immutable — deeper than
+// ChainReorgHandler's MAX_REORG_DEPTH (100), no reorg can reach them —
+// so the fully rendered response is cached in Redis. A hit costs two
+// Redis round trips instead of ~17 DuckDB queries (block + txs + claim
+// + MRCs + the whole flow build). The package version in the key busts
+// the cache on deploys that change the payload shape; tipHeight is the
+// one live field and is re-injected fresh on every hit.
+const DETAIL_CACHE_DEPTH = 120;
+const DETAIL_CACHE_TTL_S = 24 * 3600;
+// Browsers/CDN may hold a copy for 5 minutes (bounding tipHeight
+// staleness) and serve stale while revalidating for a day.
+const DETAIL_CACHE_CONTROL = 'public, max-age=300, stale-while-revalidate=86400';
+const detailCacheKey = (height: number) => `blockdetail:${packageJson.version}:${height}`;
+
 blocksRouter.get('/:height', async (req: Request, res: Response) => {
   const height = parseInt(param(req, 'height'), 10);
   if (Number.isNaN(height)) {
@@ -190,12 +156,24 @@ blocksRouter.get('/:height', async (req: Request, res: Response) => {
     });
     return;
   }
-  const blockResult = await ch.query({
-    query: 'SELECT * FROM blocks FINAL WHERE height = {h: UInt32} LIMIT 1',
-    query_params: { h: height },
-    format: 'JSONEachRow',
-  });
-  const blockRows = await blockResult.json<BlockRow>();
+
+  // Only the canonical full variant (?txs not disabled) is cached.
+  const cacheable = req.query.txs !== '0';
+  if (cacheable) {
+    const [cached, cursorNow] = await Promise.all([redis.get(detailCacheKey(height)), getCursor()]);
+    if (cached && cursorNow) {
+      const cachedBody = JSON.parse(cached) as Record<string, unknown>;
+      cachedBody.tipHeight = cursorNow.height;
+      res.setHeader('Cache-Control', DETAIL_CACHE_CONTROL);
+      res.status(StatusCodes.OK).send(cachedBody);
+      return;
+    }
+  }
+
+  const blockRows = await query<BlockRow>(
+    'SELECT * FROM blocks WHERE height = $h LIMIT 1',
+    { h: height },
+  );
   if (blockRows.length === 0) {
     res.status(StatusCodes.NOT_FOUND).send({
       errors: [new ErrorModel(StatusCodes.NOT_FOUND, 'Block not found')],
@@ -207,38 +185,35 @@ blocksRouter.get('/:height', async (req: Request, res: Response) => {
   const includeTxs = req.query.txs !== '0';
   const [txResult, claimResult, mrcResult, cursor] = await Promise.all([
     includeTxs
-      ? ch.query({
-        query: `
-          SELECT tx_id, is_coinbase, is_coinstake, total_out, fee, index_in_blk
-          FROM transactions FINAL
-          WHERE block_height = {h: UInt32}
-          ORDER BY index_in_blk ASC
-        `,
-        query_params: { h: height },
-        format: 'JSONEachRow',
-      }).then((r) => r.json<{
+      ? query<{
         tx_id: string; is_coinbase: boolean; is_coinstake: boolean;
         total_out: string; fee: string; index_in_blk: number;
-      }>())
+      }>(
+        `
+          SELECT tx_id, is_coinbase, is_coinstake, total_out, fee, index_in_blk
+          FROM transactions
+          WHERE block_height = $h
+          ORDER BY index_in_blk ASC
+        `,
+        { h: height },
+      )
       : Promise.resolve([]),
-    ch.query({
-      query: 'SELECT * FROM claims FINAL WHERE block_height = {h: UInt32} LIMIT 1',
-      query_params: { h: height },
-      format: 'JSONEachRow',
-    }).then((r) => r.json<Record<string, unknown>>()),
-    ch.query({
-      query: `
-        SELECT cpid, mining_id, client_version, research_subsidy, magnitude, pay_to_address
-        FROM claim_mrcs FINAL
-        WHERE block_height = {h: UInt32}
-        ORDER BY toUInt64(research_subsidy) DESC
-      `,
-      query_params: { h: height },
-      format: 'JSONEachRow',
-    }).then((r) => r.json<{
+    query<Record<string, unknown>>(
+      'SELECT * FROM claims WHERE block_height = $h LIMIT 1',
+      { h: height },
+    ),
+    query<{
       cpid: string; mining_id: string; client_version: string;
       research_subsidy: string; magnitude: number; pay_to_address: string | null;
-    }>()),
+    }>(
+      `
+        SELECT cpid, mining_id, client_version, research_subsidy, magnitude, pay_to_address
+        FROM claim_mrcs
+        WHERE block_height = $h
+        ORDER BY CAST(research_subsidy AS UBIGINT) DESC
+      `,
+      { h: height },
+    ),
     getCursor(),
   ]);
 
@@ -282,22 +257,56 @@ blocksRouter.get('/:height', async (req: Request, res: Response) => {
     payToAddress: m.pay_to_address,
   }));
 
+  // Semantic flow view of the block (minted/transfer/sidestake/data) for
+  // the graphical representation below the tx list. Needs the tx list, so
+  // it's skipped when txs are excluded.
+  const flow = includeTxs
+    ? await buildBlockFlow(
+      height,
+      txResult.map((t) => ({ txId: t.tx_id, isCoinbase: t.is_coinbase, isCoinstake: t.is_coinstake })),
+      claim
+        ? {
+          cpid: (claim.cpid as string | null) ?? null,
+          block_subsidy: (claim.block_subsidy as string | null) ?? null,
+          research_subsidy: (claim.research_subsidy as string | null) ?? null,
+          magnitude: (claim.magnitude as number | null) ?? null,
+          is_mrc: (claim.is_mrc as boolean | null) ?? null,
+          mrc_foundation_fees: (claim.mrc_foundation_fees as string | null) ?? null,
+          mrc_staker_fees: (claim.mrc_staker_fees as string | null) ?? null,
+        }
+        : null,
+    )
+    : null;
+
   const body = BlockPresenter.render(row);
-  res.status(StatusCodes.OK).send(withMeta(body, {
+  const responseBody = withMeta(body, {
     transactions: txAttributes,
     claim: claimAttributes,
     mrcs: mrcAttributes,
+    flow,
     tipHeight: cursor?.height ?? row.height,
-  }));
+  }) as Record<string, unknown>;
+
+  const tip = cursor?.height ?? row.height;
+  if (cacheable && cursor && tip - height >= DETAIL_CACHE_DEPTH) {
+    res.setHeader('Cache-Control', DETAIL_CACHE_CONTROL);
+    // tipHeight is stripped (zeroed) in the stored copy and re-injected
+    // fresh on every hit.
+    await redis.set(
+      detailCacheKey(height),
+      JSON.stringify({ ...responseBody, tipHeight: 0 }),
+      'EX',
+      DETAIL_CACHE_TTL_S,
+    );
+  }
+  res.status(StatusCodes.OK).send(responseBody);
 });
 
 blocksRouter.get('/hash/:hash', async (req: Request, res: Response) => {
-  const result = await ch.query({
-    query: 'SELECT height FROM blocks FINAL WHERE hash = {hash: String} LIMIT 1',
-    query_params: { hash: param(req, 'hash') },
-    format: 'JSONEachRow',
-  });
-  const rows = await result.json<{ height: number }>();
+  const rows = await query<{ height: number }>(
+    'SELECT height FROM blocks WHERE hash = $hash LIMIT 1',
+    { hash: param(req, 'hash') },
+  );
   if (rows.length === 0) {
     res.status(StatusCodes.NOT_FOUND).send({
       errors: [new ErrorModel(StatusCodes.NOT_FOUND, 'Block not found')],
@@ -340,39 +349,37 @@ blocksRouter.get('/:height/sidestakes', async (req: Request, res: Response) => {
   // Registry-at-height = last row per address with block_height <= H,
   // filtered to status='MANDATORY'. Same shape as in
   // mandatorySidestakes.ts but scoped to this height for the LEFT JOIN.
-  const result = await ch.query({
-    query: `
+  const rows = await query<{
+    address: string; vout_idx: number; tx_id: string;
+    amount: string; time: number;
+    allocation_pct: number; description: string; status: string;
+  }>(
+    `
       WITH registry AS (
         SELECT address,
-               argMax(status, block_height)         AS status,
-               argMax(allocation_pct, block_height) AS allocation_pct,
-               argMax(description, block_height)    AS description
-        FROM mandatory_sidestakes FINAL
-        WHERE block_height <= {h: UInt32}
+               arg_max(status, block_height)         AS status,
+               arg_max(allocation_pct, block_height) AS allocation_pct,
+               arg_max(description, block_height)    AS description
+        FROM mandatory_sidestakes
+        WHERE block_height <= $h
         GROUP BY address
       )
       SELECT
         cs.address                              AS address,
         cs.vout_idx                             AS vout_idx,
         cs.tx_id                                AS tx_id,
-        toString(cs.amount)                     AS amount,
-        toUnixTimestamp(cs.time)                AS time,
+        CAST(cs.amount AS VARCHAR)              AS amount,
+        CAST(epoch(cs.time) AS BIGINT)          AS time,
         coalesce(r.allocation_pct, 0.0)         AS allocation_pct,
         coalesce(r.description, '')             AS description,
         coalesce(r.status, '')                  AS status
-      FROM coinstake_sidestakes AS cs FINAL
+      FROM coinstake_sidestakes AS cs
       LEFT JOIN registry r ON r.address = cs.address
-      WHERE cs.block_height = {h: UInt32}
+      WHERE cs.block_height = $h
       ORDER BY cs.vout_idx
     `,
-    query_params: { h: height },
-    format: 'JSONEachRow',
-  });
-  const rows = await result.json<{
-    address: string; vout_idx: number; tx_id: string;
-    amount: string; time: number;
-    allocation_pct: number; description: string; status: string;
-  }>();
+    { h: height },
+  );
   res.status(StatusCodes.OK).send(withMeta({
     data: rows.map((r) => ({
       type: 'block_sidestake',
@@ -405,24 +412,22 @@ blocksRouter.get('/:height/mempool-snapshot', async (req: Request, res: Response
     });
     return;
   }
-  const result = await ch.query({
-    query: `
+  const rows = await query<SnapshotRow>(
+    `
       SELECT
         block_hash,
-        toUnixTimestamp(block_time)   AS block_time,
-        toUnixTimestamp(captured_at)  AS captured_at,
+        CAST(epoch(block_time) AS BIGINT)   AS block_time,
+        CAST(epoch(captured_at) AS BIGINT)  AS captured_at,
         tx_id,
-        toUnixTimestamp(first_seen)   AS first_seen,
-        toString(fee_estimate)        AS fee_estimate,
+        CAST(epoch(first_seen) AS BIGINT)   AS first_seen,
+        CAST(fee_estimate AS VARCHAR)       AS fee_estimate,
         size, vin_count, vout_count, was_included
-      FROM mempool_snapshots FINAL
-      WHERE block_height = {h: UInt32}
+      FROM mempool_snapshots
+      WHERE block_height = $h
       ORDER BY first_seen ASC
     `,
-    query_params: { h: height },
-    format: 'JSONEachRow',
-  });
-  const rows = await result.json<SnapshotRow>();
+    { h: height },
+  );
   let totalFees = 0n;
   let totalSize = 0;
   let includedCount = 0;

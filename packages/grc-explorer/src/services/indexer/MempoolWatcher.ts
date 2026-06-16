@@ -1,10 +1,8 @@
-import { ch } from '../../lib/ch';
+import { query, run, upsert } from '../../lib/db';
 import { events } from '../../lib/emitter';
 import { liveRpc } from '../../lib/gridcoin';
 import { grc2halford, halford2grc, sumHalford } from '../../lib/halford';
 import { log } from '../../lib/log';
-import { nextSeq } from '../../lib/redis';
-import { tsToUnix } from '../../lib/time';
 import { parseMrcContract } from './ContractParser';
 import { ContractEnvelope } from './types';
 
@@ -21,9 +19,9 @@ interface RawTxInfo {
 }
 
 // Polls `getrawmempool` every MEMPOOL_POLL_INTERVAL_MS, diffs against
-// the in-memory snapshot from the previous tick, persists into
-// ClickHouse `mempool_txs` (ReplacingMergeTree(_seq), so confirm /
-// evict are re-inserts with bumped _seq, not in-place updates).
+// the in-memory snapshot from the previous tick, and persists into
+// `mempool_txs` (PK tx_id). Confirm / evict are real in-place UPDATEs
+// of the existing row.
 //
 // Mempool rows are kept forever — confirmation/eviction stamps the
 // existing row with a timestamp rather than deleting it. /mempool?at=T
@@ -86,24 +84,22 @@ export class MempoolWatcher {
       }
       const fee = totalIn !== null && totalIn >= totalOut ? totalIn - totalOut : 0n;
       const firstSeen = Math.floor(Date.now() / 1000);
-      const seq = await nextSeq();
 
-      await ch.insert({
-        table: 'mempool_txs',
-        format: 'JSONEachRow',
-        values: [{
+      await upsert(
+        'mempool_txs',
+        [{
           tx_id: txId,
           first_seen: firstSeen,
-          fee_estimate: fee.toString(),
+          fee_estimate: fee,
           size: raw.size ?? 0,
           vin_count: raw.vin?.length ?? 0,
           vout_count: raw.vout?.length ?? 0,
           raw_json: JSON.stringify(raw),
           confirmed_at: null,
           evicted_at: null,
-          _seq: seq.toString(),
         }],
-      });
+        { pk: ['tx_id'], tsCols: ['first_seen'] },
+      );
       // MRC requests get a dedicated `mrc_requests` row alongside the
       // generic mempool_txs persist, so consumers don't have to parse
       // raw_json. block_height/block_time stay NULL until BlockWriter's
@@ -119,17 +115,16 @@ export class MempoolWatcher {
         if (!mrc) continue;
         mrcCount += 1;
         // eslint-disable-next-line no-await-in-loop
-        await ch.insert({
-          table: 'mrc_requests',
-          format: 'JSONEachRow',
-          values: [{
+        await upsert(
+          'mrc_requests',
+          [{
             tx_id: mrc.txId,
             version: mrc.version,
             cpid: mrc.cpid,
             client_version: mrc.clientVersion,
             organization: mrc.organization,
-            research_subsidy: mrc.researchSubsidy.toString(),
-            fee_offered: mrc.feeOffered.toString(),
+            research_subsidy: mrc.researchSubsidy,
+            fee_offered: mrc.feeOffered,
             magnitude: mrc.magnitude,
             magnitude_unit: mrc.magnitudeUnit,
             last_block_hash: mrc.lastBlockHash,
@@ -138,9 +133,9 @@ export class MempoolWatcher {
             first_seen: mrc.firstSeen,
             block_height: null,
             block_time: null,
-            _seq: seq.toString(),
           }],
-        });
+          { pk: ['tx_id'], tsCols: ['first_seen', 'block_time'] },
+        );
       }
 
       events.publish({
@@ -175,25 +170,19 @@ export class MempoolWatcher {
 
     const txIds = Array.from(new Set(refs.map((r) => r.txid)));
     const vouts = Array.from(new Set(refs.map((r) => r.vout)));
-    const result = await ch.query({
-      // No FINAL: ClickHouse can't serve a FINAL (read-time dedup)
-      // query from a projection and won't prune the scan, so FINAL
-      // here was a ~1.1s full-table scan that ignored proj_by_outpoint
-      // (vs ~9ms with the projection). It isn't needed anyway — an
-      // output's `value` is immutable for a given (tx_id, vout_n), so
-      // a stale pre-merge duplicate carries the identical value and the
-      // `found` map (keyed tx_id:vout_n) just overwrites it with the
-      // same number. Same rationale as `prevOutputs.ts`.
-      query: `
-        SELECT tx_id, vout_n, value FROM tx_outputs
-        WHERE tx_id IN ({txIds: Array(String)}) AND vout_n IN ({vouts: Array(UInt16)})
-      `,
-      query_params: { txIds, vouts },
-      format: 'JSONEachRow',
-    });
+    // (tx_id, vout_n) is the PK; the txIds × vouts predicate over-fetches
+    // (it's the cartesian product), then the `found` map narrows by the
+    // exact key. An output's value is immutable, so no dedup is needed.
     type Row = { tx_id: string; vout_n: number; value: string };
+    const rows = await query<Row>(
+      `
+        SELECT tx_id, vout_n, value FROM tx_outputs
+        WHERE tx_id = ANY($txIds) AND vout_n = ANY($vouts)
+      `,
+      { txIds, vouts },
+    );
     const found = new Map<string, bigint>();
-    for (const r of await result.json<Row>()) {
+    for (const r of rows) {
       found.set(`${r.tx_id}:${r.vout_n}`, BigInt(r.value));
     }
 
@@ -232,8 +221,8 @@ export class MempoolWatcher {
       // `blockhash`, it's mined; if RPC returns -5 ("no info"), it
       // was dropped from the network without confirming.
       //
-      // The previous shape consulted our own `transactions FINAL`
-      // table, which is correct only when the indexer is at chain tip.
+      // The previous shape consulted our own `transactions` table,
+      // which is correct only when the indexer is at chain tip.
       // During deep backfill, blocks at tip aren't ingested yet, so
       // *every* exiting tx looked "evicted" — the SSE feed told users
       // their just-mined stamp was dropped. Daemon RPC is canonical
@@ -262,46 +251,25 @@ export class MempoolWatcher {
       const reason: 'confirmed' | 'evicted' = confirmed ? 'confirmed' : 'evicted';
       const ts = Math.floor(Date.now() / 1000);
 
-      // Re-insert the existing mempool row with confirmed_at or
-      // evicted_at stamped. ReplacingMergeTree(_seq) collapses the two
-      // versions on read; we have to fetch the existing row to pick up
-      // its first_seen / fee_estimate / etc — they're invariants we
-      // mustn't lose.
-      const existing = await ch.query({
-        query: `
-          SELECT first_seen, fee_estimate, size, vin_count, vout_count, raw_json
-          FROM mempool_txs FINAL WHERE tx_id = {tx: String} LIMIT 1
-        `,
-        query_params: { tx: txId },
-        format: 'JSONEachRow',
-      });
-      const rows = await existing.json<{
-        first_seen: number | string;
-        fee_estimate: string;
-        size: number;
-        vin_count: number;
-        vout_count: number;
-        raw_json: string;
-      }>();
-      if (rows.length === 0) return; // never seen by us — nothing to mark
-      const row = rows[0];
-      const seq = await nextSeq();
-      await ch.insert({
-        table: 'mempool_txs',
-        format: 'JSONEachRow',
-        values: [{
-          tx_id: txId,
-          first_seen: tsToUnix(row.first_seen) ?? 0,
-          fee_estimate: row.fee_estimate,
-          size: row.size,
-          vin_count: row.vin_count,
-          vout_count: row.vout_count,
-          raw_json: row.raw_json,
-          confirmed_at: confirmed ? ts : null,
-          evicted_at: confirmed ? null : ts,
-          _seq: seq.toString(),
-        }],
-      });
+      // Stamp confirmed_at or evicted_at on the existing row in place.
+      // If we never saw this tx (no row), there's nothing to mark — skip
+      // the UPDATE and the event, matching the old "rows.length === 0"
+      // early return.
+      const existing = await query<{ tx_id: string }>(
+        'SELECT tx_id FROM mempool_txs WHERE tx_id = $tx LIMIT 1',
+        { tx: txId },
+      );
+      if (existing.length === 0) return;
+      await run(
+        confirmed
+          ? `UPDATE mempool_txs
+             SET confirmed_at = make_timestamp($ts::BIGINT * 1000000), evicted_at = NULL
+             WHERE tx_id = $tx`
+          : `UPDATE mempool_txs
+             SET evicted_at = make_timestamp($ts::BIGINT * 1000000), confirmed_at = NULL
+             WHERE tx_id = $tx`,
+        { ts, tx: txId },
+      );
       events.publish({
         topic: 'mempool.exited',
         payload: { tx_id: txId, reason },
@@ -312,16 +280,14 @@ export class MempoolWatcher {
   }
 
   private async publishAggregate(): Promise<void> {
-    // Active mempool only — `confirmed_at IS NULL AND evicted_at IS
-    // NULL` after FINAL collapse picks rows still in the live pool.
-    const result = await ch.query({
-      query: `
-        SELECT fee_estimate, size FROM mempool_txs FINAL
+    // Active mempool only — confirmed_at IS NULL AND evicted_at IS NULL
+    // picks rows still in the live pool.
+    const rows = await query<{ fee_estimate: string; size: number }>(
+      `
+        SELECT fee_estimate, size FROM mempool_txs
         WHERE confirmed_at IS NULL AND evicted_at IS NULL
       `,
-      format: 'JSONEachRow',
-    });
-    const rows = await result.json<{ fee_estimate: string; size: number }>();
+    );
     const totalFees = rows.reduce<bigint>((acc, r) => acc + BigInt(r.fee_estimate), 0n);
     const totalSize = rows.reduce<number>((acc, r) => acc + r.size, 0);
 

@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { ch } from '../lib/ch';
+import { query } from '../lib/db';
 import { halford2grc } from '../lib/halford';
 import { getPagination } from '../lib/pagination';
 import { clampedQueryInt } from '../lib/req';
@@ -54,9 +54,9 @@ function snapshotWhere(
   }
   return {
     sql: `
-      ${prefix}first_seen <= toDateTime({at: UInt32})
-      AND (${prefix}confirmed_at IS NULL OR ${prefix}confirmed_at > toDateTime({at: UInt32}))
-      AND (${prefix}evicted_at   IS NULL OR ${prefix}evicted_at   > toDateTime({at: UInt32}))
+      ${prefix}first_seen <= make_timestamp($at::BIGINT * 1000000)
+      AND (${prefix}confirmed_at IS NULL OR ${prefix}confirmed_at > make_timestamp($at::BIGINT * 1000000))
+      AND (${prefix}evicted_at   IS NULL OR ${prefix}evicted_at   > make_timestamp($at::BIGINT * 1000000))
     `,
     params: { at },
   };
@@ -68,38 +68,36 @@ mempoolRouter.get('/', async (req: Request, res: Response) => {
   const w = snapshotWhere(at);
   const wMp = snapshotWhere(at, 'mp.');
 
-  const [rowsResult, countResult] = await Promise.all([
-    ch.query({
-      // ANY LEFT JOIN bounds the MRC lookup to the LIMIT-page rows
-      // rather than scanning the whole `mrc_requests` table per
-      // request — the IN-subquery shape we used before re-FINALed
-      // every MRC ever observed on every list call.
-      query: `
+  const [rawRows, countRows] = await Promise.all([
+    // LEFT JOIN bounds the MRC lookup to the LIMIT-page rows rather than
+    // scanning the whole `mrc_requests` table per request. mrc_requests
+    // is keyed by tx_id (one row), so a plain LEFT JOIN suffices; a miss
+    // yields NULL, hence `mr.tx_id IS NOT NULL` for is_mrc.
+    query<MempoolRow>(
+      `
         SELECT
           mp.tx_id                          AS tx_id,
-          toUnixTimestamp(mp.first_seen)    AS first_seen,
-          toString(mp.fee_estimate)         AS fee_estimate,
+          CAST(epoch(mp.first_seen) AS BIGINT)   AS first_seen,
+          CAST(mp.fee_estimate AS VARCHAR)       AS fee_estimate,
           mp.size, mp.vin_count, mp.vout_count, mp.raw_json,
-          toUnixTimestamp(mp.confirmed_at)  AS confirmed_at,
-          toUnixTimestamp(mp.evicted_at)    AS evicted_at,
-          (mr.tx_id != '')                  AS is_mrc
-        FROM mempool_txs AS mp FINAL
-        ANY LEFT JOIN mrc_requests AS mr FINAL ON mr.tx_id = mp.tx_id
+          CAST(epoch(mp.confirmed_at) AS BIGINT) AS confirmed_at,
+          CAST(epoch(mp.evicted_at) AS BIGINT)   AS evicted_at,
+          (mr.tx_id IS NOT NULL)            AS is_mrc
+        FROM mempool_txs AS mp
+        LEFT JOIN mrc_requests AS mr ON mr.tx_id = mp.tx_id
         WHERE ${wMp.sql}
         ORDER BY mp.first_seen DESC
-        LIMIT {limit: UInt32} OFFSET {offset: UInt32}
+        LIMIT ${Number(limit)} OFFSET ${Number(offset)}
       `,
-      query_params: { ...wMp.params, limit, offset },
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `SELECT count() AS c FROM mempool_txs FINAL WHERE ${w.sql}`,
-      query_params: w.params,
-      format: 'JSONEachRow',
-    }),
+      wMp.params,
+    ),
+    query<{ c: string | number }>(
+      `SELECT count(*) AS c FROM mempool_txs WHERE ${w.sql}`,
+      w.params,
+    ),
   ]);
-  const rows = (await rowsResult.json<MempoolRow>()).map(presentMempoolRow);
-  const total = Number((await countResult.json<{ c: string | number }>())[0]?.c ?? 0);
+  const rows = rawRows.map(presentMempoolRow);
+  const total = Number(countRows[0]?.c ?? 0);
   const body = MempoolTxPresenter.render(rows, { meta: { count: total, at: at ?? null } });
   res.status(StatusCodes.OK).send(withMeta(body));
 });
@@ -107,15 +105,13 @@ mempoolRouter.get('/', async (req: Request, res: Response) => {
 mempoolRouter.get('/fee-histogram', async (req: Request, res: Response) => {
   const at = parseAt(req);
   const w = snapshotWhere(at);
-  const result = await ch.query({
-    query: `
-      SELECT toString(fee_estimate) AS fee_estimate, size
-      FROM mempool_txs FINAL WHERE ${w.sql}
+  const rows = await query<{ fee_estimate: string; size: number }>(
+    `
+      SELECT CAST(fee_estimate AS VARCHAR) AS fee_estimate, size
+      FROM mempool_txs WHERE ${w.sql}
     `,
-    query_params: w.params,
-    format: 'JSONEachRow',
-  });
-  const rows = await result.json<{ fee_estimate: string; size: number }>();
+    w.params,
+  );
   const buckets = [0, 1, 5, 25, 100, Number.POSITIVE_INFINITY];
   const counts = new Array(buckets.length - 1).fill(0);
   let totalFees = 0n;
@@ -157,30 +153,29 @@ mempoolRouter.get('/timeline', async (req: Request, res: Response) => {
   const now = Math.floor(Date.now() / 1000);
   const start = now - hours * 3600;
 
-  // One CH pass with a synthetic time-series via arrayJoin instead of N
-  // round-trips like the MySQL version. For each bucket boundary, count
-  // rows that were active at that instant.
-  const result = await ch.query({
-    query: `
-      WITH arrayJoin(range(toUInt32({start: UInt32}), toUInt32({end: UInt32}) + 1, toUInt32({step: UInt32}))) AS sample_ts
-      SELECT
-        sample_ts AS ts,
-        toUInt32(count()) AS count,
-        toString(sum(fee_estimate)) AS total_fees,
-        toUInt32(sum(size)) AS total_size
-      FROM mempool_txs FINAL
-      WHERE first_seen <= toDateTime(sample_ts)
-        AND (confirmed_at IS NULL OR confirmed_at > toDateTime(sample_ts))
-        AND (evicted_at   IS NULL OR evicted_at   > toDateTime(sample_ts))
-      GROUP BY sample_ts
-      ORDER BY sample_ts ASC
-    `,
-    query_params: { start, end: now, step },
-    format: 'JSONEachRow',
-  });
-  const samples = (await result.json<{
+  // One pass with a synthetic time-series instead of N round-trips:
+  // unnest a range of sample timestamps, INNER JOIN the mempool rows
+  // active at each, and count per bucket. INNER JOIN (not LEFT) so
+  // buckets with no active rows are omitted, matching the prior shape.
+  const samples = (await query<{
     ts: number; count: number; total_fees: string; total_size: number;
-  }>()).map((s) => ({
+  }>(
+    `
+      SELECT
+        g.sample_ts AS ts,
+        CAST(count(*) AS UINTEGER)            AS count,
+        CAST(sum(m.fee_estimate) AS VARCHAR)  AS total_fees,
+        CAST(sum(m.size) AS UINTEGER)         AS total_size
+      FROM (SELECT unnest(range($start::BIGINT, $end::BIGINT + 1, $step::BIGINT)) AS sample_ts) AS g
+      JOIN mempool_txs AS m
+        ON m.first_seen <= make_timestamp(g.sample_ts * 1000000)
+        AND (m.confirmed_at IS NULL OR m.confirmed_at > make_timestamp(g.sample_ts * 1000000))
+        AND (m.evicted_at   IS NULL OR m.evicted_at   > make_timestamp(g.sample_ts * 1000000))
+      GROUP BY g.sample_ts
+      ORDER BY g.sample_ts ASC
+    `,
+    { start, end: now, step },
+  )).map((s) => ({
     ts: s.ts,
     count: s.count,
     totalFees: halford2grc(BigInt(s.total_fees || '0')),

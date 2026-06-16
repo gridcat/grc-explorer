@@ -15,6 +15,7 @@ import { track } from '../../lib/track';
 import { HashTrim } from '../../components/HashTrim';
 import { Crumbs } from '../../components/Crumbs';
 import { CpidLabel } from '../../components/CpidLabel';
+import { BlockFlow, type BlockFlowPayload } from '../../components/BlockFlow/BlockFlow';
 import { useCpidNames } from '../../hooks/useCpidNames';
 
 export interface Block {
@@ -77,6 +78,7 @@ export interface BlockDetailProps {
   initialTransactions: Array<{ txId: string; isCoinbase: boolean; isCoinstake: boolean; totalOut: string; fee: string }>;
   initialClaim: ClaimSummary | null;
   initialMrcs: ClaimMrc[];
+  initialFlow: BlockFlowPayload | null;
   initialTipHeight: number | null;
   initialCpidNames: Record<string, string>;
 }
@@ -107,7 +109,7 @@ function blockEraLabel(version: number): string {
 }
 
 export function BlockDetail({
-  initialBlock, initialTransactions, initialClaim, initialMrcs, initialTipHeight,
+  initialBlock, initialTransactions, initialClaim, initialMrcs, initialFlow, initialTipHeight,
   initialCpidNames,
 }: BlockDetailProps) {
   const router = useRouter();
@@ -116,6 +118,7 @@ export function BlockDetail({
   const [transactions, setTransactions] = useState(initialTransactions);
   const [claim, setClaim] = useState<ClaimSummary | null>(initialClaim);
   const [mrcs, setMrcs] = useState<ClaimMrc[]>(initialMrcs);
+  const [flow, setFlow] = useState<BlockFlowPayload | null>(initialFlow);
   // Sidestakes are fetched lazily — they only exist on V13+ PoS
   // blocks, and even there most blocks have none. Skipping the fetch
   // on pre-V13 blocks keeps the page footprint low for the ~99.99% of
@@ -138,6 +141,7 @@ export function BlockDetail({
       setBlock(attrs ?? null);
       setTransactions(r.data?.transactions ?? []);
       setMrcs(r.data?.mrcs ?? []);
+      setFlow((r.data?.flow ?? null) as BlockFlowPayload | null);
       setTipHeight(typeof r.data?.tipHeight === 'number' ? r.data.tipHeight : null);
       const c = r.data?.claim;
       if (c) {
@@ -433,6 +437,8 @@ export function BlockDetail({
             </TableBody>
           </Table>
         </Paper>
+
+        <BlockFlow flow={flow} />
       </Stack>
     </Layout>
   );
@@ -487,6 +493,7 @@ export async function fetchBlockDetailProps(height: string): Promise<BlockDetail
         mrc_staker_fees: c.mrc_staker_fees?.toString() ?? '0',
       } : null,
       initialMrcs: mrcs,
+      initialFlow: (r.data?.flow ?? null) as BlockFlowPayload | null,
       initialTipHeight: typeof r.data?.tipHeight === 'number' ? r.data.tipHeight : null,
       initialCpidNames,
     };

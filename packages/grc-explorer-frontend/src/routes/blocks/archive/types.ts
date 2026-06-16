@@ -42,10 +42,17 @@ export interface ArchiveBlockRow {
   size: number;
   txCount: number;
   isPos: boolean;
+  isMrc: boolean;
+  difficulty: number | string;
   minerAddress: string | null;
   stakerCpid: string | null;
+  // Server-resolved BOINC display name for `stakerCpid` (archive is
+  // SSR-static, so the name is baked in — no client-side useCpidNames).
+  stakerName: string | null;
   isSuperblock: boolean;
   mintGrc: string;
+  valueMoved: string;
+  feeTotal: string;
 }
 
 export interface YearArchiveData extends ArchivePeriodStats {

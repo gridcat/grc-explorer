@@ -1,16 +1,14 @@
-import { ch } from './ch';
+import { query } from './db';
 
 // Current money supply (Halford), for share-of-supply percentages.
-// No FINAL: money_supply is a monotonic per-block counter, so max()
-// is unaffected by un-merged duplicate rows — a cheap PK-edge read.
-// Shared by the address and CPID combined-balance views.
+// money_supply is a monotonic per-block counter, so max() is a cheap
+// read. Shared by the address and CPID combined-balance views.
 export async function getMoneySupplyRaw(): Promise<bigint> {
   try {
-    const r = await ch.query({
-      query: 'SELECT toString(max(money_supply)) AS s FROM blocks',
-      format: 'JSONEachRow',
-    });
-    return BigInt((await r.json<{ s: string | null }>())[0]?.s ?? '0');
+    const rows = await query<{ s: string | null }>(
+      'SELECT CAST(max(money_supply) AS VARCHAR) AS s FROM blocks',
+    );
+    return BigInt(rows[0]?.s ?? '0');
   } catch {
     return 0n;
   }

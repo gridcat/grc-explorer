@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { ch } from '../lib/ch';
+import { query } from '../lib/db';
 import { byBalanceDesc, computeCombined } from '../lib/combined';
 import { ErrorModel } from '../lib/errors';
 import { halford2grc } from '../lib/halford';
@@ -90,63 +90,66 @@ async function enrichCombined(
 //                (single-wallet researcher case), so the page can
 //                show "this address is the wallet for CPID X".
 //   • `wallets` — every OTHER address tied to any of those CPIDs.
-// Two CH round-trips because the second query's IN-list depends on
+// Two round-trips because the second query's IN-list depends on
 // the first; the alternative single-query CTE has poorer planner
 // behaviour here.
 async function fetchLinkedWallets(address: string): Promise<LinkedCpidContext> {
-  const cpidsResult = await ch.query({
-    query: `
+  const cpidsResult = await query<{ cpid: string }>(
+    `
       SELECT DISTINCT cpid FROM (
-        SELECT cpid FROM beacons FINAL
-        WHERE address = {addr: String} AND cpid != ''
+        SELECT cpid FROM beacons
+        WHERE address = $addr AND cpid != ''
         UNION ALL
-        SELECT staker_cpid AS cpid FROM blocks FINAL
-        WHERE miner_address = {addr: String}
+        SELECT staker_cpid AS cpid FROM blocks
+        WHERE miner_address = $addr
           AND staker_cpid IS NOT NULL AND staker_cpid != ''
         UNION ALL
-        SELECT cpid FROM mrc_requests FINAL
-        WHERE pay_to_address = {addr: String}
+        SELECT cpid FROM mrc_requests
+        WHERE pay_to_address = $addr
           AND cpid != '' AND block_height IS NOT NULL
       )
     `,
-    query_params: { addr: address },
-    format: 'JSONEachRow',
-  });
-  const cpids = (await cpidsResult.json<{ cpid: string }>()).map((r) => r.cpid);
+    { addr: address },
+  );
+  const cpids = cpidsResult.map((r) => r.cpid);
   if (cpids.length === 0) return { cpids: [], wallets: [] };
 
-  const linkedResult = await ch.query({
-    query: `
+  const rows = await query<{
+    cpid: string; address: string;
+    beacon_count: number; staked_blocks: number; mrc_payouts: number;
+    first_height: number; last_height: number;
+  }>(
+    `
       SELECT
         cpid,
         address,
-        toUInt32(sumIf(c, source = 'beacon')) AS beacon_count,
-        toUInt32(sumIf(c, source = 'staked')) AS staked_blocks,
-        toUInt32(sumIf(c, source = 'mrc'))    AS mrc_payouts,
-        toUInt32(min(first_h))                AS first_height,
-        toUInt32(max(last_h))                 AS last_height
+        CAST(sum(c) FILTER (WHERE source = 'beacon') AS UINTEGER) AS beacon_count,
+        CAST(sum(c) FILTER (WHERE source = 'staked') AS UINTEGER) AS staked_blocks,
+        CAST(sum(c) FILTER (WHERE source = 'mrc')    AS UINTEGER) AS mrc_payouts,
+        CAST(min(first_h) AS UINTEGER)                AS first_height,
+        CAST(max(last_h) AS UINTEGER)                 AS last_height
       FROM (
-        SELECT cpid, address, count() AS c, 'beacon' AS source,
+        SELECT cpid, address, count(*) AS c, 'beacon' AS source,
                min(block_height) AS first_h, max(block_height) AS last_h
-        FROM beacons FINAL
-        WHERE cpid IN ({cpids: Array(String)})
-          AND address != '' AND address != {addr: String}
+        FROM beacons
+        WHERE cpid = ANY($cpids)
+          AND address != '' AND address != $addr
         GROUP BY cpid, address
         UNION ALL
-        SELECT staker_cpid AS cpid, miner_address AS address, count() AS c, 'staked' AS source,
+        SELECT staker_cpid AS cpid, miner_address AS address, count(*) AS c, 'staked' AS source,
                min(height) AS first_h, max(height) AS last_h
-        FROM blocks FINAL
-        WHERE staker_cpid IN ({cpids: Array(String)})
+        FROM blocks
+        WHERE staker_cpid = ANY($cpids)
           AND miner_address IS NOT NULL AND miner_address != ''
-          AND miner_address != {addr: String}
+          AND miner_address != $addr
         GROUP BY staker_cpid, miner_address
         UNION ALL
-        SELECT cpid, pay_to_address AS address, count() AS c, 'mrc' AS source,
+        SELECT cpid, pay_to_address AS address, count(*) AS c, 'mrc' AS source,
                min(block_height) AS first_h, max(block_height) AS last_h
-        FROM mrc_requests FINAL
-        WHERE cpid IN ({cpids: Array(String)})
+        FROM mrc_requests
+        WHERE cpid = ANY($cpids)
           AND pay_to_address IS NOT NULL AND pay_to_address != ''
-          AND pay_to_address != {addr: String}
+          AND pay_to_address != $addr
           AND block_height IS NOT NULL
         GROUP BY cpid, pay_to_address
       )
@@ -154,14 +157,8 @@ async function fetchLinkedWallets(address: string): Promise<LinkedCpidContext> {
       ORDER BY beacon_count DESC, staked_blocks DESC, mrc_payouts DESC, last_height DESC
       LIMIT 100
     `,
-    query_params: { cpids, addr: address },
-    format: 'JSONEachRow',
-  });
-  const rows = await linkedResult.json<{
-    cpid: string; address: string;
-    beacon_count: number; staked_blocks: number; mrc_payouts: number;
-    first_height: number; last_height: number;
-  }>();
+    { cpids, addr: address },
+  );
   return {
     cpids,
     wallets: rows.map((r) => ({
@@ -178,7 +175,7 @@ async function fetchLinkedWallets(address: string): Promise<LinkedCpidContext> {
 
 // Presenter expects the legacy snake_case shape produced by the old
 // MySQL `addresses` row. Map our Redis WalletState onto that shape.
-// `firstSeenTime` / `lastSeenTime` are looked up from CH `blocks` by
+// `firstSeenTime` / `lastSeenTime` are looked up from `blocks` by
 // the detail handler — pass null when not relevant (rich list, stubs).
 function presentWallet(
   w: WalletState,
@@ -229,24 +226,22 @@ addressesRouter.get('/', async (req: Request, res: Response) => {
   // Cross-link each rich-list wallet to its researcher CPID when the
   // address registered a beacon (the canonical "this address belongs
   // to CPID X" signal). One bounded query for the page's ≤100
-  // addresses. No FINAL: argMax(cpid, block_height) takes the latest
-  // beacon's CPID and keeps this off the merge path so the otherwise
-  // Redis-only rich list stays fast.
+  // addresses. arg_max(cpid, block_height) takes the latest beacon's
+  // CPID, keeping the otherwise Redis-only rich list fast.
   const cpidByAddr = new Map<string, string>();
   const addrs = wallets.map((w) => w.address);
   if (addrs.length > 0) {
     try {
-      const r = await ch.query({
-        query: `
-          SELECT address, argMax(cpid, block_height) AS latest_cpid
+      const r = await query<{ address: string; latest_cpid: string }>(
+        `
+          SELECT address, arg_max(cpid, block_height) AS latest_cpid
           FROM beacons
-          WHERE address IN ({addrs: Array(String)}) AND cpid != ''
+          WHERE address = ANY($addrs) AND cpid != ''
           GROUP BY address
         `,
-        query_params: { addrs },
-        format: 'JSONEachRow',
-      });
-      for (const row of await r.json<{ address: string; latest_cpid: string }>()) {
+        { addrs },
+      );
+      for (const row of r) {
         if (row.latest_cpid) cpidByAddr.set(row.address, row.latest_cpid);
       }
     } catch {
@@ -275,24 +270,22 @@ addressesRouter.get('/:address', async (req: Request, res: Response) => {
       });
       return;
     }
-    const histResult = await ch.query({
-      query: `
-        SELECT
-          toString(sum(delta))    AS bal,
-          toString(sum(received)) AS total_received,
-          toString(sum(sent))     AS total_sent,
-          sum(tx_count_delta)     AS tx_count,
-          max(valid_from_height)  AS last_seen
-        FROM address_balance_history FINAL
-        WHERE address = {addr: String} AND valid_from_height <= {h: UInt32}
-      `,
-      query_params: { addr: address, h: atHeight },
-      format: 'JSONEachRow',
-    });
-    const histRows = await histResult.json<{
+    const histRows = await query<{
       bal: string; total_received: string; total_sent: string;
       tx_count: number; last_seen: number;
-    }>();
+    }>(
+      `
+        SELECT
+          CAST(sum(delta) AS VARCHAR)    AS bal,
+          CAST(sum(received) AS VARCHAR) AS total_received,
+          CAST(sum(sent) AS VARCHAR)     AS total_sent,
+          sum(tx_count_delta)            AS tx_count,
+          max(valid_from_height)         AS last_seen
+        FROM address_balance_history
+        WHERE address = $addr AND valid_from_height <= $h
+      `,
+      { addr: address, h: atHeight },
+    );
     if (histRows.length === 0 || histRows[0].last_seen === 0) {
       res.status(StatusCodes.NOT_FOUND).send({
         errors: [new ErrorModel(StatusCodes.NOT_FOUND, 'Address not seen at that moment')],
@@ -324,12 +317,11 @@ addressesRouter.get('/:address', async (req: Request, res: Response) => {
     // address links 404. If the address is registered as a beacon,
     // render a zero-stub so the page resolves with empty totals plus
     // the beacon table the page already pulls separately.
-    const beaconRows = await ch.query({
-      query: 'SELECT 1 FROM beacons FINAL WHERE address = {addr: String} LIMIT 1',
-      query_params: { addr: address },
-      format: 'JSONEachRow',
-    });
-    const isBeaconAddress = (await beaconRows.json<{ '1': number }>()).length > 0;
+    const beaconRows = await query<{ '1': number }>(
+      'SELECT 1 FROM beacons WHERE address = $addr LIMIT 1',
+      { addr: address },
+    );
+    const isBeaconAddress = beaconRows.length > 0;
     if (!isBeaconAddress) {
       res.status(StatusCodes.NOT_FOUND).send({
         errors: [new ErrorModel(StatusCodes.NOT_FOUND, 'Address not found')],
@@ -366,25 +358,23 @@ addressesRouter.get('/:address', async (req: Request, res: Response) => {
   // Pending balance + linked-wallets + seen-block times in parallel —
   // all three are extra attributes on the same response, none depend
   // on each other.
-  const [pendingResult, linkedContext, seenTimes, supplyRaw] = await Promise.all([
-    ch.query({
-      query: `
-        SELECT toString(sum(o.value)) AS pending
-        FROM tx_outputs AS o FINAL
-        WHERE o.address = {addr: String}
+  const [pendingRows, linkedContext, seenTimes, supplyRaw] = await Promise.all([
+    query<{ pending: string | null }>(
+      `
+        SELECT CAST(sum(o.value) AS VARCHAR) AS pending
+        FROM tx_outputs AS o
+        WHERE o.address = $addr
           AND o.tx_id IN (
-            SELECT tx_id FROM mempool_txs FINAL
+            SELECT tx_id FROM mempool_txs
             WHERE confirmed_at IS NULL AND evicted_at IS NULL
           )
       `,
-      query_params: { addr: address },
-      format: 'JSONEachRow',
-    }),
+      { addr: address },
+    ),
     fetchLinkedWallets(address),
     fetchSeenTimes(wallet.firstSeenBlock, wallet.lastSeenBlock),
     getMoneySupplyRaw(),
   ]);
-  const pendingRows = await pendingResult.json<{ pending: string | null }>();
   const pendingSum = pendingRows[0]?.pending && pendingRows[0].pending !== '0'
     ? BigInt(pendingRows[0].pending)
     : null;
@@ -408,66 +398,45 @@ addressesRouter.get('/:address/transactions', async (req: Request, res: Response
   const { offset, limit } = getPagination(req);
 
   const cap = atHeight !== null && at !== undefined
-    ? 'AND block_height <= {h: UInt32}'
+    ? 'AND block_height <= $h'
     : '';
   // Paginate movements first, then JOIN transactions for time on the
   // page-sized result — pushes LIMIT/OFFSET past the union+group and
   // avoids a follow-up `tx_id IN (...)` round trip just to fetch times.
-  // No FINAL anywhere (it defeats PK/skip-index pruning and forces a
-  // merge scan — same rule as 0027-0031):
-  //   - tx_outputs is ORDER BY (address, ...) so `WHERE address` is a
-  //     tight PK range once FINAL is gone;
-  //   - tx_inputs has an address bloom that prunes;
-  //   - the per-row ReplacingMergeTree dup is collapsed with
-  //     `_seq DESC LIMIT 1 BY <logical key>` BEFORE summing (a naive
-  //     no-FINAL sum would double-count un-merged dup rows);
-  //   - the time join was `SELECT tx_id,time FROM transactions FINAL`
-  //     with NO predicate — a full ~25M-row table dedup to decorate a
-  //     25-row page (measured 25.2M rows / 2.35 GiB). Bound it to the
-  //     page's tx_ids (the `m` CTE) so the transactions tx_id bloom
-  //     prunes to those rows; argMax(time,_seq) reproduces FINAL.
-  const query = `
+  // tx_outputs/tx_inputs are keyed by their PKs (one row per logical
+  // (tx_id, vout_n/vin_n) via upsert), so no dedup is needed; the time
+  // join is bounded to the page's tx_ids (the `m` CTE) so it stays a
+  // point lookup against transactions (PK tx_id) rather than a full scan.
+  const sql = `
     WITH m AS (
       SELECT tx_id, max(block_height) AS height, sum(delta) AS delta_sum
       FROM (
-        SELECT tx_id, block_height, toInt64(value) AS delta
-        FROM (
-          SELECT tx_id, vout_n, block_height, value
-          FROM tx_outputs
-          WHERE address = {addr: String} ${cap}
-          ORDER BY _seq DESC
-          LIMIT 1 BY tx_id, vout_n
-        )
+        SELECT tx_id, block_height, CAST(value AS BIGINT) AS delta
+        FROM tx_outputs
+        WHERE address = $addr ${cap}
         UNION ALL
-        SELECT tx_id, block_height, -toInt64(coalesce(value, 0)) AS delta
-        FROM (
-          SELECT tx_id, vin_n, block_height, value
-          FROM tx_inputs
-          WHERE address = {addr: String} ${cap}
-          ORDER BY _seq DESC
-          LIMIT 1 BY tx_id, vin_n
-        )
+        SELECT tx_id, block_height, -CAST(coalesce(value, 0) AS BIGINT) AS delta
+        FROM tx_inputs
+        WHERE address = $addr ${cap}
       ) AS movements
       GROUP BY tx_id
       ORDER BY height DESC, tx_id
-      LIMIT {limit: UInt32} OFFSET {offset: UInt32}
+      LIMIT ${Number(limit)} OFFSET ${Number(offset)}
     )
-    SELECT m.tx_id AS tx_id, m.height AS height, toUnixTimestamp(t.time) AS ts, m.delta_sum AS delta_sum
+    SELECT m.tx_id AS tx_id, m.height AS height, CAST(epoch(t.time) AS BIGINT) AS ts, m.delta_sum AS delta_sum
     FROM m
-    ANY LEFT JOIN (
-      SELECT tx_id, argMax(time, _seq) AS time
+    LEFT JOIN (
+      SELECT tx_id, time
       FROM transactions
       WHERE tx_id IN (SELECT tx_id FROM m)
-      GROUP BY tx_id
     ) AS t USING (tx_id)
     ORDER BY m.height DESC, m.tx_id
   `;
-  const params: Record<string, unknown> = { addr: address, limit, offset };
+  const params: Record<string, unknown> = { addr: address };
   if (atHeight !== null && at !== undefined) params.h = atHeight;
-  const result = await ch.query({ query, query_params: params, format: 'JSONEachRow' });
-  const rows = await result.json<{
+  const rows = await query<{
     tx_id: string; height: number; ts: number; delta_sum: string;
-  }>();
+  }>(sql, params);
 
   const timesByTx = new Map<string, number>();
   for (const r of rows) timesByTx.set(r.tx_id, r.ts);
@@ -496,57 +465,49 @@ addressesRouter.get('/:address/utxos', async (req: Request, res: Response) => {
 
   // The spent lookup is bounded to the tx_inputs rows whose prev_tx is
   // one of THIS address's output txs (`prev_tx IN (SELECT tx_id ...)`),
-  // served by tx_inputs.proj_by_prevout (prev_tx, prev_vout); the
-  // address CTE is a primary-key range scan (tx_outputs is sorted by
-  // address …). Critically, NEITHER side uses `FINAL`: ClickHouse
-  // can't serve a FINAL query from a projection / can't prune a
-  // FINAL scan, so FINAL would full-scan and ignore the projection.
-  // Instead read without FINAL and dedup the ReplacingMergeTree
-  // versions in-query via `ORDER BY _seq DESC LIMIT 1 BY <key>` (keep
-  // the highest version per logical row — exactly FINAL's result on
-  // these small sets; verified byte-identical). See migrations
-  // 0028/0029 and the matching tx-detail rewrite.
+  // served by idx_tx_inputs_prevout (prev_tx, prev_vout); the address
+  // CTE is an indexed range scan on tx_outputs (idx_tx_outputs_address).
   //
   // Time-machine mode: outputs created at-or-before H (applied in the
   // CTE) whose spending input doesn't exist yet OR landed after H (i.e.
   // still unspent at H). Live mode just drops spent UTXOs via the
-  // empty-FixedString sentinel from the LEFT-JOIN miss. Semantics are
-  // identical to the previous unbounded join.
-  const outHeightFilter = isAt ? 'AND block_height <= {h: UInt32}' : '';
+  // s.tx_id IS NULL LEFT-JOIN miss.
+  const outHeightFilter = isAt ? 'AND block_height <= $h' : '';
+  // DuckDB LEFT JOIN misses yield NULL (unlike CH, which fills the
+  // column type's default — '' for a String). So "unspent" is the
+  // s.tx_id IS NULL case here, not s.tx_id = ''.
   const spentWhere = isAt
-    ? "(s.tx_id = '' OR s.block_height > {h: UInt32})"
-    : "s.tx_id = ''";
+    ? '(s.tx_id IS NULL OR s.block_height > $h)'
+    : 's.tx_id IS NULL';
   const params: Record<string, unknown> = { addr: address };
   if (isAt) params.h = atHeight;
-  const result = await ch.query({
-    query: `
+  const rows = await query<{
+    tx_id: string; vout_n: number; value: string; address: string;
+    script_type: string; script_hex: string;
+  }>(
+    `
       WITH addr_outs AS (
         SELECT tx_id, vout_n, value, address, script_type, script_hex
         FROM tx_outputs
-        WHERE address = {addr: String} ${outHeightFilter}
-        ORDER BY _seq DESC
-        LIMIT 1 BY tx_id, vout_n
+        WHERE address = $addr ${outHeightFilter}
       )
-      SELECT o.tx_id AS tx_id, o.vout_n AS vout_n, toString(o.value) AS value,
+      SELECT o.tx_id AS tx_id, o.vout_n AS vout_n, CAST(o.value AS VARCHAR) AS value,
              o.address AS address, o.script_type AS script_type, o.script_hex AS script_hex
       FROM addr_outs AS o
-      ANY LEFT JOIN (
-        SELECT prev_tx, prev_vout, tx_id, block_height
+      LEFT JOIN (
+        -- DISTINCT ON collapses the rare phantom multi-spend (Halford-era
+        -- coinstakes re-claiming one UTXO) to one spend row per outpoint,
+        -- replicating CH's ANY LEFT JOIN + LIMIT 1 BY (prev_tx, prev_vout).
+        SELECT DISTINCT ON (prev_tx, prev_vout) prev_tx, prev_vout, tx_id, block_height
         FROM tx_inputs
         WHERE prev_tx IN (SELECT tx_id FROM addr_outs)
-        ORDER BY _seq DESC
-        LIMIT 1 BY prev_tx, prev_vout
+        ORDER BY prev_tx, prev_vout, block_height
       ) AS s ON s.prev_tx = o.tx_id AND s.prev_vout = o.vout_n
       WHERE ${spentWhere}
       ORDER BY o.tx_id, o.vout_n
     `,
-    query_params: params,
-    format: 'JSONEachRow',
-  });
-  const rows = await result.json<{
-    tx_id: string; vout_n: number; value: string; address: string;
-    script_type: string; script_hex: string;
-  }>();
+    params,
+  );
 
   const body = {
     data: rows.map((r) => ({
@@ -581,12 +542,12 @@ addressesRouter.get('/:address/balance-history', async (req: Request, res: Respo
   // clause re-derives running_balance up to each row's height. Bounded
   // by the [from, to] window so we don't have to scan the full
   // address history every call.
-  const result = await ch.query({
-    query: `
+  const rows = await query<{ height: number; ts: number; balance: string }>(
+    `
       SELECT
         valid_from_height AS height,
-        toUnixTimestamp(valid_from_time) AS ts,
-        toString(running_balance) AS balance
+        CAST(epoch(valid_from_time) AS BIGINT) AS ts,
+        CAST(running_balance AS VARCHAR) AS balance
       FROM (
         SELECT
           valid_from_height,
@@ -595,17 +556,15 @@ addressesRouter.get('/:address/balance-history', async (req: Request, res: Respo
             PARTITION BY address ORDER BY valid_from_height
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
           ) AS running_balance
-        FROM address_balance_history FINAL
-        WHERE address = {addr: String}
+        FROM address_balance_history
+        WHERE address = $addr
       )
-      WHERE valid_from_time >= toDateTime({from: UInt32})
-        AND valid_from_time <= toDateTime({to: UInt32})
+      WHERE valid_from_time >= make_timestamp($from::BIGINT * 1000000)
+        AND valid_from_time <= make_timestamp($to::BIGINT * 1000000)
       ORDER BY valid_from_height ASC
     `,
-    query_params: { addr: address, from: fromTs, to: toTs },
-    format: 'JSONEachRow',
-  });
-  const rows = await result.json<{ height: number; ts: number; balance: string }>();
+    { addr: address, from: fromTs, to: toTs },
+  );
 
   type Point = { height: number; ts: number; balance: string };
   let points: Point[] = rows.map((r) => ({

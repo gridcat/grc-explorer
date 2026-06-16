@@ -1,8 +1,15 @@
 import './lib/bigintJson';
 import { config } from './config';
+import { closeDb, rebuildSecondaryIndexes } from './lib/db';
 import { waitForRpc } from './lib/gridcoin';
 import { log } from './lib/log';
+import {
+  clearIndexRebuildNeeded,
+  closeRedis,
+  isIndexRebuildNeeded,
+} from './lib/redis';
 import { schedule } from './lib/schedule';
+import { installSignalHandlers, onShutdown } from './lib/shutdown';
 import { publishToRedis, subscribeFromRedis } from './lib/fanout';
 import { ChainReorgHandler } from './services/indexer/ChainReorgHandler';
 import { HistoricalBackfiller } from './services/indexer/HistoricalBackfiller';
@@ -21,12 +28,32 @@ import { MeiliIndexer } from './services/search/MeiliIndexer';
 //     block's contracts as it indexes.
 //   - MeiliReindexJob → MeiliIndexer alone consumes the queue; the
 //     dirty-sentinel / forced-rebuild flow can come back if needed.
+import { adminWatcherTick } from './services/admin/adminWatcher';
 import { EventsService } from './services/sse/EventsService';
 import { startApi } from './api';
+
+// If a prior run died on a fatal DuckDB index corruption it set this flag
+// before exiting. The dangling ART-index entries are persisted on disk, so
+// resuming the indexer now would just re-fatal on the next range delete.
+// Rebuild every non-unique secondary index (DROP + CREATE rebuilds it clean
+// from the table rows) before any tick runs, then clear the flag. We rebuild
+// all of them, not just the chain-height tables, so a fatal originating in
+// any indexed table (e.g. the network_snapshots prune) is healed too — it's
+// a one-time cost paid only after an actual corruption event. No-op on a
+// healthy boot. Indexer-role only — the api role never writes, so it can't
+// fatal.
+async function repairIndexesIfNeeded(): Promise<void> {
+  if (!(await isIndexRebuildNeeded())) return;
+  log.warn('Index-rebuild flag set by a prior fatal DB error; rebuilding secondary indexes before resuming');
+  const rebuilt = await rebuildSecondaryIndexes();
+  await clearIndexRebuildNeeded();
+  log.info(`Rebuilt ${rebuilt.length} secondary index(es): ${rebuilt.join(', ') || '(none)'}`);
+}
 
 async function bootIndexer(): Promise<void> {
   log.info(`Booting indexer (network=${config.NETWORK})`);
   await waitForRpc();
+  await repairIndexesIfNeeded();
 
   // Mirror every locally emitted event onto Redis pub/sub so api
   // replicas can fan it out to their SSE clients. Skip in role=all —
@@ -92,6 +119,16 @@ async function bootIndexer(): Promise<void> {
   const cluster = new AddressClusterJob();
   schedule(60 * 60_000, () => cluster.tick(), 'AddressCluster');
 
+  // In-process admin-task executor. DuckDB is single-writer, so wipe /
+  // boinc-fetch / rebuild-wallets can't run as separate processes while
+  // this one holds the file — they're enqueued (npm run admin -- …) and
+  // executed here on our own connection. Single-flight via schedule(), so
+  // a long wipe never overlaps its own next poll. 15s idle cadence: the
+  // operator isn't latency-sensitive and the requester waits up to 30s
+  // for a claim, so this stays well inside that window while idle-polling
+  // Redis only ~4×/min on a deliberately resource-tight box.
+  schedule(15_000, () => adminWatcherTick(), 'AdminWatcher');
+
   // Meili drainer — long-running consumer over the meili:queue Redis
   // stream that BlockWriter.runPostCommit feeds. Doesn't fit setInterval;
   // it idles cheaply via XREAD BLOCK when the queue is empty.
@@ -110,7 +147,12 @@ async function bootApi(): Promise<void> {
   if (config.ROLE !== 'all') {
     await subscribeFromRedis();
   }
-  startApi();
+  const server = startApi();
+  if (server) {
+    // Stop accepting connections on shutdown so the process can exit
+    // cleanly instead of being SIGKILLed with sockets still open.
+    onShutdown(() => new Promise<void>((resolve) => { server.close(() => resolve()); }));
+  }
 }
 
 async function main(): Promise<void> {
@@ -118,6 +160,14 @@ async function main(): Promise<void> {
     log.info('NODE_ENV=testing — skipping background workers');
     return;
   }
+
+  // Graceful shutdown: catch SIGTERM/SIGINT, drain in-flight ticks, then
+  // tear down in dependency order — DuckDB first (CHECKPOINT flushes the
+  // WAL so the next open is clean), Redis last. Registered before booting
+  // so a signal during startup is still handled.
+  installSignalHandlers();
+  onShutdown(closeDb);
+  onShutdown(closeRedis);
 
   if (config.ROLE === 'api' || config.ROLE === 'all') {
     await bootApi();
