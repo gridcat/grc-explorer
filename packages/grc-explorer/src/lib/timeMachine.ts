@@ -1,5 +1,5 @@
 import { Request } from 'express';
-import { ch } from './ch';
+import { query } from './db';
 
 /**
  * Parse a unix-seconds query parameter. The whole time-machine surface
@@ -35,24 +35,15 @@ export function parseAt(req: Request): number | undefined {
  */
 export async function resolveAtHeight(at: number | undefined): Promise<number | null> {
   if (at === undefined) {
-    const result = await ch.query({
-      // No FINAL: it disables PK/skip-index pruning. Keeping the
-      // ORDER BY ... LIMIT 1 shape preserves empty-table -> null, and
-      // only `height` is read — identical across any un-merged
-      // duplicate rows of a block.
-      query: 'SELECT height FROM blocks ORDER BY height DESC LIMIT 1',
-      format: 'JSONEachRow',
-    });
-    const rows = await result.json<{ height: number }>();
+    const rows = await query<{ height: number }>(
+      'SELECT height FROM blocks ORDER BY height DESC LIMIT 1',
+    );
     return rows[0]?.height ?? null;
   }
-  const result = await ch.query({
-    // No FINAL so the idx_blocks_time minmax index prunes `time <= X`.
-    query: 'SELECT height FROM blocks WHERE time <= toDateTime({at: UInt32}) ORDER BY height DESC LIMIT 1',
-    query_params: { at },
-    format: 'JSONEachRow',
-  });
-  const rows = await result.json<{ height: number }>();
+  const rows = await query<{ height: number }>(
+    'SELECT height FROM blocks WHERE time <= make_timestamp($at::BIGINT * 1000000) ORDER BY height DESC LIMIT 1',
+    { at },
+  );
   return rows[0]?.height ?? null;
 }
 
@@ -70,22 +61,18 @@ export async function resolveAtHeight(at: number | undefined): Promise<number | 
  */
 export async function resolveAtSuperblockHeight(at: number | undefined): Promise<number | null> {
   if (at === undefined) {
-    const result = await ch.query({
-      query: 'SELECT height FROM superblocks FINAL ORDER BY height DESC LIMIT 1',
-      format: 'JSONEachRow',
-    });
-    return (await result.json<{ height: number }>())[0]?.height ?? null;
+    const rows = await query<{ height: number }>(
+      'SELECT height FROM superblocks ORDER BY height DESC LIMIT 1',
+    );
+    return rows[0]?.height ?? null;
   }
-  const result = await ch.query({
-    // No FINAL so idx_blocks_time prunes `time <= X`; `height` is the
-    // only column read and is stable across un-merged duplicates.
-    query: `
+  const rows = await query<{ height: number }>(
+    `
       SELECT height FROM blocks
-      WHERE is_superblock = true AND time <= toDateTime({at: UInt32})
+      WHERE is_superblock = true AND time <= make_timestamp($at::BIGINT * 1000000)
       ORDER BY height DESC LIMIT 1
     `,
-    query_params: { at },
-    format: 'JSONEachRow',
-  });
-  return (await result.json<{ height: number }>())[0]?.height ?? null;
+    { at },
+  );
+  return rows[0]?.height ?? null;
 }

@@ -1,0 +1,15 @@
+-- Drop the non-unique secondary index on votes(poll_id).
+--
+-- DuckDB (v1.5.3) mis-maintains non-unique secondary ART indexes under
+-- the row-UPDATE path. A row UPDATE is internally a delete+insert that
+-- re-maintains every index on the table; on a very low-cardinality index
+-- like this one (hundreds of votes share a single poll_id) that
+-- eventually throws "Failed to delete all rows from index", which fatally
+-- invalidates the whole DuckDB connection.
+--
+-- The backfill no longer UPDATEs votes (it writes ON CONFLICT DO NOTHING,
+-- see BlockWriter), but PollWeightAggregator still UPDATEs vote weights in
+-- place per poll, which would keep churning this index. `votes` is a
+-- small table, so the per-poll lookup (WHERE poll_id = ?) used by the poll
+-- detail page and the weight aggregator is served by a scan instead.
+DROP INDEX IF EXISTS idx_votes_poll;

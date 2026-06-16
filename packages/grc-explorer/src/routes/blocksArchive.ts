@@ -1,6 +1,8 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { ch } from '../lib/ch';
+import { query } from '../lib/db';
+import { blockUserActivity } from '../lib/blockAggregates';
+import { cpidDisplayName, resolveCpidNames } from '../lib/cpidNames';
 import { ErrorModel } from '../lib/errors';
 import { halford2grc } from '../lib/halford';
 import { param } from '../lib/req';
@@ -72,8 +74,8 @@ function badParam(res: Response, msg: string): void {
 // render a single PeriodStatRow component everywhere.
 async function periodStats(whereSql: string, queryParams: Record<string, unknown>) {
   const [blocksAgg, txsAgg] = await Promise.all([
-    ch.query({
-      query: `
+    query<DailyRow>(
+      `
         SELECT
           sum(block_count)      AS block_count,
           sum(tx_count)         AS tx_count,
@@ -84,21 +86,19 @@ async function periodStats(whereSql: string, queryParams: Record<string, unknown
         FROM archive_blocks_daily
         WHERE ${whereSql}
       `,
-      query_params: queryParams,
-      format: 'JSONEachRow',
-    }).then((r) => r.json<DailyRow>()),
-    ch.query({
-      query: `
+      queryParams,
+    ),
+    query<TxDailyRow>(
+      `
         SELECT
           sum(value_moved)   AS value_moved,
           sum(fee_total)     AS fee_total,
           sum(user_tx_count) AS user_tx_count
         FROM archive_txs_daily
-        WHERE ${whereSql.replace(/archive_blocks_daily/g, 'archive_txs_daily')}
+        WHERE ${whereSql}
       `,
-      query_params: queryParams,
-      format: 'JSONEachRow',
-    }).then((r) => r.json<TxDailyRow>()),
+      queryParams,
+    ),
   ]);
   const b = blocksAgg[0] ?? {};
   const t = txsAgg[0] ?? {};
@@ -122,10 +122,13 @@ async function periodStats(whereSql: string, queryParams: Record<string, unknown
  */
 blocksArchiveRouter.get('/years', async (_req: Request, res: Response) => {
   const [blocks, txs] = await Promise.all([
-    ch.query({
-      query: `
+    query<{
+      year: number; block_count: string; tx_count: string;
+      mint_total: string; superblock_count: string;
+    }>(
+      `
         SELECT
-          toYear(bucket_date)   AS year,
+          year(bucket_date)     AS year,
           sum(block_count)      AS block_count,
           sum(tx_count)         AS tx_count,
           sum(mint_total)       AS mint_total,
@@ -134,24 +137,19 @@ blocksArchiveRouter.get('/years', async (_req: Request, res: Response) => {
         GROUP BY year
         ORDER BY year DESC
       `,
-      format: 'JSONEachRow',
-    }).then((r) => r.json<{
-      year: number; block_count: string; tx_count: string;
-      mint_total: string; superblock_count: string;
-    }>()),
-    ch.query({
-      query: `
+    ),
+    query<{
+      year: number; value_moved: string; fee_total: string;
+    }>(
+      `
         SELECT
-          toYear(bucket_date) AS year,
+          year(bucket_date)   AS year,
           sum(value_moved)    AS value_moved,
           sum(fee_total)      AS fee_total
         FROM archive_txs_daily
         GROUP BY year
       `,
-      format: 'JSONEachRow',
-    }).then((r) => r.json<{
-      year: number; value_moved: string; fee_total: string;
-    }>()),
+    ),
   ]);
 
   // Index the tx aggregate by year so the merge is O(N) instead of O(N²).
@@ -187,39 +185,37 @@ blocksArchiveRouter.get('/:year', async (req: Request, res: Response) => {
   if (!isYearShape(year)) { badParam(res, `year must be 2009-2099, got ${year}`); return; }
 
   const [stats, monthsBlocks, monthsTxs] = await Promise.all([
-    periodStats('toYear(bucket_date) = {year:UInt16}', { year }),
-    ch.query({
-      query: `
+    periodStats('year(bucket_date) = $year', { year }),
+    query<{
+      month: number; block_count: string; tx_count: string;
+      mint_total: string; superblock_count: string;
+    }>(
+      `
         SELECT
-          toMonth(bucket_date)  AS month,
+          month(bucket_date)    AS month,
           sum(block_count)      AS block_count,
           sum(tx_count)         AS tx_count,
           sum(mint_total)       AS mint_total,
           sum(superblock_count) AS superblock_count
         FROM archive_blocks_daily
-        WHERE toYear(bucket_date) = {year:UInt16}
+        WHERE year(bucket_date) = $year
         GROUP BY month
         ORDER BY month ASC
       `,
-      query_params: { year },
-      format: 'JSONEachRow',
-    }).then((r) => r.json<{
-      month: number; block_count: string; tx_count: string;
-      mint_total: string; superblock_count: string;
-    }>()),
-    ch.query({
-      query: `
+      { year },
+    ),
+    query<{ month: number; value_moved: string; fee_total: string }>(
+      `
         SELECT
-          toMonth(bucket_date) AS month,
+          month(bucket_date)   AS month,
           sum(value_moved)     AS value_moved,
           sum(fee_total)       AS fee_total
         FROM archive_txs_daily
-        WHERE toYear(bucket_date) = {year:UInt16}
+        WHERE year(bucket_date) = $year
         GROUP BY month
       `,
-      query_params: { year },
-      format: 'JSONEachRow',
-    }).then((r) => r.json<{ month: number; value_moved: string; fee_total: string }>()),
+      { year },
+    ),
   ]);
 
   // Empty periods used to 404 here; now we return zero-stats so the
@@ -261,15 +257,18 @@ blocksArchiveRouter.get('/:year/:month', async (req: Request, res: Response) => 
   if (!isYearShape(year)) { badParam(res, `year must be 2009-2099, got ${year}`); return; }
   if (!isMonthShape(month)) { badParam(res, `month must be 1-12, got ${month}`); return; }
 
-  const where = 'toYear(bucket_date) = {year:UInt16} AND toMonth(bucket_date) = {month:UInt8}';
+  const where = 'year(bucket_date) = $year AND month(bucket_date) = $month';
   const queryParams = { year, month };
 
   const [stats, daysBlocks, daysTxs] = await Promise.all([
     periodStats(where, queryParams),
-    ch.query({
-      query: `
+    query<{
+      day: number; block_count: string; tx_count: string;
+      mint_total: string; superblock_count: string;
+    }>(
+      `
         SELECT
-          toDayOfMonth(bucket_date) AS day,
+          day(bucket_date) AS day,
           block_count,
           tx_count,
           mint_total,
@@ -278,24 +277,19 @@ blocksArchiveRouter.get('/:year/:month', async (req: Request, res: Response) => 
         WHERE ${where}
         ORDER BY day ASC
       `,
-      query_params: queryParams,
-      format: 'JSONEachRow',
-    }).then((r) => r.json<{
-      day: number; block_count: string; tx_count: string;
-      mint_total: string; superblock_count: string;
-    }>()),
-    ch.query({
-      query: `
+      queryParams,
+    ),
+    query<{ day: number; value_moved: string; fee_total: string }>(
+      `
         SELECT
-          toDayOfMonth(bucket_date) AS day,
+          day(bucket_date) AS day,
           value_moved,
           fee_total
         FROM archive_txs_daily
         WHERE ${where}
       `,
-      query_params: queryParams,
-      format: 'JSONEachRow',
-    }).then((r) => r.json<{ day: number; value_moved: string; fee_total: string }>()),
+      queryParams,
+    ),
   ]);
 
   const txByDay = new Map<number, { value_moved: string; fee_total: string }>();
@@ -354,54 +348,73 @@ blocksArchiveRouter.get('/:year/:month/:day', async (req: Request, res: Response
   const dayStart = Math.floor(dt.getTime() / 1000);
   const dayEnd = dayStart + 86400;
 
-  const query = req.query as Record<string, unknown>;
-  const page = (query.page ?? {}) as Record<string, string | undefined>;
+  const reqQuery = req.query as Record<string, unknown>;
+  const page = (reqQuery.page ?? {}) as Record<string, string | undefined>;
   let pageSize = parseInt(page.size ?? '', 10) || DAY_PAGE_SIZE;
   if (pageSize > DAY_PAGE_MAX) pageSize = DAY_PAGE_MAX;
   if (pageSize < 1) pageSize = DAY_PAGE_SIZE;
   const pageNumber = Math.max(1, parseInt(page.number ?? '', 10) || 1);
   const offset = (pageNumber - 1) * pageSize;
 
-  const where = 'bucket_date = toDate({iso:String})';
-  const blockWhere = 'time >= toDateTime({start:UInt32}) AND time < toDateTime({end:UInt32})';
+  const where = 'bucket_date = $iso::DATE';
+  const blockWhere = 'b.time >= make_timestamp($start::BIGINT * 1000000) AND b.time < make_timestamp($end::BIGINT * 1000000)';
 
   const [stats, rows] = await Promise.all([
     periodStats(where, { iso }),
-    ch.query({
-      query: `
-        SELECT height, hash, time, n_version, size, tx_count, is_pos,
-               miner_address, staker_cpid, is_superblock, mint
-        FROM blocks FINAL
-        WHERE ${blockWhere}
-        ORDER BY height DESC
-        LIMIT {limit:UInt32} OFFSET {offset:UInt32}
-      `,
-      query_params: {
-        start: dayStart, end: dayEnd, limit: pageSize, offset,
-      },
-      format: 'JSONEachRow',
-    }).then((r) => r.json<{
-      height: number; hash: string; time: string;
+    query<{
+      height: number; hash: string; time: number | string;
       n_version: number; size: number; tx_count: number;
       is_pos: boolean; miner_address: string | null;
       staker_cpid: string | null; is_superblock: boolean;
-      mint: string;
-    }>()),
+      mint: string; difficulty: number | string; is_mrc: boolean | number | null;
+    }>(
+      // LEFT JOIN claims for the MRC flag — same shape as the /blocks
+      // list endpoint (claims is PK by block_height, so the join is a
+      // point lookup per row).
+      `
+        SELECT b.height, b.hash, CAST(epoch(b.time) AS BIGINT) AS time, b.n_version, b.size, b.tx_count, b.is_pos,
+               b.miner_address, b.staker_cpid, b.is_superblock, b.mint, b.difficulty, c.is_mrc AS is_mrc
+        FROM blocks AS b
+        LEFT JOIN claims AS c ON c.block_height = b.height
+        WHERE ${blockWhere}
+        ORDER BY b.height DESC
+        LIMIT ${Number(pageSize)} OFFSET ${Number(offset)}
+      `,
+      { start: dayStart, end: dayEnd },
+    ),
   ]);
 
-  const blocks = rows.map((b) => ({
-    height: b.height,
-    hash: b.hash,
-    time: Math.floor(new Date(b.time).getTime() / 1000),
-    version: b.n_version,
-    size: b.size,
-    txCount: b.tx_count,
-    isPos: b.is_pos,
-    minerAddress: b.miner_address,
-    stakerCpid: b.staker_cpid,
-    isSuperblock: b.is_superblock,
-    mintGrc: halford2grc(BigInt(b.mint)),
-  }));
+  // Per-block user activity (value moved / fees) + staker display names,
+  // mirroring the /blocks list endpoint so the archive day table can
+  // render the same columns the home ticker does. Both depend only on
+  // `rows`, so resolve them concurrently.
+  const heights = rows.map((r) => r.height);
+  const [aggMap, stakerNames] = await Promise.all([
+    blockUserActivity(heights),
+    resolveCpidNames(rows.map((r) => r.staker_cpid).filter((c): c is string => !!c)),
+  ]);
+
+  const blocks = rows.map((b) => {
+    const a = aggMap.get(b.height);
+    return {
+      height: b.height,
+      hash: b.hash,
+      time: Number(b.time),
+      version: b.n_version,
+      size: b.size,
+      txCount: b.tx_count,
+      isPos: b.is_pos,
+      isMrc: Boolean(b.is_mrc),
+      minerAddress: b.miner_address,
+      stakerCpid: b.staker_cpid,
+      stakerName: cpidDisplayName(stakerNames, b.staker_cpid),
+      isSuperblock: b.is_superblock,
+      difficulty: b.difficulty,
+      mintGrc: halford2grc(BigInt(b.mint)),
+      valueMoved: halford2grc(BigInt(a?.value_moved ?? '0')),
+      feeTotal: halford2grc(BigInt(a?.fee_total ?? '0')),
+    };
+  });
 
   res.status(StatusCodes.OK).send({
     data: {

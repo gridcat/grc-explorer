@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { ch, hasColumns } from '../lib/ch';
+import { query } from '../lib/db';
 import { ErrorModel } from '../lib/errors';
 import { liveRpc } from '../lib/gridcoin';
 import { grc2halford, halford2grc } from '../lib/halford';
@@ -17,8 +17,6 @@ import { registerParamValidators } from '../lib/validators';
 
 export const transactionsRouter = Router();
 registerParamValidators(transactionsRouter);
-
-const hasInputColumns = () => hasColumns('tx_inputs', ['script_sig_hex', 'sequence']);
 
 // HTLC detection lives in lib/htlc.ts (proper redeemScript opcode
 // parse). The V14 activation gate is applied at the call site.
@@ -78,12 +76,10 @@ transactionsRouter.get('/:tx_id/raw', async (req: Request, res: Response) => {
   try {
     // Single RPC pair — no second pass for the decoded tree if
     // mempool_txs already cached it.
-    const cachedResult = await ch.query({
-      query: 'SELECT raw_json FROM mempool_txs FINAL WHERE tx_id = {tx: String} LIMIT 1',
-      query_params: { tx: txId },
-      format: 'JSONEachRow',
-    });
-    const cachedRows = await cachedResult.json<{ raw_json: string }>();
+    const cachedRows = await query<{ raw_json: string }>(
+      'SELECT raw_json FROM mempool_txs WHERE tx_id = $tx LIMIT 1',
+      { tx: txId },
+    );
     let decoded: unknown = null;
     if (cachedRows[0]?.raw_json) {
       try { decoded = JSON.parse(cachedRows[0].raw_json); } catch { decoded = null; }
@@ -152,95 +148,56 @@ transactionsRouter.get('/:tx_id', async (req: Request, res: Response) => {
 // ---- Tier 1: indexed --------------------------------------------------
 
 async function loadIndexedTx(txId: string): Promise<unknown | null> {
-  const txResult = await ch.query({
-    // No FINAL: it forces the merge path and ignores the tx_id bloom
-    // skip index, turning this point lookup into a ~5M-row scan
-    // (measured). Without FINAL the bloom prunes to a handful of
-    // granules; `ORDER BY _seq DESC LIMIT 1` keeps the canonical
-    // (latest-version) row — exactly FINAL's result for a unique
-    // tx_id. Verified row-identical. Same pattern as 0027-0030.
-    query: 'SELECT * FROM transactions WHERE tx_id = {tx: String} ORDER BY _seq DESC LIMIT 1',
-    query_params: { tx: txId },
-    format: 'JSONEachRow',
-  });
-  const txRows = await txResult.json<TxRow>();
+  // tx_id is the PRIMARY KEY (one row per tx via upsert), so this is a
+  // unique point lookup — no dedup needed.
+  const txRows = await query<TxRow>(
+    'SELECT * FROM transactions WHERE tx_id = $tx LIMIT 1',
+    { tx: txId },
+  );
   if (txRows.length === 0) return null;
   const row = presentTx(txRows[0]);
-  // Column-existence guard for script_sig_hex / sequence — same
-  // pattern as the beacon auth_method route. Migration 0022 adds
-  // these; falling back to defaults if the migrate script hasn't
-  // run yet keeps the tx detail page rendering instead of 500ing.
-  const hasScriptSig = await hasInputColumns();
-  const inputColumns = hasScriptSig
-    ? 'vin_n, prev_tx, prev_vout, address, value, script_sig_hex, sequence'
-    : "vin_n, prev_tx, prev_vout, address, value, '' AS script_sig_hex, toUInt32(4294967295) AS sequence";
   const [vinResult, voutResult, mrcRow, cursor] = await Promise.all([
-    ch.query({
-      // No FINAL: tx_id isn't a leading key (ORDER BY is
-      // block_height, tx_id, vin_n) so this scanned ~13.9M rows with
-      // or without FINAL. Migration 0031 adds an idx_tx_inputs_txid
-      // bloom; dropping FINAL lets it prune, then dedup the
-      // ReplacingMergeTree per vin_n via `_seq DESC LIMIT 1 BY vin_n`
-      // (exactly FINAL's effect for this tx's inputs).
-      query: `
-        SELECT ${inputColumns} FROM (
-          SELECT * FROM tx_inputs
-          WHERE tx_id = {tx: String}
-          ORDER BY _seq DESC
-          LIMIT 1 BY vin_n
-        )
-        ORDER BY vin_n ASC
-      `,
-      query_params: { tx: txId },
-      format: 'JSONEachRow',
-    }).then((r) => r.json<{
+    // Inputs for this tx, keyed by (tx_id, vin_n) PK — a unique point
+    // lookup, ordered for display.
+    query<{
       vin_n: number; prev_tx: string | null; prev_vout: number | null;
       address: string | null; value: string | null;
       script_sig_hex: string; sequence: number;
-    }>()),
-    ch.query({
-      // Every output here belongs to one transaction ({tx}), so its
-      // spends are exactly the tx_inputs rows with prev_tx = {tx}.
-      // Both sides are point lookups, but they must NOT use `FINAL`:
-      // ClickHouse can't serve a FINAL (read-time dedup) query from a
-      // projection, so FINAL forces a full-table scan (~3.6s) while the
-      // projections sit unused. Instead read WITHOUT FINAL — which the
-      // projections proj_by_outpoint (tx_id,vout_n) / proj_by_prevout
-      // (prev_tx,prev_vout) serve as ~2-granule lookups — and dedup the
-      // ReplacingMergeTree versions in-query via `ORDER BY _seq DESC
-      // LIMIT 1 BY <key>` (keep the highest version per logical row,
-      // exactly FINAL's semantics on this tiny result set). ~3.6s → ~13ms,
-      // result verified byte-identical to the old FINAL query.
-      query: `
+    }>(
+      `
+        SELECT vin_n, prev_tx, prev_vout, address, value, script_sig_hex, sequence
+        FROM tx_inputs
+        WHERE tx_id = $tx
+        ORDER BY vin_n ASC
+      `,
+      { tx: txId },
+    ),
+    // Every output here belongs to one transaction ($tx), so its
+    // spends are exactly the tx_inputs rows with prev_tx = $tx. Both
+    // sides are unique point lookups on their PKs.
+    query<{
+      vout_n: number; value: string; address: string;
+      script_type: string; is_spent: boolean; spent_in_tx: string | null;
+    }>(
+      `
         SELECT
           o.vout_n AS vout_n,
           o.value AS value,
           o.address AS address,
           o.script_type AS script_type,
-          (s.tx_id != '') AS is_spent,
+          (s.tx_id IS NOT NULL) AS is_spent,
           s.tx_id AS spent_in_tx
-        FROM (
-          SELECT vout_n, value, address, script_type
-          FROM tx_outputs
-          WHERE tx_id = {tx: String}
-          ORDER BY _seq DESC
-          LIMIT 1 BY vout_n
-        ) AS o
-        ANY LEFT JOIN (
+        FROM tx_outputs AS o
+        LEFT JOIN (
           SELECT prev_vout, tx_id
           FROM tx_inputs
-          WHERE prev_tx = {tx: String}
-          ORDER BY _seq DESC
-          LIMIT 1 BY prev_vout
+          WHERE prev_tx = $tx
         ) AS s ON s.prev_vout = o.vout_n
+        WHERE o.tx_id = $tx
         ORDER BY o.vout_n ASC
       `,
-      query_params: { tx: txId },
-      format: 'JSONEachRow',
-    }).then((r) => r.json<{
-      vout_n: number; value: string; address: string;
-      script_type: string; is_spent: boolean; spent_in_tx: string | null;
-    }>()),
+      { tx: txId },
+    ),
     loadMrcRow(txId),
     getCursor(),
   ]);
@@ -282,8 +239,8 @@ async function loadIndexedTx(txId: string): Promise<unknown | null> {
       address: o.address === '' ? null : o.address,
       scriptType: o.script_type,
       isSpent: Boolean(o.is_spent),
-      // CH FixedString(64) on a LEFT JOIN no-match returns 64 null
-      // bytes rather than an empty string; trim and treat as null.
+      // A LEFT JOIN no-match leaves spent_in_tx NULL; trimNullBytes
+      // passes NULL through unchanged.
       spentInTx: trimNullBytes(o.spent_in_tx),
     })),
     mrc: mrcRow,
@@ -309,26 +266,7 @@ interface MrcRowOut {
 }
 
 async function loadMrcRow(txId: string): Promise<MrcRowOut | null> {
-  const result = await ch.query({
-    query: `
-      SELECT
-        version,
-        cpid,
-        client_version,
-        organization,
-        toString(research_subsidy) AS research_subsidy,
-        toString(fee_offered)      AS fee_offered,
-        magnitude, magnitude_unit, last_block_hash, signature, pay_to_address,
-        toUnixTimestamp(first_seen) AS first_seen,
-        block_height,
-        toUnixTimestamp(block_time) AS block_time
-      FROM mrc_requests FINAL
-      WHERE tx_id = {tx: String} LIMIT 1
-    `,
-    query_params: { tx: txId },
-    format: 'JSONEachRow',
-  });
-  const rows = await result.json<{
+  const rows = await query<{
     version: number;
     cpid: string;
     client_version: string;
@@ -343,7 +281,24 @@ async function loadMrcRow(txId: string): Promise<MrcRowOut | null> {
     first_seen: number | string;
     block_height: number | null;
     block_time: number | string | null;
-  }>();
+  }>(
+    `
+      SELECT
+        version,
+        cpid,
+        client_version,
+        organization,
+        CAST(research_subsidy AS VARCHAR) AS research_subsidy,
+        CAST(fee_offered AS VARCHAR)      AS fee_offered,
+        magnitude, magnitude_unit, last_block_hash, signature, pay_to_address,
+        CAST(epoch(first_seen) AS BIGINT) AS first_seen,
+        block_height,
+        CAST(epoch(block_time) AS BIGINT) AS block_time
+      FROM mrc_requests
+      WHERE tx_id = $tx LIMIT 1
+    `,
+    { tx: txId },
+  );
   if (rows.length === 0) return null;
   const r = rows[0];
   const firstSeen = typeof r.first_seen === 'number'
@@ -396,21 +351,19 @@ interface MempoolRow {
 }
 
 async function loadMempoolTx(txId: string): Promise<unknown | null> {
-  const result = await ch.query({
-    query: `
+  const rows = await query<MempoolRow>(
+    `
       SELECT tx_id,
-             toUnixTimestamp(first_seen) AS first_seen,
-             toString(fee_estimate)      AS fee_estimate,
+             CAST(epoch(first_seen) AS BIGINT) AS first_seen,
+             CAST(fee_estimate AS VARCHAR)     AS fee_estimate,
              size, vin_count, vout_count, raw_json,
-             toUnixTimestamp(confirmed_at) AS confirmed_at,
-             toUnixTimestamp(evicted_at)   AS evicted_at
-      FROM mempool_txs FINAL
-      WHERE tx_id = {tx: String} LIMIT 1
+             CAST(epoch(confirmed_at) AS BIGINT) AS confirmed_at,
+             CAST(epoch(evicted_at) AS BIGINT)   AS evicted_at
+      FROM mempool_txs
+      WHERE tx_id = $tx LIMIT 1
     `,
-    query_params: { tx: txId },
-    format: 'JSONEachRow',
-  });
-  const rows = await result.json<MempoolRow>();
+    { tx: txId },
+  );
   if (rows.length === 0) return null;
   const m = rows[0];
   let parsed: RawTxLike | null = null;
@@ -548,18 +501,17 @@ async function resolvePrevOutAttrs(
   // Tier A: tx_outputs (indexed)
   const txIds = Array.from(new Set(refs.map((r) => r.txid)));
   const vouts = Array.from(new Set(refs.map((r) => r.vout)));
-  const result = await ch.query({
-    query: `
+  type Row = { tx_id: string; vout_n: number; address: string; value: string };
+  const rows = await query<Row>(
+    `
       SELECT tx_id, vout_n, address, value
       FROM tx_outputs
-      WHERE tx_id IN ({txIds: Array(String)}) AND vout_n IN ({vouts: Array(UInt16)})
+      WHERE tx_id = ANY($txIds) AND vout_n = ANY($vouts)
     `,
-    query_params: { txIds, vouts },
-    format: 'JSONEachRow',
-  });
-  type Row = { tx_id: string; vout_n: number; address: string; value: string };
+    { txIds, vouts },
+  );
   const wanted = new Set(refs.map((r) => `${r.txid}:${r.vout}`));
-  for (const r of await result.json<Row>()) {
+  for (const r of rows) {
     const key = `${r.tx_id}:${r.vout_n}`;
     if (!wanted.has(key)) continue;
     out.set(key, {

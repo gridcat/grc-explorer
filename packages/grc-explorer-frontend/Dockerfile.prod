@@ -25,14 +25,21 @@ FROM node:22.16.0
 
 WORKDIR /usr/src/app
 
+# Create the runtime user up front so artifacts land with the right
+# ownership as they're copied. The old `chown -R /usr/src/app` recursed
+# over the production node_modules (tens of thousands of files) and crawled
+# to a near-hang on overlay/networked storage — and was unnecessary: the
+# app only READS node_modules / public / config (root-owned but
+# world-readable), and only `.next` needs to be writable (Next runtime
+# cache), which we hand over in one pass via COPY --chown.
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
+
 COPY package*.json ./
 RUN npm ci --only=production
-COPY --from=builder /usr/src/app/.next ./.next
+COPY --chown=appuser:appgroup --from=builder /usr/src/app/.next ./.next
 COPY --from=builder /usr/src/app/public ./public
 COPY --from=builder /usr/src/app/next.config.js ./next.config.js
 
-RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser && \
-    chown -R appuser:appgroup /usr/src/app
 USER appuser
 
 EXPOSE 3002

@@ -7,14 +7,18 @@ import type { GetServerSideProps } from 'next';
 import Head from 'next/head';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { useCallback, useMemo, useState } from 'react';
+import {
+  useCallback, useMemo, useRef, useState,
+} from 'react';
 import { Layout } from '../../layouts/Layout';
 import {
   ChartAxes, ChartFrame, ChartFrameProvider, linearScale, niceTicks,
 } from '../../components/charts/SvgChart';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
+import { CopyLinkButton } from '../../components/CopyLinkButton';
 import { api } from '../../lib/api';
 import { buildSmoothLinePath } from '../../lib/chartUtils';
+import { useXZoom, ZoomViewport, ZoomResetButton } from '../../components/charts/useXZoom';
 import { formatCount, formatYmdDate, MONTHS_SHORT } from '../../lib/format';
 
 interface HistoryEvent {
@@ -135,6 +139,7 @@ export default function ProjectHistory({ points }: ProjectHistoryProps) {
 
       <Stack spacing={3}>
         <Crumbs
+          trailing={<CopyLinkButton />}
           items={selectedYear !== null
             ? [
               RESEARCHERS_CRUMB,
@@ -400,11 +405,19 @@ function maxCount(points: Point[]): number {
 
 function WholeChainChart({ frame, points }: { frame: ChartFrame; points: Point[] }) {
   const theme = useTheme();
+  const svgRef = useRef<SVGSVGElement | null>(null);
+
+  const fullDomain = useMemo<[number, number]>(
+    () => [points[0]?.ts ?? 0, points[points.length - 1]?.ts ?? 1],
+    [points],
+  );
+  const zoom = useXZoom({
+    fullDomain, frame, svgRef, urlKey: 'z',
+  });
 
   const layout = useMemo(() => {
     if (points.length < 2 || frame.innerWidth <= 0) return null;
-    const tsMin = points[0].ts;
-    const tsMax = points[points.length - 1].ts;
+    const [tsMin, tsMax] = zoom.domain;
     const xScale = linearScale(tsMin, tsMax, 0, frame.innerWidth);
     const yMax = maxCount(points);
     const yPad = yMax * 0.05 || 1;
@@ -413,7 +426,7 @@ function WholeChainChart({ frame, points }: { frame: ChartFrame; points: Point[]
     return {
       tsMin, tsMax, xScale, yScale, yTicks,
     };
-  }, [points, frame.innerWidth, frame.innerHeight]);
+  }, [points, frame.innerWidth, frame.innerHeight, zoom.domain]);
 
   if (!layout || frame.width === 0) return null;
 
@@ -434,38 +447,49 @@ function WholeChainChart({ frame, points }: { frame: ChartFrame; points: Point[]
   const spikes = points.filter((p) => p.delistedToday > 0);
 
   return (
-    <svg
-      width="100%"
-      height={frame.height}
-      viewBox={`0 0 ${frame.width} ${frame.height}`}
-      style={{ display: 'block' }}
-    >
-      <ChartAxes
-        frame={frame}
-        yTicks={layout.yTicks}
-        xTicks={xTicks}
-        yFormat={(v) => formatCount(v)}
-        xFormat={(ts) => String(new Date(ts * 1000).getUTCFullYear())}
-      />
-      <g transform={`translate(${frame.margin.left},${frame.margin.top})`}>
-        {delistedPath && (
-          <path d={delistedPath} fill="none" stroke={theme.palette.text.secondary} strokeWidth={1.25} opacity={0.7} strokeLinejoin="round" strokeLinecap="round" />
-        )}
-        {activePath && (
-          <path d={activePath} fill="none" stroke={theme.palette.success.main} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" />
-        )}
-        {spikes.map((p) => (
-          <circle
-            key={p.date}
-            cx={layout.xScale(p.ts)}
-            cy={2 + Math.min(8, p.delistedToday * 1.5)}
-            r={Math.min(4, 1.5 + p.delistedToday * 0.5)}
-            fill={theme.palette.error.main}
-            opacity={0.75}
-          />
-        ))}
-      </g>
-    </svg>
+    <Box sx={{ position: 'relative' }}>
+      <ZoomResetButton zoom={zoom} />
+      <svg
+        ref={svgRef}
+        width="100%"
+        height={frame.height}
+        viewBox={`0 0 ${frame.width} ${frame.height}`}
+        onMouseDown={zoom.onMouseDown}
+        onMouseMove={zoom.onMouseMove}
+        onMouseUp={zoom.onMouseUp}
+        onMouseLeave={zoom.onMouseLeave}
+        onDoubleClick={zoom.onDoubleClick}
+        style={{ display: 'block', cursor: 'crosshair' }}
+      >
+        <ChartAxes
+          frame={frame}
+          yTicks={layout.yTicks}
+          xTicks={xTicks}
+          yFormat={(v) => formatCount(v)}
+          xFormat={(ts) => String(new Date(ts * 1000).getUTCFullYear())}
+        />
+        <g transform={`translate(${frame.margin.left},${frame.margin.top})`}>
+          <ZoomViewport zoom={zoom}>
+            {delistedPath && (
+              <path d={delistedPath} fill="none" stroke={theme.palette.text.secondary} strokeWidth={1.25} opacity={0.7} strokeLinejoin="round" strokeLinecap="round" />
+            )}
+            {activePath && (
+              <path d={activePath} fill="none" stroke={theme.palette.success.main} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" />
+            )}
+            {spikes.map((p) => (
+              <circle
+                key={p.date}
+                cx={layout.xScale(p.ts)}
+                cy={2 + Math.min(8, p.delistedToday * 1.5)}
+                r={Math.min(4, 1.5 + p.delistedToday * 0.5)}
+                fill={theme.palette.error.main}
+                opacity={0.75}
+              />
+            ))}
+          </ZoomViewport>
+        </g>
+      </svg>
+    </Box>
   );
 }
 

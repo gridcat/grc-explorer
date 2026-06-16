@@ -1,5 +1,12 @@
+import { isFatalDbError } from './db';
 import { log } from './log';
-import { isWipeInProgress } from './redis';
+import { isWipeInProgress, setIndexRebuildNeeded } from './redis';
+import {
+  isShuttingDown,
+  registerStop,
+  requestShutdown,
+  trackInflight,
+} from './shutdown';
 
 /**
  * Single-flight `setInterval`. If the previous tick is still running
@@ -30,7 +37,7 @@ export function schedule(
 ): () => void {
   let running = false;
   const tick = async () => {
-    if (running) return;
+    if (running || isShuttingDown()) return;
     try {
       if (await isWipeInProgress()) return;
     } catch (err) {
@@ -41,8 +48,24 @@ export function schedule(
     }
     running = true;
     try {
-      await fn();
+      // Wrap in a tracked promise so a graceful shutdown waits for the
+      // tick to finish before closing DuckDB out from under it.
+      await trackInflight(Promise.resolve().then(fn));
     } catch (err) {
+      if (isFatalDbError(err)) {
+        // DuckDB has invalidated the whole database — every subsequent
+        // query throws the same fatal, so looping is pointless. Flag the
+        // on-disk secondary indexes for a boot-time rebuild, then exit
+        // non-zero so the orchestrator restarts us with a clean handle.
+        log.error(`schedule(${label ?? 'anonymous'}) hit a fatal DB error; flagging index rebuild and shutting down`, err);
+        try {
+          await setIndexRebuildNeeded();
+        } catch (flagErr) {
+          log.warn('failed to set index-rebuild flag before shutdown', flagErr);
+        }
+        void requestShutdown(`fatal-db:${label ?? 'anonymous'}`, 1);
+        return;
+      }
       log.error(`schedule(${label ?? 'anonymous'}) tick threw`, err);
     } finally {
       running = false;
@@ -64,8 +87,12 @@ export function schedule(
     intervalMs,
   );
   const firstTick = setTimeout(tick, firstDelayMs);
-  return () => {
+  const stop = () => {
     clearInterval(handle);
     clearTimeout(firstTick);
   };
+  // Register so a graceful shutdown can stop every loop centrally; the
+  // caller still gets the stop fn back for explicit teardown.
+  registerStop(stop);
+  return stop;
 }

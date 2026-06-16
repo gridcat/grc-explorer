@@ -6,9 +6,15 @@ export type Network = 'mainnet' | 'testnet';
 export type Role = 'api' | 'indexer' | 'all';
 
 interface Config {
-  // ClickHouse — source of truth for chain data.
-  CLICKHOUSE_URL: string;
-  CLICKHOUSE_DATABASE: string;
+  // Embedded DuckDB — source of truth for chain data. DUCKDB_PATH is
+  // the on-disk database file
+  // (one per network); the process opens it read-write as the sole
+  // writer. THREADS / MEMORY_LIMIT cap DuckDB's per-query resource use
+  // so a heavy time-machine scan can't saturate the shared host — the
+  // good-neighbour trade behind the DuckDB switch.
+  DUCKDB_PATH: string;
+  DUCKDB_THREADS: number;
+  DUCKDB_MEMORY_LIMIT: string;
   // Which Gridcoin network this stack indexes. Carried in API responses
   // (`meta.network`) and exported to the frontend via NEXT_PUBLIC_NETWORK
   // so the UI can flip palette and refuse cross-network rendering.
@@ -156,8 +162,9 @@ nconf
   .argv()
   .env({
     whitelist: [
-      'CLICKHOUSE_URL',
-      'CLICKHOUSE_DATABASE',
+      'DUCKDB_PATH',
+      'DUCKDB_THREADS',
+      'DUCKDB_MEMORY_LIMIT',
       'NETWORK',
       'ROLE',
       'GRC_RPC_USER',
@@ -207,6 +214,12 @@ nconf
   .defaults({
     NETWORK: 'testnet',
     ROLE: 'all',
+    // DuckDB good-neighbour caps. Small on purpose: this DB shares a box
+    // with the wallet daemon + the rest of the family, so a heavy
+    // time-machine scan parallelises across at most 2 threads and 2 GiB
+    // rather than grabbing every core. Bump on a dedicated host.
+    DUCKDB_THREADS: 2,
+    DUCKDB_MEMORY_LIMIT: '2GB',
     REDIS_HOST: 'redis',
     REDIS_PORT: 6379,
     REDIS_PREFIX: 'grc-explorer:testnet',
@@ -309,8 +322,7 @@ nconf
   });
 
 checkConfig([
-  'CLICKHOUSE_URL',
-  'CLICKHOUSE_DATABASE',
+  'DUCKDB_PATH',
   'NETWORK',
   'GRC_RPC_HOST',
   'GRC_RPC_PORT',

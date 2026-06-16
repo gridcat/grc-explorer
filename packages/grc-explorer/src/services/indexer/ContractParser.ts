@@ -78,6 +78,8 @@ export interface ParsedClaimMrcRow {
   miningId: string;
   clientVersion: string;
   researchSubsidy: bigint;
+  /** Fee deducted from the subsidy (halford); null when the daemon omitted it. */
+  fee: bigint | null;
   magnitude: number;
   payToAddress: string | null;
 }
@@ -1169,19 +1171,45 @@ function detectPosAndMiner(block: VerboseBlock): PosMinerInfo {
   return { isPos, minerAddress, stakerCpid };
 }
 
+// MRC payout vouts on a coinstake. miner.cpp appends them at the tail —
+// one output per claimant plus a single combined foundation-fee output
+// (SplitCoinStakeOutput reorders the stake splits and sidestakes, then
+// reattaches the MRC outputs last). They are consensus-enforced payouts,
+// not sidestakes, so sidestake capture must skip them.
+function mrcPayoutVouts(block: VerboseBlock, coinstake: VerboseBlock['tx'][number]): Set<number> {
+  const excluded = new Set<number>();
+  const mrcCount = block.claim?.mrcs?.length ?? 0;
+  if (mrcCount === 0) return excluded;
+  const hasFoundationFee = (block.mrcFoundationFees ?? 0) > 0;
+  let remaining = mrcCount + (hasFoundationFee ? 1 : 0);
+  for (let idx = coinstake.vout.length - 1; idx >= 2 && remaining > 0; idx -= 1) {
+    if (coinstake.vout[idx].scriptPubKey?.type === 'nulldata') continue; // data, not a payout
+    excluded.add(idx);
+    remaining -= 1;
+  }
+  return excluded;
+}
+
 // V13+ coinstake "extras": vout[idx >= 2] on a PoS coinstake. These
 // are the mandatory and/or voluntary sidestakes the staker appended.
 // Pre-V13 consensus didn't allow MSS, so we skip capture there (local
 // sidestakes do exist pre-V13 but the explorer doesn't surface them).
+// MRC payouts also live at idx >= 2 and are excluded, as are stake
+// splits — outputs back to the staker's own address (vout 1) are
+// returned principal, not sidestakes.
 function extractCoinstakeSidestakes(block: VerboseBlock, isPos: boolean): ParsedCoinstakeSidestakeRow[] {
   if (!isPos || block.version < 13) return [];
   const coinstake = block.tx[1];
   if (!coinstake) return [];
+  const mrcVouts = mrcPayoutVouts(block, coinstake);
+  const stakerAddr = coinstake.vout[1] ? pickPrimaryAddress(coinstake.vout[1]) : null;
   const out: ParsedCoinstakeSidestakeRow[] = [];
   for (let idx = 2; idx < coinstake.vout.length; idx += 1) {
+    if (mrcVouts.has(idx)) continue;
     const vout = coinstake.vout[idx];
     const addr = pickPrimaryAddress(vout);
     if (!addr) continue;
+    if (stakerAddr && addr === stakerAddr) continue; // stake split
     // Daemon emits `value` in GRC; convert to halford so the amount
     // field stays unit-consistent with the rest of the pipeline.
     const amount = typeof vout.value === 'number' ? grc2halford(vout.value) : 0n;
@@ -1524,6 +1552,7 @@ function buildClaimMrcs(block: VerboseBlock): ParsedClaimMrcRow[] {
       miningId: m.miningId ?? m.mining_id ?? cpid,
       clientVersion: m.clientVersion ?? m.client_version ?? '',
       researchSubsidy,
+      fee: m.fee == null ? null : grc2halford(typeof m.fee === 'number' ? m.fee : String(m.fee)),
       magnitude: typeof m.magnitude === 'number' ? m.magnitude : 0,
       payToAddress: m.payToAddress ?? m.pay_to_address ?? null,
     });

@@ -1,4 +1,4 @@
-import { ch } from './ch';
+import { query } from './db';
 import { tsToUnix } from './time';
 
 // Block-time of the indexer's most recent applied block, or 0 when the
@@ -22,11 +22,9 @@ export async function getIndexerTipTime(): Promise<number> {
   if (pendingTipTimeQuery) return pendingTipTimeQuery;
   pendingTipTimeQuery = (async () => {
     try {
-      const result = await ch.query({
-        query: 'SELECT max(time) AS t FROM blocks',
-        format: 'JSONEachRow',
-      });
-      const rows = await result.json<{ t: number | string | null }>();
+      const rows = await query<{ t: number | string | null }>(
+        'SELECT max(time) AS t FROM blocks',
+      );
       const value = tsToUnix(rows[0]?.t) ?? 0;
       cachedTipTime = { value, expiresAt: Date.now() + TIP_TIME_TTL_MS };
       return value;
@@ -74,11 +72,9 @@ export async function getV11BlockTimestamp(): Promise<number | null> {
   if (pendingV11Query !== null) return pendingV11Query;
   pendingV11Query = (async () => {
     try {
-      const result = await ch.query({
-        query: 'SELECT toUnixTimestamp(min(time)) AS t FROM blocks WHERE n_version >= 11',
-        format: 'JSONEachRow',
-      });
-      const rows = await result.json<{ t: number | null }>();
+      const rows = await query<{ t: number | string | null }>(
+        'SELECT CAST(epoch(min(time)) AS BIGINT) AS t FROM blocks WHERE n_version >= 11',
+      );
       const raw = rows[0]?.t;
       if (raw === null || raw === undefined || raw === 0) return null;
       cachedV11Timestamp = Number(raw);
@@ -92,25 +88,20 @@ export async function getV11BlockTimestamp(): Promise<number | null> {
 
 // One-shot point lookup of `blocks.time` keyed by `height`. Returns
 // a Map for O(1) lookup downstream; heights not yet indexed are simply
-// absent. No FINAL: it forces the merge path and ignores PK pruning;
-// `argMax(time, _seq) GROUP BY height` reproduces FINAL's "latest
-// version per block" on the `height IN (...)` PK-pruned set without
-// the full-table merge scan.
+// absent. height is the PRIMARY KEY (one row per block via upsert), so
+// a plain `height = ANY(...)` point lookup needs no dedup.
 export async function getBlockTimes(heights: ReadonlyArray<number>): Promise<Map<number, number>> {
   const out = new Map<number, number>();
   const unique = Array.from(new Set(heights.filter((h) => Number.isFinite(h) && h >= 0)));
   if (unique.length === 0) return out;
-  const result = await ch.query({
-    query: `
-      SELECT height, toUnixTimestamp(argMax(time, _seq)) AS t
+  const rows = await query<{ height: number; t: number | string }>(
+    `
+      SELECT height, CAST(epoch(time) AS BIGINT) AS t
       FROM blocks
-      WHERE height IN ({heights: Array(UInt32)})
-      GROUP BY height
+      WHERE height = ANY($heights)
     `,
-    query_params: { heights: unique },
-    format: 'JSONEachRow',
-  });
-  const rows = await result.json<{ height: number; t: number }>();
+    { heights: unique },
+  );
   for (const r of rows) out.set(Number(r.height), Number(r.t));
   return out;
 }

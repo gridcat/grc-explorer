@@ -1,6 +1,4 @@
-import { TupleParam } from '@clickhouse/client';
-import { ch } from '../../lib/ch';
-import { chunked } from '../../lib/chunked';
+import { query } from '../../lib/db';
 import { grc2halford } from '../../lib/halford';
 import { ParsedTxOutputRow, PrevOutputsLookup } from './ContractParser';
 
@@ -87,9 +85,9 @@ export async function buildPrevOutputsLookupMulti(
   // bigint halford) — copied here to avoid a circular import.
   const cache = new Map<string, CacheEntry>();
   // Pre-seed from any already-parsed batches that haven't been
-  // flushed to CH yet. Drain-loop callers pass these in; if a vin
+  // flushed to the DB yet. Drain-loop callers pass these in; if a vin
   // here spends one of those outputs, we resolve from memory rather
-  // than firing a CH query that would miss.
+  // than firing a query that would miss.
   for (const o of parsedPending) {
     cache.set(`${o.txId}:${o.voutN}`, { address: o.address, value: o.value });
   }
@@ -106,58 +104,30 @@ export async function buildPrevOutputsLookupMulti(
   }
 
   if (refs.length > 0) {
-    // Only query CH for refs we haven't already covered from the
-    // in-batch index. Filter on the pair `(tx_id, vout_n)` so the row
-    // predicate is exact — the previous shape used two separate `IN`
-    // clauses and matched the cartesian product, then narrowed in JS,
-    // shipping every output of every interesting tx over the wire.
-    // The `tx_id_bloom` skip index still prunes granules off the
-    // tuple's first element.
-    //
-    // No FINAL: address+value for a given (tx_id, vout_n) are
-    // deterministic from tx content, so even when reorg leaves a stale
-    // pre-merge row sitting next to the new one, both carry identical
-    // values — the duplicate just causes one redundant Map.set. Skipping
-    // FINAL avoids the merge-time scan that dominates batch latency.
+    // Only query for refs we haven't already covered from the in-batch
+    // index. Match the exact `(tx_id, vout_n)` pairs via a positional
+    // zip of two parallel arrays unnested into a join table — the
+    // DuckDB equivalent of CH's `(tx_id, vout_n) IN Array(Tuple(...))`.
+    // No dedup needed: (tx_id, vout_n) is the PRIMARY KEY (one row per
+    // outpoint via upsert). DuckDB binds params in-process, so there's
+    // no URL-length limit and the whole ref set goes in one query.
     const dbRefs = refs.filter((r) => !cache.has(`${r.prev_tx}:${r.prev_vout}`));
     if (dbRefs.length > 0) {
-      // The @clickhouse/client formatter writes JS arrays with brackets
-      // (`[…]`) — fine for `Array(String)`, wrong for `Array(Tuple(…))`,
-      // which the CH parameter parser wants as `[(…),(…)]`. `TupleParam`
-      // is the lib's escape hatch: each instance serializes to a paren-
-      // wrapped tuple literal, leaving the outer array intact.
-      //
-      // Chunking guard: query parameters travel as URL query string in
-      // the @clickhouse/client transport (`?param_pairs=[...]`). CH /
-      // Poco's HTTP server enforces a per-field length limit, ~8KB
-      // by default, beyond which the request is rejected with
-      // "HTML Form Exception: Field value too long" — this surfaced
-      // during backfill at BACKFILL_TX_BATCH_SIZE=500 because a busy
-      // batch can carry several thousand prev-output refs (~70 chars
-      // per tuple literal → ~200KB payload). Chunking at 400 pairs
-      // keeps every request well under the limit at the cost of a
-      // few extra round trips per batch on dense periods.
       type Row = { tx_id: string; vout_n: number; address: string; value: string };
-      for (const slice of chunked(dbRefs, 400)) {
-        const pairs = slice.map((r) => new TupleParam([r.prev_tx, r.prev_vout]));
-        // eslint-disable-next-line no-await-in-loop
-        const result = await ch.query({
-          query: `
-            SELECT tx_id, vout_n, address, value
-            FROM tx_outputs
-            WHERE (tx_id, vout_n) IN ({pairs: Array(Tuple(String, UInt16))})
-          `,
-          query_params: { pairs },
-          format: 'JSONEachRow',
-        });
-        // eslint-disable-next-line no-await-in-loop
-        const rows = await result.json<Row>();
-        for (const r of rows) {
-          const key = `${r.tx_id}:${r.vout_n}`;
-          // Empty-string sentinel from the writer means "no address" —
-          // surface it as null to keep the parser's existing semantics.
-          cache.set(key, { address: r.address === '' ? null : r.address, value: BigInt(r.value) });
-        }
+      const rows = await query<Row>(
+        `
+          SELECT o.tx_id, o.vout_n, o.address, CAST(o.value AS VARCHAR) AS value
+          FROM tx_outputs AS o
+          JOIN (SELECT unnest($txs) AS tx_id, unnest($vouts) AS vout_n) AS p
+            ON o.tx_id = p.tx_id AND o.vout_n = p.vout_n
+        `,
+        { txs: dbRefs.map((r) => r.prev_tx), vouts: dbRefs.map((r) => r.prev_vout) },
+      );
+      for (const r of rows) {
+        const key = `${r.tx_id}:${r.vout_n}`;
+        // Empty-string sentinel from the writer means "no address" —
+        // surface it as null to keep the parser's existing semantics.
+        cache.set(key, { address: r.address === '' ? null : r.address, value: BigInt(r.value) });
       }
     }
   }

@@ -1,11 +1,11 @@
-import { ch } from '../../lib/ch';
+import { query, upsert } from '../../lib/db';
 import { events } from '../../lib/emitter';
 import { getTipAnchor } from '../../lib/indexerTip';
 import { log } from '../../lib/log';
 import { positiveBalancesDesc } from '../../lib/redis';
 
 // Daily wealth snapshot. One row per UTC-day bucket into the
-// `wealth_snapshots` CH table. The dashboard's wealth-distribution
+// `wealth_snapshots` table. The dashboard's wealth-distribution
 // panel + Lorenz / top-N share series read from there.
 //
 // Each tick:
@@ -17,20 +17,20 @@ import { positiveBalancesDesc } from '../../lib/redis';
 //      active/new/hodler counts.
 //   3. Inserts everything in one batch and stops when either the queue
 //      drains or we hit MAX_BACKFILL_PER_TICK (so a fresh genesis-to-tip
-//      run doesn't camp on CH for an hour straight).
+//      run doesn't camp on the database for an hour straight).
 //
-// Why CH and not the Redis wallet ZSET: the ZSET reflects "now" only,
+// Why the DB and not the Redis wallet ZSET: the ZSET reflects "now" only,
 // so it can't answer historical queries. address_balance_history is
 // height-keyed (sum(delta) over rows with valid_from_height <= H gives
 // balance at H) and is rewritable safely on reorg — exactly what we
 // need for "what did the distribution look like on 2018-04-17". The
 // trade-off is per-bucket scan cost; ordering by (address, valid_from_height)
 // and the bounded address universe (~50k Gridcoin holders) keeps the
-// scan well under a second on a healthy CH.
+// scan well under a second on a healthy database.
 //
-// Idempotency: ReplacingMergeTree(_seq) on `wealth_snapshots` collapses
-// duplicate bucket rows naturally, so concurrent re-writes (replays,
-// reorgs) heal to the latest version without manual cleanup.
+// Idempotency: bucket_ts is the PRIMARY KEY, so the upsert overwrites
+// a bucket's row in place — concurrent re-writes (replays, reorgs)
+// heal to the latest version without manual cleanup.
 
 // Effectively uncapped: one tick drains every remaining missing
 // bucket in a single pass (schedule()'s single-flight guard prevents
@@ -73,9 +73,9 @@ export class WealthSnapshotJob {
       //      — what the dashboard renders by default.
       //   2) Forward-fill from chain genesis so the historical series
       //      fills in chronologically on subsequent ticks.
-      // ReplacingMergeTree isn't configured for wealth_snapshots, so
-      // we strictly avoid duplicate writes by checking against
-      // `existing` before queuing each candidate.
+      // The PK upsert would heal a re-write anyway, but we still check
+      // against `existing` before queuing each candidate to avoid
+      // recomputing buckets we already have.
       const queued = new Set<number>();
       const missing: number[] = [];
       const queue = (bt: number): boolean => {
@@ -107,23 +107,23 @@ export class WealthSnapshotJob {
       }
 
       if (written.length > 0) {
-        await ch.insert({
-          table: 'wealth_snapshots',
-          format: 'JSONEachRow',
-          values: written.map((r) => ({
+        await upsert(
+          'wealth_snapshots',
+          written.map((r) => ({
             bucket_ts: r.bucketTs,
-            total_supply: r.totalSupply,
+            total_supply: BigInt(r.totalSupply),
             addresses_with_balance: r.addressesWithBalance,
-            gini: r.gini.toFixed(8),
-            top1pct_share: r.top1pctShare.toFixed(8),
-            top10pct_share: r.top10pctShare.toFixed(8),
-            top100_share: r.top100Share.toFixed(8),
+            gini: r.gini,
+            top1pct_share: r.top1pctShare,
+            top10pct_share: r.top10pctShare,
+            top100_share: r.top100Share,
             active_24h: r.active24h,
             new_24h: r.new24h,
             hodler_30d: r.hodler30d,
             hodler_180d: r.hodler180d,
           })),
-        });
+          { pk: ['bucket_ts'], tsCols: ['bucket_ts'] },
+        );
         log.info(`WealthSnapshot: wrote ${written.length} bucket(s); first=${written[0].bucketTs}, last=${written[written.length - 1].bucketTs}`);
         // SSE fanout so the dashboard's WealthDistributionChart refreshes
         // exactly when there's new data, instead of polling at block
@@ -143,11 +143,11 @@ export class WealthSnapshotJob {
   }
 
   private async writtenBuckets(): Promise<Set<number>> {
-    const r = await ch.query({
-      query: 'SELECT DISTINCT toUnixTimestamp(bucket_ts) AS bt FROM wealth_snapshots',
-      format: 'JSONEachRow',
-    });
-    const rows = await r.json<{ bt: number }>();
+    // CAST to UINTEGER (not BIGINT) so unix-seconds come back as a JS
+    // number, matching the `existing.has(bt)` numeric comparison below.
+    const rows = await query<{ bt: number }>(
+      'SELECT DISTINCT CAST(epoch(bucket_ts) AS UINTEGER) AS bt FROM wealth_snapshots',
+    );
     const set = new Set<number>();
     for (const row of rows) {
       if (typeof row.bt === 'number' && row.bt > 0) set.add(row.bt);
@@ -156,20 +156,15 @@ export class WealthSnapshotJob {
   }
 
   private async heightAtTime(ts: number): Promise<number | null> {
-    const r = await ch.query({
-      // No FINAL: max(height) is unaffected by un-merged duplicate
-      // block rows (same height), and dropping it lets the
-      // idx_blocks_time minmax index prune `time <= X`. Empty match
-      // yields max()=0, which the caller already maps to null.
-      query: `
+    // Empty match yields max()=NULL, which the caller maps to null.
+    const rows = await query<{ h: number | null }>(
+      `
         SELECT max(height) AS h FROM blocks
-        WHERE time <= toDateTime({at: UInt32})
+        WHERE time <= make_timestamp($at::BIGINT * 1000000)
       `,
-      query_params: { at: ts },
-      format: 'JSONEachRow',
-    });
-    const row = (await r.json<{ h: number | null }>())[0];
-    return row?.h ?? null;
+      { at: ts },
+    );
+    return rows[0]?.h ?? null;
   }
 
   // Build one wealth_snapshots row for `bucketTs`. Returns null when
@@ -185,22 +180,15 @@ export class WealthSnapshotJob {
     // Total supply at this height. money_supply is a running counter
     // maintained by BlockWriter, so the max() over blocks at-or-before
     // the cutoff equals the supply at that height.
-    const supplyResult = await ch.query({
-      // No FINAL: money_supply is a monotonic per-height counter, so
-      // max() over the `height <= h` (PK-pruned) range is unaffected
-      // by un-merged duplicate rows; FINAL would only add a full
-      // merge-scan.
-      query: `
-        SELECT toString(max(money_supply)) AS supply
+    const supplyRows = await query<{ supply: string | null }>(
+      `
+        SELECT CAST(max(money_supply) AS VARCHAR) AS supply
         FROM blocks
-        WHERE height <= {h: UInt32}
+        WHERE height <= $h
       `,
-      query_params: { h: heightAtBucket },
-      format: 'JSONEachRow',
-    });
-    const totalSupply = BigInt(
-      (await supplyResult.json<{ supply: string | null }>())[0]?.supply ?? '0',
+      { h: heightAtBucket },
     );
+    const totalSupply = BigInt(supplyRows[0]?.supply ?? '0');
 
     // Reconstruct positive-balance set at this height. We pull the
     // sorted-descending balance array back to JS so we can compute
@@ -225,21 +213,20 @@ export class WealthSnapshotJob {
       // historical buckets still reconstruct exactly from CH below.
       balances = await positiveBalancesDesc();
     } else {
-      const balancesResult = await ch.query({
-        query: `
-          SELECT arrayReverseSort(groupArray(toFloat64(balance))) AS sorted
+      const balancesRows = await query<{ sorted: number[] }>(
+        `
+          SELECT list_sort(array_agg(CAST(balance AS DOUBLE)), 'DESC') AS sorted
           FROM (
             SELECT address, sum(delta) AS balance
-            FROM address_balance_history FINAL
-            WHERE valid_from_height <= {h: UInt32} AND address != ''
+            FROM address_balance_history
+            WHERE valid_from_height <= $h AND address != ''
             GROUP BY address
-            HAVING balance > 0
+            HAVING sum(delta) > 0
           )
         `,
-        query_params: { h: heightAtBucket },
-        format: 'JSONEachRow',
-      });
-      const sortedRow = (await balancesResult.json<{ sorted: number[] }>())[0];
+        { h: heightAtBucket },
+      );
+      const sortedRow = balancesRows[0];
       balances = Array.isArray(sortedRow?.sorted) ? sortedRow.sorted : [];
     }
     const n = balances.length;
@@ -300,57 +287,54 @@ export class WealthSnapshotJob {
   }
 
   private async activeCountAt(heightAtBucket: number, cutoffHeight: number): Promise<number> {
-    const r = await ch.query({
-      query: `
+    const rows = await query<{ c: number | string }>(
+      `
         SELECT count(DISTINCT address) AS c
         FROM address_balance_history
-        WHERE valid_from_height > {lo: UInt32}
-          AND valid_from_height <= {hi: UInt32}
+        WHERE valid_from_height > $lo
+          AND valid_from_height <= $hi
           AND address != ''
       `,
-      query_params: { lo: cutoffHeight, hi: heightAtBucket },
-      format: 'JSONEachRow',
-    });
-    return Number((await r.json<{ c: number | string }>())[0]?.c ?? 0);
+      { lo: cutoffHeight, hi: heightAtBucket },
+    );
+    return Number(rows[0]?.c ?? 0);
   }
 
   private async newAddressCountAt(heightAtBucket: number, cutoffHeight: number): Promise<number> {
-    const r = await ch.query({
-      query: `
-        SELECT count() AS c FROM (
+    const rows = await query<{ c: number | string }>(
+      `
+        SELECT count(*) AS c FROM (
           SELECT address, min(valid_from_height) AS first_seen
-          FROM address_balance_history FINAL
-          WHERE address != '' AND valid_from_height <= {hi: UInt32}
+          FROM address_balance_history
+          WHERE address != '' AND valid_from_height <= $hi
           GROUP BY address
-          HAVING first_seen > {lo: UInt32}
+          HAVING min(valid_from_height) > $lo
         )
       `,
-      query_params: { lo: cutoffHeight, hi: heightAtBucket },
-      format: 'JSONEachRow',
-    });
-    return Number((await r.json<{ c: number | string }>())[0]?.c ?? 0);
+      { lo: cutoffHeight, hi: heightAtBucket },
+    );
+    return Number(rows[0]?.c ?? 0);
   }
 
   private async hodlerCountAt(heightAtBucket: number, cutoffHeight: number): Promise<number> {
     // Hodler = currently positive balance AND last balance-changing
     // event at-or-before the cutoff. `max(valid_from_height)` picks
     // the address's most recent state change.
-    const r = await ch.query({
-      query: `
-        SELECT count() AS c FROM (
+    const rows = await query<{ c: number | string }>(
+      `
+        SELECT count(*) AS c FROM (
           SELECT
             address,
             sum(delta)             AS balance,
             max(valid_from_height) AS last_seen
-          FROM address_balance_history FINAL
-          WHERE address != '' AND valid_from_height <= {hi: UInt32}
+          FROM address_balance_history
+          WHERE address != '' AND valid_from_height <= $hi
           GROUP BY address
-          HAVING balance > 0 AND last_seen <= {lo: UInt32}
+          HAVING sum(delta) > 0 AND max(valid_from_height) <= $lo
         )
       `,
-      query_params: { lo: cutoffHeight, hi: heightAtBucket },
-      format: 'JSONEachRow',
-    });
-    return Number((await r.json<{ c: number | string }>())[0]?.c ?? 0);
+      { lo: cutoffHeight, hi: heightAtBucket },
+    );
+    return Number(rows[0]?.c ?? 0);
   }
 }

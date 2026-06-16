@@ -11,6 +11,9 @@ interface SSEContextValue {
   subscribe(topics: string[], cb: (topic: string, payload: unknown) => void): () => void;
   /** Most recent connection state, useful for "live" badges in the UI. */
   connected: boolean;
+  /** Connected AND the stream produced an event or server ping within
+   *  the health window — a silently dead connection reads unhealthy. */
+  healthy: boolean;
 }
 
 const SSEContext = createContext<SSEContextValue | null>(null);
@@ -40,8 +43,14 @@ export type SseTopic = typeof KNOWN_TOPICS[number] | `${string}.*` | string;
  * dashboard may watch dozens. Spinning up an EventSource per component
  * burns sockets and rate limits.
  */
+// The server pings every 15s (named `ping` event), so three missed
+// pings in a row means the stream is dead even if the socket looks open.
+const HEALTH_WINDOW_MS = 50_000;
+
 export function SSEProvider({ children }: { children: ReactNode }) {
   const [connected, setConnected] = useState(false);
+  const [healthy, setHealthy] = useState(false);
+  const lastActivityRef = useRef(0);
   const subsRef = useRef<Map<number, SubscriptionHandle>>(new Map());
   const counterRef = useRef(0);
   const streamIdRef = useRef<string | null>(null);
@@ -95,9 +104,16 @@ export function SSEProvider({ children }: { children: ReactNode }) {
       try {
         const msg = JSON.parse((e as MessageEvent).data);
         streamIdRef.current = msg.stream_id;
+        lastActivityRef.current = Date.now();
         setConnected(true);
         refreshSubscriptions();
       } catch (_err) { /* ignore */ }
+    });
+
+    // Server keep-alive — carries no payload, only proves the stream
+    // is actually delivering. Feeds the health window.
+    source.addEventListener('ping', () => {
+      lastActivityRef.current = Date.now();
     });
 
     source.onerror = () => {
@@ -109,6 +125,9 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     // `onmessage` channel below.
     KNOWN_TOPICS.forEach((topic) => {
       source.addEventListener(topic, (e) => {
+        // Health bookkeeping happens even for hidden tabs — the stream
+        // is alive whether or not we dispatch to components.
+        lastActivityRef.current = Date.now();
         if (!visibleRef.current) return;
         try {
           const payload = JSON.parse((e as MessageEvent).data);
@@ -133,6 +152,20 @@ export function SSEProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // Health: connected AND recent activity (any event or ping). Checked
+  // on a coarse timer; setState with an unchanged value is a no-op for
+  // React, so the steady state costs nothing.
+  useEffect(() => {
+    if (!connected) {
+      setHealthy(false);
+      return undefined;
+    }
+    const compute = () => setHealthy(Date.now() - lastActivityRef.current < HEALTH_WINDOW_MS);
+    compute();
+    const id = setInterval(compute, 15_000);
+    return () => clearInterval(id);
+  }, [connected]);
+
   const dispatch = (topic: string, payload: unknown) => {
     subsRef.current.forEach((h) => {
       if (h.topics.some((p) => topicMatches(p, topic))) {
@@ -143,6 +176,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<SSEContextValue>(() => ({
     connected,
+    healthy,
     subscribe(topics, cb) {
       counterRef.current += 1;
       const id = counterRef.current;
@@ -153,7 +187,7 @@ export function SSEProvider({ children }: { children: ReactNode }) {
         refreshSubscriptions();
       };
     },
-  }), [connected]);
+  }), [connected, healthy]);
 
   return <SSEContext.Provider value={value}>{children}</SSEContext.Provider>;
 }
@@ -194,6 +228,60 @@ export function useSSE(topics: string[], cb: (topic: string, payload: unknown) =
  * path (where SSE is irrelevant) doesn't pile up timers that fire
  * after replay exits.
  */
+/** True while the shared SSE stream is connected and demonstrably
+ *  alive (event or server ping within the health window). */
+export function useSSEHealth(): boolean {
+  return useContext(SSEContext)?.healthy ?? false;
+}
+
+/**
+ * Safety-net polling that runs ONLY while the SSE stream is unhealthy
+ * (disconnected, or silent past the ping window). While the stream is
+ * healthy no timer runs at all. When health returns after a real
+ * degradation, one refresh fires to catch up on whatever the stream
+ * missed. Poll timing is jittered ±20% so a fleet of tabs recovering
+ * from the same blip doesn't hit the API in lockstep.
+ */
+export function useSSEFallbackPoll(
+  refresh: () => void,
+  intervalMs: number,
+  options: { skip?: boolean } = {},
+): void {
+  const { skip = false } = options;
+  const healthy = useSSEHealth();
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  // Only a healthy→unhealthy transition counts as a degradation worth a
+  // catch-up refresh — the initial pre-connect window does not (the
+  // component's own seed fetch covers that).
+  const everHealthyRef = useRef(false);
+  const degradedRef = useRef(false);
+
+  useEffect(() => {
+    if (skip) return undefined;
+    if (healthy) {
+      everHealthyRef.current = true;
+      if (degradedRef.current) {
+        degradedRef.current = false;
+        refreshRef.current();
+      }
+      return undefined;
+    }
+    degradedRef.current = everHealthyRef.current;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tick = () => {
+      timer = setTimeout(() => {
+        if (typeof document === 'undefined' || !document.hidden) refreshRef.current();
+        tick();
+      }, intervalMs * (0.8 + Math.random() * 0.4));
+    };
+    tick();
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [healthy, skip, intervalMs]);
+}
+
 export function useSSEDebounced(
   topics: string[],
   refresh: () => void,

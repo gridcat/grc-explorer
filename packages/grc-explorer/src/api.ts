@@ -1,3 +1,4 @@
+import compression from 'compression';
 import express, { NextFunction, Request, Response } from 'express';
 import HttpStatus from 'http-status-codes';
 import morgan from 'morgan';
@@ -46,6 +47,13 @@ app.set('query parser', 'extended');
 // downstream CH call reads it via the wrapper in lib/ch.ts so client
 // disconnects propagate as query cancellations (audit P0 #6).
 app.use(requestContextMiddleware);
+
+// gzip JSON responses — list/detail payloads compress 4-10×. The SSE
+// stream must pass through unbuffered, so /events is excluded (its
+// `no-transform` Cache-Control would also opt it out, belt + braces).
+app.use(compression({
+  filter: (req, res) => !req.path.startsWith('/events') && compression.filter(req, res),
+}));
 
 app.use(express.json({ type: 'application/vnd.api+json' }));
 app.use(express.json());
@@ -129,7 +137,39 @@ app.use((req, res) => {
   });
 });
 
-app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+// A client that navigates away / reloads mid-request aborts the
+// in-flight CH query (lib/ch.ts wires req.signal into every query as
+// Audit P0 #6 — intended). That surfaces here as an AbortError. It is
+// NOT a server fault: the client is already gone, so there's nobody to
+// 500 and nothing to alert on. Logging it at ERROR with a stack turns
+// routine reloads into false incident signal. Detect and swallow it
+// quietly; everything else keeps the ERROR + 500 path unchanged.
+function isClientAbort(err: Error, req: Request, res: Response): boolean {
+  const e = err as { name?: string; code?: string };
+  const sig = (req as unknown as { signal?: AbortSignal }).signal;
+  return (
+    e.name === 'AbortError'
+    || e.code === 'ABORT_ERR'
+    || e.code === 'ECONNRESET'
+    || /aborted a request|socket hang up|ECONNRESET/i.test(err.message ?? '')
+    || req.aborted === true
+    || sig?.aborted === true
+    || res.writableEnded
+  );
+}
+
+app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
+  if (isClientAbort(err, req, res)) {
+    log.debug(`client aborted ${req.method} ${req.originalUrl}`);
+    // Client is gone; don't synthesize a 500. End the response only if
+    // it's still open and untouched (writing to a dead socket throws).
+    if (!res.headersSent && !res.writableEnded) {
+      // 499 = nginx's "client closed request"; never reaches the
+      // client but keeps the access log honest about why it ended.
+      try { res.status(499).end(); } catch { /* socket already dead */ }
+    }
+    return;
+  }
   log.error(`Internal server error: ${err.stack ?? err.message}`);
   res.status(HttpStatus.INTERNAL_SERVER_ERROR).send({
     errors: [new ErrorModel(

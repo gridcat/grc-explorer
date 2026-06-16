@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { ch, hasColumns } from '../lib/ch';
+import { hasColumns, query } from '../lib/db';
 import { getTipAnchor, getV11BlockTimestamp } from '../lib/indexerTip';
 import { getPagination } from '../lib/pagination';
 import { param } from '../lib/req';
@@ -98,29 +98,33 @@ beaconsRouter.get('/', async (req: Request, res: Response) => {
   const atHeight = at !== undefined ? await resolveAtHeight(at) : null;
   const statusFilter = String(req.query.status ?? '').trim().toLowerCase();
 
+  // Build params to include ONLY what the WHERE actually references —
+  // DuckDB errors on a bound param the SQL doesn't use.
   const conditions: string[] = [];
-  const params: Record<string, unknown> = { evalAt, limit, offset };
+  const params: Record<string, unknown> = {};
   if (atHeight !== null && at !== undefined) {
-    conditions.push('block_height <= {atHeight: UInt32}');
+    conditions.push('block_height <= $atHeight');
     params.atHeight = atHeight;
   }
   if (statusFilter === 'revoked') {
     conditions.push("status = 'revoked'");
   } else if (statusFilter === 'active') {
     conditions.push("status != 'revoked'");
-    conditions.push('expiration > toDateTime({evalAt: UInt32})');
+    conditions.push('expiration > make_timestamp($evalAt::BIGINT * 1000000)');
+    params.evalAt = evalAt;
     if (atHeight !== null) {
-      conditions.push('(superseded_at_height IS NULL OR superseded_at_height > {atHeight: UInt32})');
+      conditions.push('(superseded_at_height IS NULL OR superseded_at_height > $atHeight)');
     } else {
       conditions.push('superseded_at_height IS NULL');
     }
   } else if (statusFilter === 'expired') {
     conditions.push("status != 'revoked'");
-    conditions.push('expiration <= toDateTime({evalAt: UInt32})');
+    conditions.push('expiration <= make_timestamp($evalAt::BIGINT * 1000000)');
+    params.evalAt = evalAt;
   } else if (statusFilter === 'superseded') {
     conditions.push("status != 'revoked'");
     if (atHeight !== null) {
-      conditions.push('superseded_at_height <= {atHeight: UInt32}');
+      conditions.push('superseded_at_height <= $atHeight');
     } else {
       conditions.push('superseded_at_height IS NOT NULL');
     }
@@ -129,30 +133,28 @@ beaconsRouter.get('/', async (req: Request, res: Response) => {
   const hasAuth = await hasAuthMethodColumn();
   const authSelect = hasAuth ? ', auth_method' : '';
 
-  const [rowsResult, countResult] = await Promise.all([
-    ch.query({
-      query: `
+  const [rawRows, countRows] = await Promise.all([
+    query<BeaconRow>(
+      `
         SELECT cpid, address, status, tx_id, block_height,
-               toUnixTimestamp(timestamp)  AS timestamp,
-               toUnixTimestamp(expiration) AS expiration,
+               CAST(epoch(timestamp) AS BIGINT)  AS timestamp,
+               CAST(epoch(expiration) AS BIGINT) AS expiration,
                superseded_at_height
                ${authSelect}
-        FROM beacons FINAL
+        FROM beacons
         ${whereSql}
         ORDER BY block_height DESC, tx_id DESC
-        LIMIT {limit: UInt32} OFFSET {offset: UInt32}
+        LIMIT ${Number(limit)} OFFSET ${Number(offset)}
       `,
-      query_params: params,
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `SELECT count() AS c FROM beacons FINAL ${whereSql}`,
-      query_params: params,
-      format: 'JSONEachRow',
-    }),
+      params,
+    ),
+    query<{ c: string | number }>(
+      `SELECT count(*) AS c FROM beacons ${whereSql}`,
+      params,
+    ),
   ]);
-  const rows = (await rowsResult.json<BeaconRow>()).map(presentBeacon);
-  const total = Number((await countResult.json<{ c: string | number }>())[0]?.c ?? 0);
+  const rows = rawRows.map(presentBeacon);
+  const total = Number(countRows[0]?.c ?? 0);
   const v11Timestamp = await getV11BlockTimestamp();
 
   const enriched = rows.map((b) => {
@@ -172,28 +174,26 @@ beaconsRouter.get('/:cpid', async (req: Request, res: Response) => {
   // Single SELECT shape with conditional WHERE — only the time-travel
   // case adds the `block_height <= {h}` clause. Mirrors the list
   // handler's `conditions[]` pattern so the two routes stay aligned.
-  const whereParts = ['cpid = {cpid: String}'];
+  const whereParts = ['cpid = $cpid'];
   const params: Record<string, unknown> = { cpid };
   if (atHeight !== null && at !== undefined) {
-    whereParts.push('block_height <= {h: UInt32}');
+    whereParts.push('block_height <= $h');
     params.h = atHeight;
   }
   const authSelect = (await hasAuthMethodColumn()) ? ', auth_method' : '';
-  const result = await ch.query({
-    query: `
+  const rows = (await query<BeaconRow>(
+    `
       SELECT cpid, address, status, tx_id, block_height,
-             toUnixTimestamp(timestamp)  AS timestamp,
-             toUnixTimestamp(expiration) AS expiration,
+             CAST(epoch(timestamp) AS BIGINT)  AS timestamp,
+             CAST(epoch(expiration) AS BIGINT) AS expiration,
              superseded_at_height
              ${authSelect}
-      FROM beacons FINAL
+      FROM beacons
       WHERE ${whereParts.join(' AND ')}
       ORDER BY block_height DESC
     `,
-    query_params: params,
-    format: 'JSONEachRow',
-  });
-  const rows = (await result.json<BeaconRow>()).map(presentBeacon);
+    params,
+  )).map(presentBeacon);
   const v11Timestamp = await getV11BlockTimestamp();
 
   const enriched = rows.map((b) => {

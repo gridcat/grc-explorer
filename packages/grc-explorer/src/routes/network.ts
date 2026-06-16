@@ -1,10 +1,12 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { ch } from '../lib/ch';
+import { query } from '../lib/db';
 import { getTipAnchor } from '../lib/indexerTip';
 import { getCursor } from '../lib/redis';
 import { clampedQueryInt, parseYearRange } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
+import { swrCachedLiveKeyed } from '../lib/swrCache';
+import { DailyVersionRow, rollupClientVersions } from '../lib/clientVersions';
 import { parseAt } from '../lib/timeMachine';
 import { NetworkStatsPoller, NetworkStatsPayload } from '../services/network/NetworkStatsPoller';
 import { forksActivated, resolveChainForks } from '../services/network/ChainForks';
@@ -32,7 +34,7 @@ interface SnapshotRow {
 // Build network-stats `attributes` from whatever we can find. Used as a
 // fallback whenever the live cache or a historical snapshot lookup is
 // empty — so the headline tiles never paint '—' as long as the indexer
-// has touched ClickHouse at all.
+// has touched the database at all.
 //
 // Live-observability fields (daemon's tip, peer count, mempool size,
 // daemon version) come from the cached poller value rather than the
@@ -41,20 +43,20 @@ interface SnapshotRow {
 // "Indexed / Tip" tile blanks out during deep backfill, because the
 // historical anchor sits years before the snapshot table's earliest row.
 async function buildFallbackAttrs(snapshotAtOrBefore?: number): Promise<Record<string, unknown> | null> {
-  const snapResult = await ch.query({
-    query: snapshotAtOrBefore !== undefined
-      ? 'SELECT toUnixTimestamp(ts) AS ts, peer_count, mempool_size, difficulty, tip_height FROM network_snapshots WHERE ts <= toDateTime({at: UInt32}) ORDER BY ts DESC LIMIT 1'
-      : 'SELECT toUnixTimestamp(ts) AS ts, peer_count, mempool_size, difficulty, tip_height FROM network_snapshots ORDER BY ts DESC LIMIT 1',
-    query_params: snapshotAtOrBefore !== undefined ? { at: snapshotAtOrBefore } : {},
-    format: 'JSONEachRow',
-  });
-  const blocksResult = await ch.query({
-    query: 'SELECT height, hash, difficulty FROM blocks FINAL ORDER BY height DESC LIMIT 1',
-    format: 'JSONEachRow',
-  });
+  const snapPromise = snapshotAtOrBefore !== undefined
+    ? query<SnapshotRow>(
+      'SELECT CAST(epoch(ts) AS BIGINT) AS ts, peer_count, mempool_size, difficulty, tip_height FROM network_snapshots WHERE ts <= make_timestamp($at::BIGINT * 1000000) ORDER BY ts DESC LIMIT 1',
+      { at: snapshotAtOrBefore },
+    )
+    : query<SnapshotRow>(
+      'SELECT CAST(epoch(ts) AS BIGINT) AS ts, peer_count, mempool_size, difficulty, tip_height FROM network_snapshots ORDER BY ts DESC LIMIT 1',
+    );
+  const blocksPromise = query<{ height: number; hash: string; difficulty: string }>(
+    'SELECT height, hash, difficulty FROM blocks ORDER BY height DESC LIMIT 1',
+  );
   const [snapRows, blockRows, cursor, cachedObserver] = await Promise.all([
-    snapResult.json<SnapshotRow>(),
-    blocksResult.json<{ height: number; hash: string; difficulty: string }>(),
+    snapPromise,
+    blocksPromise,
     getCursor(),
     NetworkStatsPoller.readCache() as Promise<Partial<NetworkStatsPayload> | null>,
   ]);
@@ -90,12 +92,10 @@ networkRouter.get('/', async (req: Request, res: Response) => {
     // anchor. Always overlay the cached value so the time-machine
     // historical branch doesn't stomp net_version/rpc_version to 0.
     const cachedObserver = (await NetworkStatsPoller.readCache()) as Partial<NetworkStatsPayload> | null;
-    const result = await ch.query({
-      query: 'SELECT toUnixTimestamp(ts) AS ts, peer_count, mempool_size, difficulty, tip_height FROM network_snapshots WHERE ts <= toDateTime({at: UInt32}) ORDER BY ts DESC LIMIT 1',
-      query_params: { at: anchor },
-      format: 'JSONEachRow',
-    });
-    const rows = await result.json<SnapshotRow>();
+    const rows = await query<SnapshotRow>(
+      'SELECT CAST(epoch(ts) AS BIGINT) AS ts, peer_count, mempool_size, difficulty, tip_height FROM network_snapshots WHERE ts <= make_timestamp($at::BIGINT * 1000000) ORDER BY ts DESC LIMIT 1',
+      { at: anchor },
+    );
     const snap = rows[0] ?? null;
     // Live-observability fields prefer the cached poller value over the
     // historical snapshot for the same reason as buildFallbackAttrs:
@@ -195,20 +195,16 @@ networkRouter.get('/history', async (req: Request, res: Response) => {
   // can't be reconstructed from chain data). blocks covers the full
   // indexed history so the time-machine can scrub years back and still
   // get difficulty + tipHeight sparklines.
-  const [snapResult, blockResult] = await Promise.all([
-    ch.query({
-      query: 'SELECT toUnixTimestamp(ts) AS ts, peer_count, mempool_size, difficulty, tip_height FROM network_snapshots WHERE ts >= toDateTime({since: UInt32}) AND ts <= toDateTime({end: UInt32}) ORDER BY ts ASC',
-      query_params: { since, end: endAt },
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: 'SELECT toUnixTimestamp(time) AS time, difficulty, height FROM blocks FINAL WHERE time >= toDateTime({since: UInt32}) AND time <= toDateTime({end: UInt32}) ORDER BY time ASC',
-      query_params: { since, end: endAt },
-      format: 'JSONEachRow',
-    }),
+  const [snapRows, blockRows] = await Promise.all([
+    query<SnapshotRow>(
+      'SELECT CAST(epoch(ts) AS BIGINT) AS ts, peer_count, mempool_size, difficulty, tip_height FROM network_snapshots WHERE ts >= make_timestamp($since::BIGINT * 1000000) AND ts <= make_timestamp($end::BIGINT * 1000000) ORDER BY ts ASC',
+      { since, end: endAt },
+    ),
+    query<{ time: number; difficulty: string; height: number }>(
+      'SELECT CAST(epoch(time) AS BIGINT) AS time, difficulty, height FROM blocks WHERE time >= make_timestamp($since::BIGINT * 1000000) AND time <= make_timestamp($end::BIGINT * 1000000) ORDER BY time ASC',
+      { since, end: endAt },
+    ),
   ]);
-  const snapRows = await snapResult.json<SnapshotRow>();
-  const blockRows = await blockResult.json<{ time: number; difficulty: string; height: number }>();
 
   let points: Point[];
   if (snapRows.length > 0) {
@@ -268,50 +264,48 @@ networkRouter.get('/history', async (req: Request, res: Response) => {
   }));
 });
 
-// Per-day difficulty time-series. Backed by the difficulty_daily MV
-// (0007_difficulty_aggregates.sql) so the whole-chain query is O(days)
-// not O(blocks). `range=year` filters to a single calendar year for the
-// per-year small-multiple grid; `range=all` (default) walks the entire
-// history. Both shapes return the same row schema so the frontend can
-// reuse one renderer.
+// Per-day difficulty time-series. Backed by the difficulty_daily view
+// (0004_rollup_views.sql) which already aggregates one row per
+// bucket_date, so the whole-chain query is O(days) not O(blocks).
+// `range=year` filters to a single calendar year for the per-year
+// small-multiple grid; `range=all` (default) walks the entire history.
+// Both shapes return the same row schema so the frontend can reuse one
+// renderer.
 //
-// Difficulty values are emitted as strings — `Decimal(30, 8)` round-trips
-// through Number() at the chart layer with float precision (it's a log
-// chart; the loss is invisible) but raw JSON.parse'ing them as numbers
-// would silently truncate the long tail. Strings stay honest.
+// Difficulty values are emitted as strings — DOUBLE round-trips through
+// Number() at the chart layer with float precision (it's a log chart;
+// the loss is invisible) but raw JSON.parse'ing them as numbers would
+// silently truncate the long tail. Strings stay honest.
 networkRouter.get('/difficulty', async (req: Request, res: Response) => {
   const yr = parseYearRange(req, res);
   if (!yr) return;
   const { isYear, year } = yr;
 
-  const where = isYear ? 'WHERE bucket_date >= toDate({y0: String}) AND bucket_date < toDate({y1: String})' : '';
+  const where = isYear ? 'WHERE bucket_date >= CAST($y0 AS DATE) AND bucket_date < CAST($y1 AS DATE)' : '';
   const params = isYear ? { y0: `${year}-01-01`, y1: `${(year ?? 0) + 1}-01-01` } : {};
 
-  const result = await ch.query({
-    query: `
+  const rows = await query<Row>(
+    `
       SELECT
-        toUnixTimestamp(toDateTime(bucket_date))   AS ts,
-        toString(bucket_date)                      AS date,
-        toString(minMerge(difficulty_min))         AS dmin,
-        toString(maxMerge(difficulty_max))         AS dmax,
-        toString(argMinMerge(difficulty_open))     AS dopen,
-        toString(argMaxMerge(difficulty_close))    AS dclose,
-        sumMerge(difficulty_sum) / countMerge(difficulty_count) AS davg,
-        toUInt32(countMerge(difficulty_count))     AS samples
+        CAST(epoch(CAST(bucket_date AS TIMESTAMP)) AS BIGINT) AS ts,
+        CAST(bucket_date AS VARCHAR)                          AS date,
+        CAST(difficulty_min AS VARCHAR)                       AS dmin,
+        CAST(difficulty_max AS VARCHAR)                       AS dmax,
+        CAST(difficulty_open AS VARCHAR)                      AS dopen,
+        CAST(difficulty_close AS VARCHAR)                     AS dclose,
+        difficulty_avg                                        AS davg,
+        difficulty_count                                      AS samples
       FROM difficulty_daily
       ${where}
-      GROUP BY bucket_date
       ORDER BY bucket_date ASC
     `,
-    query_params: params,
-    format: 'JSONEachRow',
-  });
+    params,
+  );
   type Row = {
     ts: number; date: string;
     dmin: string; dmax: string; dopen: string; dclose: string;
     davg: number; samples: number;
   };
-  const rows = await result.json<Row>();
   res.status(StatusCodes.OK).send(withMeta({
     data: {
       type: 'difficulty_history',
@@ -345,24 +339,22 @@ networkRouter.get('/difficulty', async (req: Request, res: Response) => {
 // (different code path — direct CH ASOF-join in PollWeightAggregator).
 networkRouter.get('/protocol-entries', async (_req: Request, res: Response) => {
   res.set('Cache-Control', 'public, max-age=60');
-  const result = await ch.query({
-    query: `
+  type Row = {
+    key: string; value: string; status: string; contract_version: number;
+    tx_id: string; previous_hash: string; block_height: number; time: number;
+  };
+  const rows = await query<Row>(
+    `
       SELECT key, value, status,
              contract_version,
              tx_id,
              previous_hash,
              block_height,
-             toUnixTimestamp(time) AS time
-      FROM protocol_entries FINAL
+             CAST(epoch(time) AS BIGINT) AS time
+      FROM protocol_entries
       ORDER BY key ASC, time DESC, tx_id ASC
     `,
-    format: 'JSONEachRow',
-  });
-  type Row = {
-    key: string; value: string; status: string; contract_version: number;
-    tx_id: string; previous_hash: string; block_height: number; time: number;
-  };
-  const rows = await result.json<Row>();
+  );
 
   // Group by key. Each group is a chain-ordered list (newest first
   // since we ORDER BY time DESC). The "current" value for a key is
@@ -435,50 +427,32 @@ networkRouter.get('/forks', async (_req: Request, res: Response) => {
   }));
 });
 
-// Per-day active-staker time-series. Backed by the stakers_daily MV
-// (0008_stakers_aggregates.sql) so the whole-chain query is O(days)
-// not O(blocks). Mirrors the /difficulty route's shape so the frontend
-// can reuse the same range/year contract: `range=year` filters to one
-// calendar year for the per-year small-multiple grid; `range=all`
-// (default) walks the entire history.
+// Per-day active-staker time-series. Backed by the stakers_daily view
+// (0004_rollup_views.sql) which already aggregates one row per
+// bucket_date, so the whole-chain query is O(days) not O(blocks).
+// Mirrors the /difficulty route's shape so the frontend can reuse the
+// same range/year contract: `range=year` filters to one calendar year
+// for the per-year small-multiple grid; `range=all` (default) walks the
+// entire history.
 //
-// Counts are emitted as numbers — uniq* tops out at ~2^32 and active
-// stakers per day stays in the low thousands; native JSON Number is
-// safe. `mintTotal` is the per-day sum of `mint` (Halford, UInt64);
-// emitted as a string to dodge JSON's 2^53 precision cliff in case
-// future supply expansion ever pushes a daily mint past it.
+// Counts are emitted as numbers — daily active stakers stays in the low
+// thousands; native JSON Number is safe. `mintTotal` is the per-day sum
+// of `mint` (Halford, UBIGINT); emitted as a string to dodge JSON's
+// 2^53 precision cliff in case future supply expansion ever pushes a
+// daily mint past it.
 networkRouter.get('/stakers', async (req: Request, res: Response) => {
   const yr = parseYearRange(req, res);
   if (!yr) return;
   const { isYear, year } = yr;
 
-  const where = isYear ? 'WHERE bucket_date >= toDate({y0: String}) AND bucket_date < toDate({y1: String})' : '';
+  const where = isYear ? 'WHERE bucket_date >= CAST($y0 AS DATE) AND bucket_date < CAST($y1 AS DATE)' : '';
   const params = isYear ? { y0: `${year}-01-01`, y1: `${(year ?? 0) + 1}-01-01` } : {};
 
-  const result = await ch.query({
-    query: `
-      SELECT
-        toUnixTimestamp(toDateTime(bucket_date))   AS ts,
-        toString(bucket_date)                      AS date,
-        uniqIfMerge(researcher_stakers)            AS researchers,
-        uniqIfMerge(investor_stakers)              AS investors,
-        uniqMerge(total_stakers)                   AS total,
-        toString(sumMerge(mint_sum))               AS mintTotal,
-        countMerge(pos_blocks)                     AS blocks
-      FROM stakers_daily
-      ${where}
-      GROUP BY bucket_date
-      ORDER BY bucket_date ASC
-    `,
-    query_params: params,
-    format: 'JSONEachRow',
-  });
-  // CH ships UInt64 over the JSONEachRow wire as STRINGS to dodge the
-  // JS Number precision cliff at 2^53 — `uniqMerge`, `countMerge`, and
-  // `sumMerge(UInt64)` all return string. The actual values for counts
-  // here (researchers/investors/total/blocks) fit comfortably in a
-  // double, so coerce them to JSON numbers before responding so the
-  // frontend can do arithmetic on them (`+=`, `>`, `Math.max`) without
+  // The stakers_daily view already returns plain per-bucket counts,
+  // so read the columns directly. `mint_sum` is a UBIGINT and comes
+  // back as a string; the count columns fit comfortably in a double,
+  // so coerce them to JSON numbers in the mapper below so the frontend
+  // can do arithmetic on them (`+=`, `>`, `Math.max`) without
   // string-concatenation footguns. `mintTotal` stays a string — daily
   // mint sums are well below 2^53 today, but cumulative-style queries
   // we may layer on top later could blow through it.
@@ -487,7 +461,22 @@ networkRouter.get('/stakers', async (req: Request, res: Response) => {
     researchers: string; investors: string; total: string;
     mintTotal: string; blocks: string;
   };
-  const rows = await result.json<Row>();
+  const rows = await query<Row>(
+    `
+      SELECT
+        CAST(epoch(CAST(bucket_date AS TIMESTAMP)) AS BIGINT) AS ts,
+        CAST(bucket_date AS VARCHAR)                          AS date,
+        researcher_stakers                                    AS researchers,
+        investor_stakers                                      AS investors,
+        total_stakers                                         AS total,
+        CAST(mint_sum AS VARCHAR)                             AS mintTotal,
+        pos_blocks                                            AS blocks
+      FROM stakers_daily
+      ${where}
+      ORDER BY bucket_date ASC
+    `,
+    params,
+  );
   res.status(StatusCodes.OK).send(withMeta({
     data: {
       type: 'stakers_history',
@@ -510,21 +499,19 @@ networkRouter.get('/stakers', async (req: Request, res: Response) => {
 });
 
 networkRouter.get('/bounds', async (_req: Request, res: Response) => {
-  const result = await ch.query({
-    query: `
-      SELECT
-        toUnixTimestamp(min(time)) AS minTs,
-        toUnixTimestamp(max(time)) AS maxTs,
-        min(height) AS minHeight,
-        max(height) AS maxHeight
-      FROM blocks FINAL
-    `,
-    format: 'JSONEachRow',
-  });
-  const rows = await result.json<{
+  const rows = await query<{
     minTs: number | null; maxTs: number | null;
     minHeight: number | null; maxHeight: number | null;
-  }>();
+  }>(
+    `
+      SELECT
+        CAST(epoch(min(time)) AS BIGINT) AS minTs,
+        CAST(epoch(max(time)) AS BIGINT) AS maxTs,
+        min(height) AS minHeight,
+        max(height) AS maxHeight
+      FROM blocks
+    `,
+  );
   const r = rows[0] ?? {
     minTs: null, maxTs: null, minHeight: null, maxHeight: null,
   };
@@ -540,4 +527,69 @@ networkRouter.get('/bounds', async (_req: Request, res: Response) => {
       },
     },
   }));
+});
+
+// Per-day staking-client version mix, backed by the client_versions_daily
+// view (0007). `range=year` filters to one calendar year; `range=all`
+// (default) walks the whole post-Fern history. Same range/year contract
+// as /stakers. swr-cached per range: the GROUP BY is cheap (~tens of ms)
+// but ROLE=all shares one DuckDB connection with the indexer's writes, so
+// collapsing repeat page-loads into one query per window keeps reads off
+// the write path. Bypassed automatically while backfilling.
+const CLIENT_VERSIONS_TTL_MS = 300_000;
+type JsonApiResource = { type: string; id: string; attributes: Record<string, unknown> };
+const getClientVersions = swrCachedLiveKeyed<JsonApiResource>(CLIENT_VERSIONS_TTL_MS);
+
+async function buildClientVersions(isYear: boolean, year: number | null): Promise<JsonApiResource> {
+  const where = isYear
+    ? 'WHERE bucket_date >= CAST($y0 AS DATE) AND bucket_date < CAST($y1 AS DATE)'
+    : '';
+  const params = isYear ? { y0: `${year}-01-01`, y1: `${(year ?? 0) + 1}-01-01` } : {};
+
+  // `blocks` is count(*) (UBIGINT) and `ts` is a BIGINT — both come back
+  // as strings, so coerce to numbers before the rollup does arithmetic.
+  type Row = { ts: string; date: string; raw_version: string; blocks: string };
+  const rows = await query<Row>(
+    `
+      SELECT
+        CAST(epoch(CAST(bucket_date AS TIMESTAMP)) AS BIGINT) AS ts,
+        CAST(bucket_date AS VARCHAR)                          AS date,
+        raw_version,
+        blocks
+      FROM client_versions_daily
+      ${where}
+      ORDER BY bucket_date ASC
+    `,
+    params,
+  );
+
+  const mapped: DailyVersionRow[] = rows.map((r) => ({
+    ts: Number(r.ts),
+    date: r.date,
+    raw_version: r.raw_version,
+    blocks: Number(r.blocks),
+  }));
+  const { versions, points } = rollupClientVersions(mapped);
+
+  return {
+    type: 'client_versions_history',
+    id: isYear ? `year:${year}` : 'all',
+    attributes: {
+      range: isYear ? 'year' : 'all',
+      year,
+      versions,
+      points,
+    },
+  };
+}
+
+networkRouter.get('/client-versions', async (req: Request, res: Response) => {
+  const yr = parseYearRange(req, res);
+  if (!yr) return;
+  const { isYear, year } = yr;
+  const data = await getClientVersions(
+    isYear ? `year:${year}` : 'all',
+    () => buildClientVersions(isYear, year),
+  );
+  res.status(StatusCodes.OK).send(withMeta({ data }));
 });

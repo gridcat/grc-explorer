@@ -1,7 +1,6 @@
-import { ch } from '../../lib/ch';
+import { query, run } from '../../lib/db';
 import { HALFORD } from '../../lib/halford';
 import { log } from '../../lib/log';
-import { nextSeq } from '../../lib/redis';
 import { WEIGHT_TYPE } from '../indexer/ContractParser';
 import { forkHeight } from '../network/ChainForks';
 
@@ -16,10 +15,9 @@ import { forkHeight } from '../network/ChainForks';
 //      voters (one row per response) get a single `response_count`,
 //      then compute response_weight per the canonical 5-branch
 //      `GRC::CalculateWeight` from src/gridcoin/voting/result.cpp.
-//      Re-INSERT each row with bumped _seq + the assigned weight.
-//      ReplacingMergeTree picks the latest version on read.
+//      UPDATE each row's assigned weight in place.
 //   4. Compute AV-W (eligible-balance + eligible-magnitude totals at
-//      poll-start) and re-INSERT the poll row with av_w_balance,
+//      poll-start) and UPDATE the poll row with av_w_balance,
 //      av_w_magnitude, weights_computed_at_height set, and the
 //      `magnitude_weight_factor` actually used.
 //
@@ -74,20 +72,17 @@ export class PollWeightAggregator {
     try {
       // Find closed polls with no computed weights yet, ordered by
       // end_time ascending — process the oldest backlog first.
-      const pollsResult = await ch.query({
-        query: `
+      const polls = await query<PollSnapshot>(
+        `
           SELECT poll_id, block_height, weight_type,
-                 toUnixTimestamp(start_time) AS start_time
-          FROM polls FINAL
+                 CAST(epoch(start_time) AS UINTEGER) AS start_time
+          FROM polls
           WHERE weights_computed_at_height IS NULL
             AND end_time <= now()
           ORDER BY end_time ASC
-          LIMIT {n: UInt32}
+          LIMIT ${POLLS_PER_TICK}
         `,
-        query_params: { n: POLLS_PER_TICK },
-        format: 'JSONEachRow',
-      });
-      const polls = await pollsResult.json<PollSnapshot>();
+      );
       if (polls.length === 0) return;
 
       log.info(`PollWeightAggregator: processing ${polls.length} closed poll(s)`);
@@ -106,61 +101,56 @@ export class PollWeightAggregator {
     // Latest superblock at-or-before poll start. Determines magnitude
     // snapshot for both AV-W eligible-magnitude total and per-voter
     // magnitude lookup.
-    const sbResult = await ch.query({
-      query: `
-        SELECT height FROM superblocks FINAL
-        WHERE height <= {h: UInt32}
+    const sbRows = await query<{ height: number }>(
+      `
+        SELECT height FROM superblocks
+        WHERE height <= $h
         ORDER BY height DESC LIMIT 1
       `,
-      query_params: { h: startHeight },
-      format: 'JSONEachRow',
-    });
-    const sbHeight = (await sbResult.json<{ height: number }>())[0]?.height ?? null;
+      { h: startHeight },
+    );
+    const sbHeight = sbRows[0]?.height ?? null;
 
-    // Three CH lookups in parallel: AV-W eligible balance, AV-W
+    // Three lookups in parallel: AV-W eligible balance, AV-W
     // eligible magnitude (depends on sbHeight), and the vote list.
     // None of these depend on each other — only the post-await
     // per-voter dictionary queries do.
-    const [eligBalResult, eligMagResult, voteResult] = await Promise.all([
-      ch.query({
-        query: `
-          SELECT toString(sum(bal)) AS total FROM (
+    const [eligBalRows, eligMagRows, votes] = await Promise.all([
+      query<{ total: string | null }>(
+        `
+          SELECT CAST(sum(bal) AS VARCHAR) AS total FROM (
             SELECT sum(delta) AS bal
-            FROM address_balance_history FINAL
-            WHERE valid_from_height <= {h: UInt32}
+            FROM address_balance_history
+            WHERE valid_from_height <= $h
             GROUP BY address
-            HAVING bal > 0
+            HAVING sum(delta) > 0
           )
         `,
-        query_params: { h: startHeight },
-        format: 'JSONEachRow',
-      }),
+        { h: startHeight },
+      ),
       sbHeight !== null
-        ? ch.query({
-          query: `
-            SELECT toString(sum(magnitude)) AS total FROM superblock_magnitudes FINAL
-            WHERE superblock_height = {h: UInt32}
+        ? query<{ total: string | null }>(
+          `
+            SELECT CAST(sum(magnitude) AS VARCHAR) AS total FROM superblock_magnitudes
+            WHERE superblock_height = $h
           `,
-          query_params: { h: sbHeight },
-          format: 'JSONEachRow',
-        }).then((r) => r.json<{ total: string | null }>())
+          { h: sbHeight },
+        )
         : Promise.resolve([{ total: '0' }] as Array<{ total: string | null }>),
-      ch.query({
-        query: `
+      query<VoteRow>(
+        `
           SELECT poll_id, voter_address, voter_cpid, mining_id, choice_idx,
-                 toString(weight)         AS weight,
-                 toString(weight_balance) AS weight_balance,
+                 CAST(weight AS VARCHAR)         AS weight,
+                 CAST(weight_balance AS VARCHAR) AS weight_balance,
                  weight_magnitude, tx_id, block_height
-          FROM votes FINAL
-          WHERE poll_id = {id: String}
+          FROM votes
+          WHERE poll_id = $id
         `,
-        query_params: { id: poll.poll_id },
-        format: 'JSONEachRow',
-      }),
+        { id: poll.poll_id },
+      ),
     ]);
-    const avwBalance = BigInt((await eligBalResult.json<{ total: string | null }>())[0]?.total ?? '0');
-    const avwMagnitude = Number((eligMagResult)[0]?.total ?? 0);
-    const votes = await voteResult.json<VoteRow>();
+    const avwBalance = BigInt(eligBalRows[0]?.total ?? '0');
+    const avwMagnitude = Number(eligMagRows[0]?.total ?? 0);
     if (votes.length === 0) {
       // No votes: just stamp weights_computed_at_height so the poll
       // doesn't keep coming back through the queue. The magnitude
@@ -189,28 +179,26 @@ export class PollWeightAggregator {
     const magByCpid = new Map<string, number>();
     const [balRows, magRows] = await Promise.all([
       voterAddresses.length > 0
-        ? ch.query({
-          query: `
-            SELECT address, toString(sum(delta)) AS bal
-            FROM address_balance_history FINAL
-            WHERE address IN ({addrs: Array(String)})
-              AND valid_from_height <= {h: UInt32}
+        ? query<{ address: string; bal: string }>(
+          `
+            SELECT address, CAST(sum(delta) AS VARCHAR) AS bal
+            FROM address_balance_history
+            WHERE address = ANY($addrs)
+              AND valid_from_height <= $h
             GROUP BY address
           `,
-          query_params: { addrs: voterAddresses, h: startHeight },
-          format: 'JSONEachRow',
-        }).then((r) => r.json<{ address: string; bal: string }>())
+          { addrs: voterAddresses, h: startHeight },
+        )
         : Promise.resolve([] as Array<{ address: string; bal: string }>),
       voterCpids.length > 0 && sbHeight !== null
-        ? ch.query({
-          query: `
-            SELECT cpid, magnitude FROM superblock_magnitudes FINAL
-            WHERE superblock_height = {h: UInt32}
-              AND cpid IN ({cpids: Array(String)})
+        ? query<{ cpid: string; magnitude: number }>(
+          `
+            SELECT cpid, magnitude FROM superblock_magnitudes
+            WHERE superblock_height = $h
+              AND cpid = ANY($cpids)
           `,
-          query_params: { h: sbHeight, cpids: voterCpids },
-          format: 'JSONEachRow',
-        }).then((r) => r.json<{ cpid: string; magnitude: number }>())
+          { h: sbHeight, cpids: voterCpids },
+        )
         : Promise.resolve([] as Array<{ cpid: string; magnitude: number }>),
     ]);
     for (const row of balRows) balByAddress.set(row.address, BigInt(row.bal));
@@ -249,9 +237,6 @@ export class PollWeightAggregator {
       arr.push(v);
       byGroup.set(key, arr);
     }
-
-    const seq = await nextSeq();
-    const updatedVotes: Array<Record<string, unknown>> = [];
 
     for (const group of byGroup.values()) {
       const responseCount = BigInt(group.length);
@@ -300,25 +285,22 @@ export class PollWeightAggregator {
           responseWeight = 0n;
       }
 
-      for (const v of group) {
-        updatedVotes.push({
-          poll_id: v.poll_id,
-          voter_address: v.voter_address,
-          voter_cpid: v.voter_cpid,
-          mining_id: v.mining_id,
-          choice_idx: v.choice_idx,
-          weight: responseWeight.toString(),
-          weight_balance: balance.toString(),
-          weight_magnitude: magnitude,
-          tx_id: v.tx_id,
-          block_height: v.block_height,
-          _seq: seq.toString(),
-        });
-      }
-    }
-
-    if (updatedVotes.length > 0) {
-      await ch.insert({ table: 'votes', format: 'JSONEachRow', values: updatedVotes });
+      // Every row in this group (one per chosen response) shares the
+      // computed weight/balance/magnitude; UPDATE them in one statement
+      // keyed by the group's tx_id + the set of choice_idx it covers.
+      // eslint-disable-next-line no-await-in-loop
+      await run(
+        `UPDATE votes
+         SET weight = $weight, weight_balance = $wb, weight_magnitude = $wm
+         WHERE tx_id = $tx AND choice_idx = ANY($idxs)`,
+        {
+          weight: responseWeight,
+          wb: balance,
+          wm: magnitude,
+          tx: sample.tx_id,
+          idxs: group.map((v) => v.choice_idx),
+        },
+      );
     }
     await this.markPollComputed(poll, {
       avwBalance,
@@ -349,20 +331,18 @@ export class PollWeightAggregator {
   private async resolveMagnitudeWeightFactor(
     pollStartTime: number,
   ): Promise<{ num: bigint; den: bigint } | null> {
-    const r = await ch.query({
-      query: `
+    const rows = await query<{ value: string | null }>(
+      `
         SELECT value
-        FROM protocol_entries FINAL
+        FROM protocol_entries
         WHERE key = 'magnitudeweightfactor'
           AND status = 'ACTIVE'
-          AND time <= toDateTime({ts: UInt32})
+          AND time <= make_timestamp($ts::BIGINT * 1000000)
         ORDER BY time DESC
         LIMIT 1
       `,
-      query_params: { ts: pollStartTime },
-      format: 'JSONEachRow',
-    });
-    const rows = await r.json<{ value: string | null }>();
+      { ts: pollStartTime },
+    );
     const raw = rows[0]?.value;
     if (typeof raw !== 'string' || raw.length === 0) return null;
     // Wallet's Fraction::FromString accepts "num/den"; tolerate plain
@@ -392,56 +372,23 @@ export class PollWeightAggregator {
     const {
       avwBalance, avwMagnitude, computedAtHeight, magnitudeWeightFactor,
     } = aggregates;
-    // Re-INSERT the poll row with the deferred annotations filled.
-    // Need to read the rest of the poll's columns first since CH has
-    // no UPDATE — supply the full row.
-    const fullResult = await ch.query({
-      query: `
-        SELECT
-          poll_id, title, question, url, poll_type, response_type, weight_type,
-          toUnixTimestamp(start_time) AS start_time,
-          toUnixTimestamp(end_time)   AS end_time,
-          claim_tx, block_height, creator_address, magnitude_weight_factor
-        FROM polls FINAL WHERE poll_id = {id: String} LIMIT 1
-      `,
-      query_params: { id: poll.poll_id },
-      format: 'JSONEachRow',
-    });
-    const fullRows = await fullResult.json<{
-      poll_id: string; title: string; question: string; url: string | null;
-      poll_type: string | null; response_type: string; weight_type: string;
-      start_time: number; end_time: number; claim_tx: string; block_height: number;
-      creator_address: string | null; magnitude_weight_factor: number | null;
-    }>();
-    if (fullRows.length === 0) return;
-    const f = fullRows[0];
-    const seq = await nextSeq();
-    await ch.insert({
-      table: 'polls',
-      format: 'JSONEachRow',
-      values: [{
-        poll_id: f.poll_id,
-        title: f.title,
-        question: f.question,
-        url: f.url,
-        poll_type: f.poll_type,
-        response_type: f.response_type,
-        weight_type: f.weight_type,
-        start_time: f.start_time,
-        end_time: f.end_time,
-        claim_tx: f.claim_tx,
-        block_height: f.block_height,
-        creator_address: f.creator_address,
-        // Persist the factor we actually applied so the /polls API
-        // can show why a vote scored what it did. If the row had a
-        // prior value (re-run scenario), the freshly computed value
-        // wins because we have the canonical formula.
-        magnitude_weight_factor: magnitudeWeightFactor,
-        av_w_balance: avwBalance.toString(),
-        av_w_magnitude: avwMagnitude,
-        weights_computed_at_height: computedAtHeight,
-        _seq: seq.toString(),
-      }],
-    });
+    // Fill the deferred annotations in place. The freshly computed
+    // magnitude_weight_factor wins over any prior value (re-run
+    // scenario) because we have the canonical formula.
+    await run(
+      `UPDATE polls
+       SET magnitude_weight_factor = $factor,
+           av_w_balance = $bal,
+           av_w_magnitude = $mag,
+           weights_computed_at_height = $height
+       WHERE poll_id = $id`,
+      {
+        factor: magnitudeWeightFactor,
+        bal: avwBalance,
+        mag: avwMagnitude,
+        height: computedAtHeight,
+        id: poll.poll_id,
+      },
+    );
   }
 }

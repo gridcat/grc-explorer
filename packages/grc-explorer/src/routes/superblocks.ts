@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { ch, hasColumns } from '../lib/ch';
+import { hasColumns, query } from '../lib/db';
 import { cpidDisplayName, resolveCpidNames } from '../lib/cpidNames';
 import { ErrorModel } from '../lib/errors';
 import { getTipAnchor } from '../lib/indexerTip';
@@ -35,28 +35,24 @@ const hasContractVersionColumn = () => hasColumns('superblocks', ['contract_vers
 //   actual indexed range.
 const TIMELINE_MAX_POINTS = 500;
 superblocksRouter.get('/timeline', async (_req: Request, res: Response) => {
-  const result = await ch.query({
-    query: `
-      WITH (
-        SELECT count() FROM superblocks FINAL
-      ) AS total,
-      greatest(intDiv(total, {cap: UInt32}), 1) AS stride
-      SELECT height, project_count, cpid_count, total_magnitude
-      FROM (
+  const rows = await query<{
+    height: number; project_count: number; cpid_count: number; total_magnitude: number;
+  }>(
+    `
+      WITH agg AS (SELECT count(*) AS total FROM superblocks),
+      numbered AS (
         SELECT height, project_count, cpid_count, total_magnitude,
                row_number() OVER (ORDER BY height ASC) AS rn,
                max(height) OVER () AS max_h
-        FROM superblocks FINAL
+        FROM superblocks
       )
-      WHERE (rn - 1) % stride = 0 OR height = max_h
+      SELECT height, project_count, cpid_count, total_magnitude
+      FROM numbered, agg
+      WHERE (rn - 1) % greatest(agg.total // $cap, 1) = 0 OR height = max_h
       ORDER BY height ASC
     `,
-    query_params: { cap: TIMELINE_MAX_POINTS },
-    format: 'JSONEachRow',
-  });
-  const rows = await result.json<{
-    height: number; project_count: number; cpid_count: number; total_magnitude: number;
-  }>();
+    { cap: TIMELINE_MAX_POINTS },
+  );
   res.status(StatusCodes.OK).send(withMeta({
     data: {
       type: 'superblock_timeline',
@@ -76,25 +72,19 @@ superblocksRouter.get('/timeline', async (_req: Request, res: Response) => {
 superblocksRouter.get('/', async (req: Request, res: Response) => {
   const { offset, limit } = getPagination(req);
   const versionSelect = (await hasContractVersionColumn()) ? ', contract_version' : '';
-  const [rowsResult, countResult] = await Promise.all([
-    ch.query({
-      query: `
+  const [rows, countRows] = await Promise.all([
+    query<SuperblockRow>(
+      `
         SELECT height, quorum_hash, total_magnitude, cpid_count, project_count, payload_size
                ${versionSelect}
-        FROM superblocks FINAL
+        FROM superblocks
         ORDER BY height DESC
-        LIMIT {limit: UInt32} OFFSET {offset: UInt32}
+        LIMIT ${Number(limit)} OFFSET ${Number(offset)}
       `,
-      query_params: { limit, offset },
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: 'SELECT count() AS c FROM superblocks FINAL',
-      format: 'JSONEachRow',
-    }),
+    ),
+    query<{ c: string | number }>('SELECT count(*) AS c FROM superblocks'),
   ]);
-  const rows = await rowsResult.json<SuperblockRow>();
-  const total = Number((await countResult.json<{ c: string | number }>())[0]?.c ?? 0);
+  const total = Number(countRows[0]?.c ?? 0);
   const body = SuperblockPresenter.render(rows, { meta: { count: total } });
   res.status(StatusCodes.OK).send(withMeta(body));
 });
@@ -107,12 +97,10 @@ superblocksRouter.get('/:height', async (req: Request, res: Response) => {
     });
     return;
   }
-  const sbResult = await ch.query({
-    query: 'SELECT * FROM superblocks FINAL WHERE height = {h: UInt32} LIMIT 1',
-    query_params: { h: height },
-    format: 'JSONEachRow',
-  });
-  const sbRows = await sbResult.json<SuperblockRow>();
+  const sbRows = await query<SuperblockRow>(
+    'SELECT * FROM superblocks WHERE height = $h LIMIT 1',
+    { h: height },
+  );
   if (sbRows.length === 0) {
     res.status(StatusCodes.NOT_FOUND).send({
       errors: [new ErrorModel(StatusCodes.NOT_FOUND, 'Superblock not found')],
@@ -121,59 +109,48 @@ superblocksRouter.get('/:height', async (req: Request, res: Response) => {
   }
   const row = sbRows[0];
 
-  const blockResult = await ch.query({
-    query: 'SELECT toUnixTimestamp(time) AS time FROM blocks FINAL WHERE height = {h: UInt32} LIMIT 1',
-    query_params: { h: height },
-    format: 'JSONEachRow',
-  });
-  const blockRows = await blockResult.json<{ time: number }>();
+  const blockRows = await query<{ time: number }>(
+    'SELECT CAST(epoch(time) AS BIGINT) AS time FROM blocks WHERE height = $h LIMIT 1',
+    { h: height },
+  );
   const blockTime = blockRows[0]?.time ?? null;
   const evalAt = blockTime ?? await getTipAnchor();
 
-  const [magResult, projResult, beaconCountResult] = await Promise.all([
-    ch.query({
-      // No FINAL: it ignores the proj_by_superblock_height projection
-      // (migration 0033) and full-scans ~4M rows. Without FINAL the
-      // projection serves `WHERE superblock_height = ?` as a range
-      // read; `_seq DESC LIMIT 1 BY cpid` reproduces FINAL's per-CPID
-      // dedup for this superblock.
-      query: `
-        SELECT cpid, magnitude FROM (
-          SELECT cpid, magnitude
-          FROM superblock_magnitudes
-          WHERE superblock_height = {h: UInt32}
-          ORDER BY _seq DESC
-          LIMIT 1 BY cpid
-        )
+  const [rawMagnitudes, projects, beaconCountRows] = await Promise.all([
+    // (cpid, superblock_height) is the PK, so each cpid appears once for
+    // this superblock — no dedup needed.
+    query<{ cpid: string; magnitude: number }>(
+      `
+        SELECT cpid, magnitude
+        FROM superblock_magnitudes
+        WHERE superblock_height = $h
         ORDER BY magnitude DESC
       `,
-      query_params: { h: height },
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `
+      { h: height },
+    ),
+    query<{
+      project_name: string; average_rac: number; rac: number; total_credit: number;
+    }>(
+      `
         SELECT project_name, average_rac, rac, total_credit
-        FROM superblock_projects FINAL
-        WHERE superblock_height = {h: UInt32}
+        FROM superblock_projects
+        WHERE superblock_height = $h
         ORDER BY rac DESC
       `,
-      query_params: { h: height },
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `
-        SELECT count() AS c FROM beacons FINAL
-        WHERE block_height <= {h: UInt32}
-          AND timestamp <= toDateTime({eval: UInt32})
-          AND expiration > toDateTime({eval: UInt32})
+      { h: height },
+    ),
+    query<{ c: string | number }>(
+      `
+        SELECT count(*) AS c FROM beacons
+        WHERE block_height <= $h
+          AND timestamp <= make_timestamp($eval::BIGINT * 1000000)
+          AND expiration > make_timestamp($eval::BIGINT * 1000000)
           AND status != 'revoked'
-          AND (superseded_at_height IS NULL OR superseded_at_height > {h: UInt32})
+          AND (superseded_at_height IS NULL OR superseded_at_height > $h)
       `,
-      query_params: { h: height, eval: evalAt },
-      format: 'JSONEachRow',
-    }),
+      { h: height, eval: evalAt },
+    ),
   ]);
-  const rawMagnitudes = await magResult.json<{ cpid: string; magnitude: number }>();
   // Server-side names so the superblock-detail SSR seed (can be ~900
   // CPIDs) renders without fanning out parallel /cpids/names calls.
   const magNames = await resolveCpidNames(rawMagnitudes.map((m) => m.cpid));
@@ -181,10 +158,7 @@ superblocksRouter.get('/:height', async (req: Request, res: Response) => {
     ...m,
     displayName: cpidDisplayName(magNames, m.cpid),
   }));
-  const projects = await projResult.json<{
-    project_name: string; average_rac: number; rac: number; total_credit: number;
-  }>();
-  const activeBeaconCount = Number((await beaconCountResult.json<{ c: string | number }>())[0]?.c ?? 0);
+  const activeBeaconCount = Number(beaconCountRows[0]?.c ?? 0);
 
   const body = SuperblockPresenter.render(row);
   res.status(StatusCodes.OK).send(withMeta(body, {

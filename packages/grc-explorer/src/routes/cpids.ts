@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { ch } from '../lib/ch';
+import { query } from '../lib/db';
 import { byBalanceDesc, computeCombined } from '../lib/combined';
 import { cpidDisplayName, resolveCpidNames } from '../lib/cpidNames';
 import { halford2grc } from '../lib/halford';
@@ -57,10 +57,12 @@ cpidsRouter.get('/names', async (req: Request, res: Response) => {
 // when a user lands on `/cpids/<name>` instead of `/cpids/<hex>` —
 // SSR looks the name up here and redirects to the canonical hex URL.
 //
-// Returns the highest-credit CPID match when there's an exact name
-// match. Falls back to a Meili prefix/substring search if no exact
-// match exists. Empty `matches` means 404; consumers should show a
-// friendly "no researcher by that name" page instead of erroring.
+// Exact-match only, by design: this drives the `/cpids/<name>`
+// redirect, which needs one definitive target. Returns the
+// highest-credit CPID for that name. Substring/discovery search lives
+// in the global search bar's `cpid_names` bucket instead. Empty
+// `matches` means 404; consumers should show a friendly "no researcher
+// by that name" page instead of erroring.
 cpidsRouter.get('/resolve', async (req: Request, res: Response) => {
   const raw = String(req.query.name ?? '').trim();
   if (!raw || raw.length > 64) {
@@ -75,27 +77,18 @@ cpidsRouter.get('/resolve', async (req: Request, res: Response) => {
   // when the same name exists across multiple projects.
   let matches: Array<{ cpid: string; name: string; project_name: string; total_credit: number }> = [];
   try {
-    const exact = await ch.query({
-      // No FINAL: bloom-pruned (idx_project_users_name, migration
-      // 0032) + per-(cpid,project_name) _seq dedup + HAVING re-assert
-      // — same verified pattern as resolveCpidNames / search.ts.
-      query: `
-        SELECT cpid, disp_name AS name, project_name, total_credit FROM (
-          SELECT cpid, project_name,
-                 argMax(name, _seq)         AS disp_name,
-                 argMax(total_credit, _seq) AS total_credit
-          FROM project_users
-          WHERE name = {name: String}
-          GROUP BY cpid, project_name
-          HAVING disp_name = {name: String}
-        )
+    // (cpid, project_name) is the PK so each row is already unique —
+    // no dedup needed. The name filter is the selective predicate.
+    matches = await query<{ cpid: string; name: string; project_name: string; total_credit: number }>(
+      `
+        SELECT cpid, name, project_name, total_credit
+        FROM project_users
+        WHERE name = $name
         ORDER BY total_credit DESC
         LIMIT 10
       `,
-      query_params: { name: raw },
-      format: 'JSONEachRow',
-    });
-    matches = await exact.json<{ cpid: string; name: string; project_name: string; total_credit: number }>();
+      { name: raw },
+    );
   } catch (_err) {
     // project_users absent (fresh deploy pre-migration 0015) → fall
     // through to empty matches; the frontend handles the 404 case.
@@ -137,40 +130,26 @@ async function buildCpidLeaderboard(
   const currentHeight = await resolveAtSuperblockHeight(at);
   if (currentHeight === null) return { data: [] };
   if (compareAt === undefined && compareDays !== null) {
-    const r = await ch.query({
-      query: 'SELECT toUnixTimestamp(time) AS time FROM blocks FINAL WHERE height = {h: UInt32}',
-      query_params: { h: currentHeight },
-      format: 'JSONEachRow',
-    });
-    const t = (await r.json<{ time: number }>())[0]?.time;
+    const r = await query<{ time: number }>(
+      'SELECT CAST(epoch(time) AS INTEGER) AS time FROM blocks WHERE height = $h',
+      { h: currentHeight },
+    );
+    const t = r[0]?.time;
     if (t !== undefined) compareAt = t - compareDays * 86_400;
   }
   const compareHeight = compareAt !== undefined ? await resolveAtSuperblockHeight(compareAt) : null;
 
-  const [currentResult, compareResult] = await Promise.all([
-    ch.query({
-      query: `
-        SELECT cpid, magnitude FROM superblock_magnitudes FINAL
-        WHERE superblock_height = {h: UInt32}
-        ORDER BY magnitude DESC LIMIT {n: UInt32}
-      `,
-      query_params: { h: currentHeight, n: limit },
-      format: 'JSONEachRow',
-    }),
+  const sbMagSql = (n: number) => `
+    SELECT cpid, magnitude FROM superblock_magnitudes
+    WHERE superblock_height = $h
+    ORDER BY magnitude DESC LIMIT ${n}
+  `;
+  const [current, compare] = await Promise.all([
+    query<{ cpid: string; magnitude: number }>(sbMagSql(limit), { h: currentHeight }),
     compareHeight !== null
-      ? ch.query({
-        query: `
-          SELECT cpid, magnitude FROM superblock_magnitudes FINAL
-          WHERE superblock_height = {h: UInt32}
-          ORDER BY magnitude DESC LIMIT {n: UInt32}
-        `,
-        query_params: { h: compareHeight, n: limit },
-        format: 'JSONEachRow',
-      }).then((r) => r.json<{ cpid: string; magnitude: number }>())
+      ? query<{ cpid: string; magnitude: number }>(sbMagSql(limit), { h: compareHeight })
       : Promise.resolve([] as Array<{ cpid: string; magnitude: number }>),
   ]);
-  const current = await currentResult.json<{ cpid: string; magnitude: number }>();
-  const compare = compareResult;
 
   const compareRanks = new Map<string, number>();
   compare.forEach((row, idx) => compareRanks.set(row.cpid, idx + 1));
@@ -225,99 +204,96 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
   const at = parseAt(req);
   const atHeight = at !== undefined ? await resolveAtHeight(at) : null;
   const hasAtFilter = atHeight !== null && at !== undefined;
-  const cap = hasAtFilter ? 'AND block_height <= {h: UInt32}' : '';
-  const sbCap = hasAtFilter ? 'AND superblock_height <= {h: UInt32}' : '';
-  const blockCap = hasAtFilter ? 'AND height <= {h: UInt32}' : '';
+  const cap = hasAtFilter ? 'AND block_height <= $h' : '';
+  const sbCap = hasAtFilter ? 'AND superblock_height <= $h' : '';
+  const blockCap = hasAtFilter ? 'AND height <= $h' : '';
   // Same predicate as `cap` but qualified for the JOIN against
   // mrc_requests so the planner doesn't see ambiguous block_height.
-  const mrcCap = hasAtFilter ? 'AND m.block_height <= {h: UInt32}' : '';
+  const mrcCap = hasAtFilter ? 'AND m.block_height <= $h' : '';
   const params: Record<string, unknown> = { cpid };
   if (hasAtFilter) params.h = atHeight;
 
   const [
-    claimResult, magResult, beaconResult, blockCountResult, mrcResult, namesResult, linkedWalletsResult,
+    claims, magnitudes, beacons, blockCountRows, mrcs, names, linkedWallets,
   ] = await Promise.all([
-    ch.query({
-      query: `
+    query<{
+      block_height: number; organization: string; block_subsidy: string;
+      research_subsidy: string; magnitude: number; is_mrc: boolean;
+    }>(
+      `
         SELECT block_height, organization,
-               toString(block_subsidy)    AS block_subsidy,
-               toString(research_subsidy) AS research_subsidy,
+               CAST(block_subsidy AS VARCHAR)    AS block_subsidy,
+               CAST(research_subsidy AS VARCHAR) AS research_subsidy,
                magnitude, is_mrc
-        FROM claims FINAL
-        WHERE cpid = {cpid: String} ${cap}
+        FROM claims
+        WHERE cpid = $cpid ${cap}
         ORDER BY block_height DESC LIMIT 50
       `,
-      query_params: params,
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `
-        SELECT superblock_height, magnitude FROM superblock_magnitudes FINAL
-        WHERE cpid = {cpid: String} ${sbCap}
+      params,
+    ),
+    query<{ superblock_height: number; magnitude: number }>(
+      `
+        SELECT superblock_height, magnitude FROM superblock_magnitudes
+        WHERE cpid = $cpid ${sbCap}
         ORDER BY superblock_height DESC LIMIT 100
       `,
-      query_params: params,
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `
+      params,
+    ),
+    query<{
+      cpid: string; address: string; status: string; tx_id: string;
+      block_height: number; timestamp: number; expiration: number; superseded_at_height: number | null;
+    }>(
+      `
         SELECT cpid, address, status, tx_id, block_height,
-               toUnixTimestamp(timestamp)  AS timestamp,
-               toUnixTimestamp(expiration) AS expiration,
+               CAST(epoch(timestamp) AS INTEGER)  AS timestamp,
+               CAST(epoch(expiration) AS INTEGER) AS expiration,
                superseded_at_height
-        FROM beacons FINAL
-        WHERE cpid = {cpid: String} ${cap}
+        FROM beacons
+        WHERE cpid = $cpid ${cap}
         ORDER BY block_height DESC
       `,
-      query_params: params,
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `SELECT count() AS c FROM blocks FINAL WHERE staker_cpid = {cpid: String} ${blockCap}`,
-      query_params: params,
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `
+      params,
+    ),
+    query<{ c: string | number }>(
+      `SELECT count(*) AS c FROM blocks WHERE staker_cpid = $cpid ${blockCap}`,
+      params,
+    ),
+    query<{
+      tx_id: string; research_subsidy: string; fee_offered: string;
+      first_seen: number; block_height: number | null; block_time: number | null;
+      is_evicted: boolean;
+    }>(
+      `
         SELECT
-          m.tx_id                       AS tx_id,
-          toString(m.research_subsidy)  AS research_subsidy,
-          toString(m.fee_offered)       AS fee_offered,
-          toUnixTimestamp(m.first_seen) AS first_seen,
-          m.block_height                AS block_height,
-          toUnixTimestamp(m.block_time) AS block_time,
-          (mt.evicted_at IS NOT NULL)   AS is_evicted
-        FROM mrc_requests AS m FINAL
-        ANY LEFT JOIN mempool_txs AS mt FINAL ON mt.tx_id = m.tx_id
-        WHERE m.cpid = {cpid: String} ${mrcCap}
+          m.tx_id                              AS tx_id,
+          CAST(m.research_subsidy AS VARCHAR)  AS research_subsidy,
+          CAST(m.fee_offered AS VARCHAR)       AS fee_offered,
+          CAST(epoch(m.first_seen) AS INTEGER)  AS first_seen,
+          m.block_height                        AS block_height,
+          CAST(epoch(m.block_time) AS INTEGER)  AS block_time,
+          (mt.evicted_at IS NOT NULL)          AS is_evicted
+        FROM mrc_requests AS m
+        LEFT JOIN mempool_txs AS mt ON mt.tx_id = m.tx_id
+        WHERE m.cpid = $cpid ${mrcCap}
         ORDER BY m.first_seen DESC LIMIT 100
       `,
-      query_params: params,
-      format: 'JSONEachRow',
-    }),
+      params,
+    ),
     // Off-chain BOINC display names for this CPID, one per project
     // that's published a user.gz containing it. The route stays
     // resilient if the table is absent (fresh deploy pre-migration
     // 0015): empty array, the rest of the response still renders.
-    ch.query({
-      // No FINAL: cpid is the LEADING ORDER BY key, so WHERE cpid is a
-      // tight PK range once FINAL is gone. Dedup each project_name to
-      // its latest _seq, then drop empty names post-dedup (HAVING).
-      query: `
-        SELECT project_name, disp_name AS name, total_credit FROM (
-          SELECT project_name,
-                 argMax(name, _seq)         AS disp_name,
-                 argMax(total_credit, _seq) AS total_credit
-          FROM project_users
-          WHERE cpid = {cpid: String}
-          GROUP BY project_name
-          HAVING disp_name != ''
-        )
+    // (cpid, project_name) is the PK so each project row is already
+    // unique; drop empty names directly.
+    query<{ project_name: string; name: string; total_credit: number }>(
+      `
+        SELECT project_name, name, total_credit
+        FROM project_users
+        WHERE cpid = $cpid AND name != ''
         ORDER BY total_credit DESC
       `,
-      query_params: { cpid },
-      format: 'JSONEachRow',
-    }).catch(() => null),
+      { cpid },
+    ).catch(() => [] as Array<{ project_name: string; name: string; total_credit: number }>),
     // Wallet ↔ CPID linkage from three on-chain signals:
     //   • beacons.address — the researcher signed a beacon contract.
     //   • blocks.staker_cpid → miner_address — the wallet had the
@@ -327,33 +303,40 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
     // The inner UNION ALL produces one row per (address, source) with
     // per-source aggregates; the outer GROUP BY collapses across
     // sources so the response is one row per distinct address.
-    ch.query({
-      query: `
+    query<{
+      address: string;
+      beacon_count: number;
+      staked_blocks: number;
+      mrc_payouts: number;
+      first_height: number;
+      last_height: number;
+    }>(
+      `
         SELECT
           address,
-          toUInt32(sumIf(c, source = 'beacon')) AS beacon_count,
-          toUInt32(sumIf(c, source = 'staked')) AS staked_blocks,
-          toUInt32(sumIf(c, source = 'mrc'))    AS mrc_payouts,
-          toUInt32(min(first_h))                AS first_height,
-          toUInt32(max(last_h))                 AS last_height
+          CAST(sum(c) FILTER (WHERE source = 'beacon') AS UINTEGER) AS beacon_count,
+          CAST(sum(c) FILTER (WHERE source = 'staked') AS UINTEGER) AS staked_blocks,
+          CAST(sum(c) FILTER (WHERE source = 'mrc')    AS UINTEGER) AS mrc_payouts,
+          CAST(min(first_h) AS UINTEGER)                            AS first_height,
+          CAST(max(last_h) AS UINTEGER)                             AS last_height
         FROM (
-          SELECT address, count() AS c, 'beacon' AS source,
+          SELECT address, count(*) AS c, 'beacon' AS source,
                  min(block_height) AS first_h, max(block_height) AS last_h
-          FROM beacons FINAL
-          WHERE cpid = {cpid: String} AND address != '' ${cap}
+          FROM beacons
+          WHERE cpid = $cpid AND address != '' ${cap}
           GROUP BY address
           UNION ALL
-          SELECT miner_address AS address, count() AS c, 'staked' AS source,
+          SELECT miner_address AS address, count(*) AS c, 'staked' AS source,
                  min(height) AS first_h, max(height) AS last_h
-          FROM blocks FINAL
-          WHERE staker_cpid = {cpid: String}
+          FROM blocks
+          WHERE staker_cpid = $cpid
             AND miner_address IS NOT NULL AND miner_address != '' ${blockCap}
           GROUP BY miner_address
           UNION ALL
-          SELECT pay_to_address AS address, count() AS c, 'mrc' AS source,
+          SELECT pay_to_address AS address, count(*) AS c, 'mrc' AS source,
                  min(block_height) AS first_h, max(block_height) AS last_h
-          FROM mrc_requests FINAL
-          WHERE cpid = {cpid: String}
+          FROM mrc_requests
+          WHERE cpid = $cpid
             AND pay_to_address IS NOT NULL AND pay_to_address != ''
             AND block_height IS NOT NULL ${cap}
           GROUP BY pay_to_address
@@ -362,36 +345,10 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
         ORDER BY beacon_count DESC, staked_blocks DESC, mrc_payouts DESC, last_height DESC
         LIMIT 50
       `,
-      query_params: params,
-      format: 'JSONEachRow',
-    }),
+      params,
+    ),
   ]);
-  const claims = await claimResult.json<{
-    block_height: number; organization: string; block_subsidy: string;
-    research_subsidy: string; magnitude: number; is_mrc: boolean;
-  }>();
-  const magnitudes = await magResult.json<{ superblock_height: number; magnitude: number }>();
-  const beacons = await beaconResult.json<{
-    cpid: string; address: string; status: string; tx_id: string;
-    block_height: number; timestamp: number; expiration: number; superseded_at_height: number | null;
-  }>();
-  const blocksStaked = Number((await blockCountResult.json<{ c: string | number }>())[0]?.c ?? 0);
-  const mrcs = await mrcResult.json<{
-    tx_id: string; research_subsidy: string; fee_offered: string;
-    first_seen: number; block_height: number | null; block_time: number | null;
-    is_evicted: boolean;
-  }>();
-  const names = namesResult
-    ? await namesResult.json<{ project_name: string; name: string; total_credit: number }>()
-    : [];
-  const linkedWallets = await linkedWalletsResult.json<{
-    address: string;
-    beacon_count: number;
-    staked_blocks: number;
-    mrc_payouts: number;
-    first_height: number;
-    last_height: number;
-  }>();
+  const blocksStaked = Number(blockCountRows[0]?.c ?? 0);
   // Current rank — how many CPIDs have a higher magnitude in the most
   // recent superblock this CPID appeared in? Plus 1 = their rank. If
   // they don't appear in any superblock yet, rank is null (the page
@@ -399,38 +356,37 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
   // (~150-200 entries on mainnet).
   //
   // Fired in parallel with the claim-heights time lookup — they're
-  // independent CH queries reachable from the data we already have.
+  // independent queries reachable from the data we already have.
   const claimHeights = claims.length > 0
     ? Array.from(new Set([claims[0].block_height, claims[claims.length - 1].block_height]))
     : [];
   const wantRank = magnitudes.length > 0 && magnitudes[0].magnitude > 0;
-  const [rankRow, heightRows] = await Promise.all([
+  const [rankRows, heightRows] = await Promise.all([
     wantRank
-      ? ch.query({
-        query: `
-          SELECT toUInt32(count()) AS higher
-          FROM superblock_magnitudes FINAL
-          WHERE superblock_height = {sb: UInt32} AND magnitude > {mag: Float64}
+      ? query<{ higher: number | string }>(
+        `
+          SELECT CAST(count(*) AS UINTEGER) AS higher
+          FROM superblock_magnitudes
+          WHERE superblock_height = $sb AND magnitude > $mag
         `,
-        query_params: { sb: magnitudes[0].superblock_height, mag: magnitudes[0].magnitude },
-        format: 'JSONEachRow',
-      }).then((r) => r.json<{ higher: number | string }>()).then((rows) => rows[0] ?? null)
-      : Promise.resolve(null),
+        { sb: magnitudes[0].superblock_height, mag: magnitudes[0].magnitude },
+      )
+      : Promise.resolve([] as Array<{ higher: number | string }>),
     claimHeights.length > 0
-      ? ch.query({
-        query: `
-          SELECT height, toUnixTimestamp(time) AS time
-          FROM blocks FINAL
-          WHERE height IN ({hs: Array(UInt32)})
+      ? query<{ height: number; time: number }>(
+        `
+          SELECT height, CAST(epoch(time) AS BIGINT) AS time
+          FROM blocks
+          WHERE height = ANY($hs)
         `,
-        query_params: { hs: claimHeights },
-        format: 'JSONEachRow',
-      }).then((r) => r.json<{ height: number; time: number }>())
+        { hs: claimHeights },
+      )
       : Promise.resolve([] as Array<{ height: number; time: number }>),
   ]);
+  const rankRow = rankRows[0] ?? null;
   const currentRank: number | null = rankRow ? Number(rankRow.higher) + 1 : null;
   const heightToTime = new Map<number, number>();
-  for (const b of heightRows) heightToTime.set(b.height, b.time);
+  for (const b of heightRows) heightToTime.set(b.height, Number(b.time));
 
   // The CPID page is the authoritative "researcher profile", so the
   // combined figure lives here (the address page links up to it). The
@@ -531,49 +487,45 @@ cpidsRouter.get('/:cpid/blocks', async (req: Request, res: Response) => {
   const at = parseAt(req);
   const atHeight = at !== undefined ? await resolveAtHeight(at) : null;
   const { offset, limit } = getPagination(req);
-  const cap = atHeight !== null && at !== undefined ? 'AND height <= {h: UInt32}' : '';
-  const params: Record<string, unknown> = { cpid, offset, limit };
+  const cap = atHeight !== null && at !== undefined ? 'AND height <= $h' : '';
+  const params: Record<string, unknown> = { cpid };
   if (atHeight !== null && at !== undefined) params.h = atHeight;
 
-  const [rowsResult, countResult] = await Promise.all([
-    ch.query({
-      query: `
-        SELECT height, hash, toUnixTimestamp(time) AS time, is_superblock
-        FROM blocks FINAL
-        WHERE staker_cpid = {cpid: String} ${cap}
-        ORDER BY height DESC LIMIT {limit: UInt32} OFFSET {offset: UInt32}
+  const [rows, countRows] = await Promise.all([
+    query<{
+      height: number; hash: string; time: number; is_superblock: boolean;
+    }>(
+      `
+        SELECT height, hash, CAST(epoch(time) AS BIGINT) AS time, is_superblock
+        FROM blocks
+        WHERE staker_cpid = $cpid ${cap}
+        ORDER BY height DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}
       `,
-      query_params: params,
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `SELECT count() AS c FROM blocks FINAL WHERE staker_cpid = {cpid: String} ${cap}`,
-      query_params: params,
-      format: 'JSONEachRow',
-    }),
+      params,
+    ),
+    query<{ c: string | number }>(
+      `SELECT count(*) AS c FROM blocks WHERE staker_cpid = $cpid ${cap}`,
+      params,
+    ),
   ]);
-  const rows = await rowsResult.json<{
-    height: number; hash: string; time: number; is_superblock: boolean;
-  }>();
-  const total = Number((await countResult.json<{ c: string | number }>())[0]?.c ?? 0);
+  const total = Number(countRows[0]?.c ?? 0);
 
   const claimsByHeight = new Map<number, { research_subsidy: string; block_subsidy: string; magnitude: number }>();
   if (rows.length > 0) {
     const heights = rows.map((b) => b.height);
-    const cR = await ch.query({
-      query: `
-        SELECT block_height,
-               toString(research_subsidy) AS research_subsidy,
-               toString(block_subsidy)    AS block_subsidy,
-               magnitude
-        FROM claims FINAL WHERE block_height IN ({heights: Array(UInt32)})
-      `,
-      query_params: { heights },
-      format: 'JSONEachRow',
-    });
-    for (const c of await cR.json<{
+    const cR = await query<{
       block_height: number; research_subsidy: string; block_subsidy: string; magnitude: number;
-    }>()) {
+    }>(
+      `
+        SELECT block_height,
+               CAST(research_subsidy AS VARCHAR) AS research_subsidy,
+               CAST(block_subsidy AS VARCHAR)    AS block_subsidy,
+               magnitude
+        FROM claims WHERE block_height = ANY($heights)
+      `,
+      { heights },
+    );
+    for (const c of cR) {
       claimsByHeight.set(c.block_height, c);
     }
   }

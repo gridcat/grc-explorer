@@ -34,6 +34,14 @@ export const redisPub = new Redis(pubsubOpts);
 // needed.
 export const redisPrefix = `${config.REDIS_PREFIX}:`;
 
+// Close every socket opened above so a one-shot CLI script can exit
+// cleanly (the four clients are created eagerly at import). lib/redis
+// owns the sockets, so it owns the teardown — shared by the wipe /
+// boinc:fetch / admin scripts instead of each repeating the quit dance.
+export async function closeRedis(): Promise<void> {
+  await Promise.all([redis.quit(), redisStreams.quit(), redisSub.quit(), redisPub.quit()]);
+}
+
 // Monotonic sequence counter used as the `_seq` version on every CH
 // row that may be re-inserted (reorgs, deferred annotations).
 // ReplacingMergeTree(_seq) merges away older versions; argMax(…, _seq)
@@ -96,6 +104,28 @@ export async function setWipeLock(ttlSeconds: number = 120): Promise<void> {
 
 export async function clearWipeLock(): Promise<void> {
   await redis.del(WIPE_LOCK_KEY);
+}
+
+// DuckDB secondary-index self-heal flag. When a write path hits the fatal
+// "Failed to delete all rows from index" corruption, the whole database is
+// invalidated and the only recovery is to reopen it — but the dangling ART
+// index entries are persisted on disk, so a plain restart would crash-loop
+// on the next delete. The fatal handler sets this flag before exiting; the
+// next boot rebuilds the secondary indexes (clearing the dangling entries)
+// and clears it. Survives the restart by design, so it lives outside the
+// wipe-flush namespace.
+export const INDEX_REBUILD_KEY = 'duckdb:index-rebuild-needed';
+
+export async function isIndexRebuildNeeded(): Promise<boolean> {
+  return (await redis.get(INDEX_REBUILD_KEY)) !== null;
+}
+
+export async function setIndexRebuildNeeded(): Promise<void> {
+  await redis.set(INDEX_REBUILD_KEY, '1');
+}
+
+export async function clearIndexRebuildNeeded(): Promise<void> {
+  await redis.del(INDEX_REBUILD_KEY);
 }
 
 // Wallet projection — Redis is the canonical store for "current

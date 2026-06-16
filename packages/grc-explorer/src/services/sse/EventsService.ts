@@ -118,7 +118,11 @@ export class EventsService {
     if (this.clients.size === 0) return;
     this.clients.forEach((c) => {
       try {
-        c.res.write(': keep-alive\n\n');
+        // Named event rather than an SSE comment: comments are invisible
+        // to browser EventSource, so the client couldn't tell a healthy
+        // quiet stream from a silently dead one. A `ping` event lets the
+        // frontend gate its fallback polling on stream health.
+        c.res.write('event: ping\ndata: {}\n\n');
       } catch (err) {
         log.warn(`[SSE] keep-alive failed for ${c.id}`, err);
       }

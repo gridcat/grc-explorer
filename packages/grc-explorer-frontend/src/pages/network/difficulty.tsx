@@ -13,7 +13,9 @@ import { Layout } from '../../layouts/Layout';
 import {
   ChartAxes, ChartFrame, ChartFrameProvider, ChartTooltip, linearScale, niceTicks,
 } from '../../components/charts/SvgChart';
+import { useXZoom, ZoomViewport, ZoomResetButton } from '../../components/charts/useXZoom';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
+import { CopyLinkButton } from '../../components/CopyLinkButton';
 import { api } from '../../lib/api';
 import { formatCompact, formatYmdDate, MONTHS_SHORT } from '../../lib/format';
 
@@ -25,7 +27,7 @@ interface Point {
   open: string;
   close: string;
   avg: number;
-  samples: number;
+  samples: string;
 }
 
 interface ForkMarker {
@@ -75,6 +77,32 @@ function formatDifficulty(v: number): string {
   return formatCompact(v, 2);
 }
 
+// Adaptive display ceiling for the per-year LINEAR charts. The fixed 1M
+// ceiling is right for the whole-chain log axis, but on a single year's
+// linear axis it's still far above the calm state: 2015 has a handful of
+// pre-patch spike days orders of magnitude above the rest, so anchoring
+// the axis to them flattens the whole year into a baseline line. Use a
+// robust far-outlier fence (Tukey, Q3 + 3·IQR over the daily highs) so
+// the axis fits the bulk of the data and only genuine spikes clamp — for
+// a normal year with no outliers the fence sits above the real max, so
+// nothing clamps and the axis auto-fits as before. Never exceeds the
+// protocol's own pathological ceiling.
+function adaptiveDifficultyCeil(points: Point[]): number {
+  const highs = points
+    .map((p) => Number(p.max))
+    .filter((v) => Number.isFinite(v) && v > 0)
+    .sort((a, b) => a - b);
+  if (highs.length < 4) return DISPLAY_DIFFICULTY_CEIL;
+  const at = (q: number) => highs[Math.min(highs.length - 1, Math.floor(q * (highs.length - 1)))];
+  const q1 = at(0.25);
+  const q3 = at(0.75);
+  // Far-outlier fence. With no outliers it sits above the real max (so
+  // nothing clamps); only genuine spikes exceed it. Bounded by the
+  // protocol ceiling so a wildly-spread year can't exceed the log view.
+  const fence = q3 + (q3 - q1) * 3;
+  return Math.min(fence, DISPLAY_DIFFICULTY_CEIL);
+}
+
 const formatDate = formatYmdDate;
 
 export default function DifficultyHistory({ points, forks }: DifficultyHistoryProps) {
@@ -97,6 +125,13 @@ export default function DifficultyHistory({ points, forks }: DifficultyHistoryPr
     const g = yearGroups.find((x) => x.year === selectedYear);
     return g ? g.points : [];
   }, [selectedYear, yearGroups]);
+
+  // Whether the selected year has any day above its adaptive ceiling, so
+  // the caption only explains the clamp when it's actually in effect.
+  const selectedHasOffChart = useMemo(() => {
+    const cap = adaptiveDifficultyCeil(selectedPoints);
+    return selectedPoints.some((p) => Number(p.max) > cap);
+  }, [selectedPoints]);
 
   const setYear = useCallback((year: number | null) => {
     const query = { ...router.query };
@@ -156,7 +191,7 @@ export default function DifficultyHistory({ points, forks }: DifficultyHistoryPr
       if (Number.isFinite(mn) && mn < yMin) yMin = mn;
       if (Number.isFinite(mx) && mx > yMax) yMax = mx;
       if (Number.isFinite(p.avg)) { avgSum += p.avg; avgN += 1; }
-      blockSum += p.samples;
+      blockSum += Number(p.samples);
     }
     return {
       min: yMin === Number.POSITIVE_INFINITY ? 0 : yMin,
@@ -191,6 +226,7 @@ export default function DifficultyHistory({ points, forks }: DifficultyHistoryPr
 
       <Stack spacing={3}>
         <Crumbs
+          trailing={<CopyLinkButton />}
           items={selectedYear !== null
             ? [
               RESEARCHERS_CRUMB,
@@ -262,7 +298,7 @@ export default function DifficultyHistory({ points, forks }: DifficultyHistoryPr
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
               {selectedYear !== null
-                ? 'Linear Y axis. The shaded ribbon is the daily min↔max range; the line is the daily average. Dashed verticals mark canonical chain forks in this year (amber = Halford patches, grey = version-bump consensus forks); hover any marker for its activation summary.'
+                ? `Linear Y axis. The shaded ribbon is the daily min↔max range; the line is the daily average.${selectedHasOffChart ? ' A few protocol-anomaly spike days (the pre-patch 10⁷–10⁶⁴ difficulty era, see R Halford\'s 2015-01-14 patch) are clamped to the top edge and marked with a hatched strip, so the calm rest of the year stays legible.' : ''} Dashed verticals mark canonical chain forks in this year (amber = Halford patches, grey = version-bump consensus forks); hover any marker for its activation summary.`
                 : 'Log-scale Y axis, capped at 1M difficulty (the protocol\'s own pathological threshold, see R Halford\'s 2015-01-14 patch). Daily averages above the cap from the pre-patch chaos era are clamped to the top edge and marked with a hatched strip. Dashed verticals mark the canonical chain forks (amber = Halford patches, grey = version-bump consensus forks); hover any marker for its activation summary.'}
             </Typography>
             {selectedYear !== null && selectedPoints.length >= 2 ? (
@@ -363,13 +399,21 @@ function WholeChainChart({
   frame, points, forks,
 }: { frame: ChartFrame; points: Point[]; forks: ForkMarker[] }) {
   const theme = useTheme();
+  const svgRef = useRef<SVGSVGElement | null>(null);
+
+  const fullDomain = useMemo<[number, number]>(
+    () => [points[0]?.ts ?? 0, points[points.length - 1]?.ts ?? 1],
+    [points],
+  );
+  const zoom = useXZoom({
+    fullDomain, frame, svgRef, urlKey: 'z',
+  });
 
   const layout = useMemo(() => {
     if (points.length < 2 || frame.innerWidth <= 0) {
       return null;
     }
-    const tsMin = points[0].ts;
-    const tsMax = points[points.length - 1].ts;
+    const [tsMin, tsMax] = zoom.domain;
     const xScale = linearScale(tsMin, tsMax, 0, frame.innerWidth);
     let yMin = Number.POSITIVE_INFINITY;
     for (const p of points) {
@@ -385,7 +429,7 @@ function WholeChainChart({
     return {
       tsMin, tsMax, xScale, yScale, logMin, logMax,
     };
-  }, [points, frame.innerWidth, frame.innerHeight]);
+  }, [points, frame.innerWidth, frame.innerHeight, zoom.domain]);
 
   // Days where the daily average exceeds the display ceiling get clamped
   // to the top edge. Collected as contiguous runs so we can paint a thin
@@ -449,110 +493,121 @@ function WholeChainChart({
   for (let exp = layout.logMin; exp <= layout.logMax; exp += 1) yTicks.push(exp);
 
   return (
-    <svg
-      width="100%"
-      height={frame.height}
-      viewBox={`0 0 ${frame.width} ${frame.height}`}
-      style={{ display: 'block' }}
-    >
-      <ChartAxes
-        frame={frame}
-        yTicks={yTicks}
-        xTicks={xTicks}
-        yFormat={(v) => formatDifficulty(10 ** v)}
-        xFormat={(ts) => String(new Date(ts * 1000).getUTCFullYear())}
-      />
-      <defs>
-        <pattern
-          id="difficulty-offchart-hatch"
-          patternUnits="userSpaceOnUse"
-          width={6}
-          height={6}
-          patternTransform="rotate(45)"
-        >
-          <line
-            x1={0}
-            y1={0}
-            x2={0}
-            y2={6}
-            stroke={theme.palette.warning.main}
-            strokeWidth={1.5}
-          />
-        </pattern>
-      </defs>
-      <g transform={`translate(${frame.margin.left},${frame.margin.top})`}>
-        {offChartRuns.map((run) => (
-          <rect
-            key={`offchart-${run.x1}-${run.x2}`}
-            x={run.x1}
-            y={0}
-            // Make single-day runs visible by widening to a minimum
-            // 3px stripe — otherwise the Nov-2014 cluster (a single
-            // day or two of clamped averages) renders as a hairline
-            // and the hatch reads as a marker artefact.
-            width={Math.max(3, run.x2 - run.x1)}
-            height={10}
-            fill="url(#difficulty-offchart-hatch)"
-            opacity={0.7}
+    <Box sx={{ position: 'relative' }}>
+      <ZoomResetButton zoom={zoom} />
+      <svg
+        ref={svgRef}
+        width="100%"
+        height={frame.height}
+        viewBox={`0 0 ${frame.width} ${frame.height}`}
+        onMouseDown={zoom.onMouseDown}
+        onMouseMove={zoom.onMouseMove}
+        onMouseUp={zoom.onMouseUp}
+        onMouseLeave={zoom.onMouseLeave}
+        onDoubleClick={zoom.onDoubleClick}
+        style={{ display: 'block', cursor: 'crosshair' }}
+      >
+        <ChartAxes
+          frame={frame}
+          yTicks={yTicks}
+          xTicks={xTicks}
+          yFormat={(v) => formatDifficulty(10 ** v)}
+          xFormat={(ts) => String(new Date(ts * 1000).getUTCFullYear())}
+        />
+        <defs>
+          <pattern
+            id="difficulty-offchart-hatch"
+            patternUnits="userSpaceOnUse"
+            width={6}
+            height={6}
+            patternTransform="rotate(45)"
           >
-            <title>Daily average above the chart ceiling — see Halford patch markers below.</title>
-          </rect>
-        ))}
-        {path && (
-          <path
-            d={path}
-            fill="none"
-            stroke={theme.palette.primary.main}
-            strokeWidth={1.5}
-          />
-        )}
-        {forks.map((fork, idx) => {
-          if (fork.timestamp === null) return null;
-          if (fork.timestamp < layout.tsMin || fork.timestamp > layout.tsMax) return null;
-          const x = layout.xScale(fork.timestamp);
-          // Patches (Halford) keep the warning palette so the eye
-          // tells them apart from version-bump consensus forks, which
-          // use the secondary text color and a slightly subtler dash.
-          const isPatch = fork.category === 'patch';
-          const strokeColor = isPatch
-            ? theme.palette.warning.main
-            : theme.palette.text.secondary;
-          const lineOpacity = isPatch ? 0.55 : 0.4;
-          const labelOpacity = isPatch ? 0.85 : 0.65;
-          // Stagger labels by array index — V13 and V14 (200 blocks
-          // apart on mainnet) would otherwise paint on top of each
-          // other. Index parity is zoom-invariant; the previous
-          // `xScale % 2` hack flipped labels around when the user
-          // resized the chart, which read as flicker.
-          const labelY = idx % 2 === 0 ? frame.innerHeight - 6 : frame.innerHeight - 18;
-          return (
-            <g key={`fork-${fork.key}`}>
-              <line
-                x1={x}
-                x2={x}
-                y1={0}
-                y2={frame.innerHeight}
-                stroke={strokeColor}
-                strokeDasharray={isPatch ? '4 3' : '2 4'}
-                opacity={lineOpacity}
+            <line
+              x1={0}
+              y1={0}
+              x2={0}
+              y2={6}
+              stroke={theme.palette.warning.main}
+              strokeWidth={1.5}
+            />
+          </pattern>
+        </defs>
+        <g transform={`translate(${frame.margin.left},${frame.margin.top})`}>
+          <ZoomViewport zoom={zoom}>
+            {offChartRuns.map((run) => (
+              <rect
+                key={`offchart-${run.x1}-${run.x2}`}
+                x={run.x1}
+                y={0}
+                // Make single-day runs visible by widening to a minimum
+                // 3px stripe — otherwise the Nov-2014 cluster (a single
+                // day or two of clamped averages) renders as a hairline
+                // and the hatch reads as a marker artefact.
+                width={Math.max(3, run.x2 - run.x1)}
+                height={10}
+                fill="url(#difficulty-offchart-hatch)"
+                opacity={0.7}
               >
-                <title>{fork.summary}</title>
-              </line>
-              <text
-                x={x + 4}
-                y={labelY}
-                fontSize={10}
-                fill={strokeColor}
-                opacity={labelOpacity}
-              >
-                {fork.chart_label}
-                <title>{fork.summary}</title>
-              </text>
-            </g>
-          );
-        })}
-      </g>
-    </svg>
+                <title>Daily average above the chart ceiling — see Halford patch markers below.</title>
+              </rect>
+            ))}
+            {path && (
+              <path
+                d={path}
+                fill="none"
+                stroke={theme.palette.primary.main}
+                strokeWidth={1.5}
+              />
+            )}
+            {forks.map((fork, idx) => {
+              if (fork.timestamp === null) return null;
+              if (fork.timestamp < layout.tsMin || fork.timestamp > layout.tsMax) return null;
+              const x = layout.xScale(fork.timestamp);
+              // Patches (Halford) keep the warning palette so the eye
+              // tells them apart from version-bump consensus forks, which
+              // use the secondary text color and a slightly subtler dash.
+              const isPatch = fork.category === 'patch';
+              const strokeColor = isPatch
+                ? theme.palette.warning.main
+                : theme.palette.text.secondary;
+              const lineOpacity = isPatch ? 0.55 : 0.4;
+              const labelOpacity = isPatch ? 0.85 : 0.65;
+              // Stagger labels by array index — V13 and V14 (200 blocks
+              // apart on mainnet) would otherwise paint on top of each
+              // other. Index parity is zoom-invariant; the previous
+              // `xScale % 2` hack flipped labels around when the user
+              // resized the chart, which read as flicker.
+              const labelY = idx % 2 === 0 ? frame.innerHeight - 6 : frame.innerHeight - 18;
+              return (
+                <g key={`fork-${fork.key}`}>
+                  <line
+                    x1={x}
+                    x2={x}
+                    y1={0}
+                    y2={frame.innerHeight}
+                    stroke={strokeColor}
+                    strokeDasharray={isPatch ? '4 3' : '2 4'}
+                    opacity={lineOpacity}
+                  >
+                    <title>{fork.summary}</title>
+                  </line>
+                  <text
+                    x={x + 4}
+                    y={labelY}
+                    fontSize={10}
+                    fill={strokeColor}
+                    opacity={labelOpacity}
+                  >
+                    {fork.chart_label}
+                    <title>{fork.summary}</title>
+                  </text>
+                </g>
+              );
+            })}
+          </ZoomViewport>
+        </g>
+      </svg>
+    </Box>
   );
 }
 
@@ -611,6 +666,7 @@ function YearTile({
 
 function YearChart({ frame, points, forks }: { frame: ChartFrame; points: Point[]; forks: ForkMarker[] }) {
   const theme = useTheme();
+  const cap = useMemo(() => adaptiveDifficultyCeil(points), [points]);
   const layout = useMemo(() => {
     if (points.length === 0 || frame.innerWidth <= 0) return null;
     // Anchor X axis to the calendar year so partial years (current,
@@ -630,6 +686,11 @@ function YearChart({ frame, points, forks }: { frame: ChartFrame; points: Point[
     }
     if (yMin === Number.POSITIVE_INFINITY) yMin = 0;
     if (yMax === 0) yMax = 1;
+    // Cap the axis at the year's adaptive ceiling (see
+    // adaptiveDifficultyCeil) so a handful of pre-patch spike days don't
+    // size the linear range and crush the calm rest of the year into the
+    // baseline. No-op for years with no outliers.
+    yMax = Math.min(yMax, cap);
     // Per-year linear axis (per-year y-scaling makes quiet years
     // legible). Pad ~5% so the ribbon doesn't kiss the frame edges.
     const yPad = (yMax - yMin) * 0.05 || 1;
@@ -638,7 +699,7 @@ function YearChart({ frame, points, forks }: { frame: ChartFrame; points: Point[
     return {
       year, yearStart, yearEnd, xScale, yScale, yTicks, yMin, yMax,
     };
-  }, [points, frame.innerWidth, frame.innerHeight]);
+  }, [points, frame.innerWidth, frame.innerHeight, cap]);
 
   const paths = useMemo(() => {
     if (!layout || points.length < 2) return null;
@@ -648,18 +709,45 @@ function YearChart({ frame, points, forks }: { frame: ChartFrame; points: Point[
     for (let i = 0; i < points.length; i += 1) {
       const p = points[i];
       const x = layout.xScale(p.ts);
-      const yMax = layout.yScale(Number(p.max));
-      const yMin = layout.yScale(Number(p.min));
-      const yAvg = layout.yScale(p.avg);
+      // Clamp to the cap so off-chart spikes stay inside the frame.
+      const yMax = layout.yScale(Math.min(Number(p.max), cap));
+      const yMin = layout.yScale(Math.min(Number(p.min), cap));
+      const yAvg = layout.yScale(Math.min(p.avg, cap));
       top.push(`${x.toFixed(1)},${yMax.toFixed(1)}`);
       bot.unshift(`${x.toFixed(1)},${yMin.toFixed(1)}`);
       avg.push(`${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${yAvg.toFixed(1)}`);
     }
     const ribbon = `M${top[0]} L${top.slice(1).join(' L')} L${bot.join(' L')} Z`;
     return { ribbon, avg: avg.join(' ') };
-  }, [layout, points]);
+  }, [layout, points, cap]);
+
+  // Contiguous day-runs whose max exceeds the ceiling — painted as a
+  // hatched top strip so the clamped flat-top reads as "spike off chart"
+  // rather than a genuine plateau (same cue as the whole-chain view).
+  const offChartRuns = useMemo(() => {
+    const runs: { x1: number; x2: number }[] = [];
+    if (!layout) return runs;
+    let runStart: number | null = null;
+    let runEnd: number | null = null;
+    for (let i = 0; i < points.length; i += 1) {
+      const mx = Number(points[i].max);
+      if (Number.isFinite(mx) && mx > cap) {
+        const x = layout.xScale(points[i].ts);
+        if (runStart === null) runStart = x;
+        runEnd = x;
+      } else if (runStart !== null && runEnd !== null) {
+        runs.push({ x1: runStart, x2: runEnd });
+        runStart = null;
+        runEnd = null;
+      }
+    }
+    if (runStart !== null && runEnd !== null) runs.push({ x1: runStart, x2: runEnd });
+    return runs;
+  }, [layout, points, cap]);
 
   if (!layout || frame.width === 0) return null;
+
+  const hatchId = `difficulty-offchart-hatch-${layout.year}`;
 
   return (
     <svg
@@ -682,7 +770,31 @@ function YearChart({ frame, points, forks }: { frame: ChartFrame; points: Point[
           return MONTHS_SHORT[d.getUTCMonth()] ?? '???';
         }}
       />
+      <defs>
+        <pattern
+          id={hatchId}
+          patternUnits="userSpaceOnUse"
+          width={6}
+          height={6}
+          patternTransform="rotate(45)"
+        >
+          <line x1={0} y1={0} x2={0} y2={6} stroke={theme.palette.warning.main} strokeWidth={1.5} />
+        </pattern>
+      </defs>
       <g transform={`translate(${frame.margin.left},${frame.margin.top})`}>
+        {offChartRuns.map((run) => (
+          <rect
+            key={`offchart-${run.x1}-${run.x2}`}
+            x={run.x1}
+            y={0}
+            width={Math.max(3, run.x2 - run.x1)}
+            height={6}
+            fill={`url(#${hatchId})`}
+            opacity={0.7}
+          >
+            <title>Daily max above the chart ceiling — clamped.</title>
+          </rect>
+        ))}
         {paths && (
           <>
             <path
@@ -741,14 +853,25 @@ function YearDetailChart({
   const theme = useTheme();
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const cap = useMemo(() => adaptiveDifficultyCeil(points), [points]);
+
+  const fullDomain = useMemo<[number, number]>(() => {
+    const ys = Math.floor(Date.UTC(year, 0, 1) / 1000);
+    const ye = Math.floor(Date.UTC(year + 1, 0, 1) / 1000) - 1;
+    return [ys, ye];
+  }, [year]);
+  const zoom = useXZoom({
+    fullDomain, frame, svgRef, urlKey: 'z',
+  });
 
   const layout = useMemo(() => {
     if (points.length < 2 || frame.innerWidth <= 0) return null;
-    // Anchor X to the full calendar year (not just min/max of points)
-    // so partial years stay visually proportional.
+    // Calendar-year bounds (for fork filtering); the x scale itself
+    // follows the zoom window.
     const yearStart = Math.floor(Date.UTC(year, 0, 1) / 1000);
     const yearEnd = Math.floor(Date.UTC(year + 1, 0, 1) / 1000) - 1;
-    const xScale = linearScale(yearStart, yearEnd, 0, frame.innerWidth);
+    const [tsMin, tsMax] = zoom.domain;
+    const xScale = linearScale(tsMin, tsMax, 0, frame.innerWidth);
     let yMin = Number.POSITIVE_INFINITY;
     let yMax = 0;
     for (const p of points) {
@@ -759,6 +882,10 @@ function YearDetailChart({
     }
     if (yMin === Number.POSITIVE_INFINITY) yMin = 0;
     if (yMax === 0) yMax = 1;
+    // Cap at the year's adaptive ceiling (see adaptiveDifficultyCeil) so
+    // a handful of pre-patch spike days don't size the linear range and
+    // flatten the calm rest of the year. No-op for years with no outliers.
+    yMax = Math.min(yMax, cap);
     const yPad = (yMax - yMin) * 0.05 || 1;
     const yScale = linearScale(yMin - yPad, yMax + yPad, frame.innerHeight, 0);
     const yTicks = niceTicks(yMin - yPad, yMax + yPad, 5);
@@ -767,12 +894,13 @@ function YearDetailChart({
     const xTicks: { value: number; x: number }[] = [];
     for (let m = 0; m < 12; m += 1) {
       const ts = Math.floor(Date.UTC(year, m, 1) / 1000);
+      if (ts < tsMin || ts > tsMax) continue;
       xTicks.push({ value: ts, x: xScale(ts) });
     }
     return {
       yearStart, yearEnd, xScale, yScale, yTicks, xTicks,
     };
-  }, [points, frame.innerWidth, frame.innerHeight, year]);
+  }, [points, frame.innerWidth, frame.innerHeight, year, cap, zoom.domain]);
 
   const paths = useMemo(() => {
     if (!layout || points.length < 2) return null;
@@ -782,16 +910,41 @@ function YearDetailChart({
     for (let i = 0; i < points.length; i += 1) {
       const p = points[i];
       const x = layout.xScale(p.ts);
-      const yHigh = layout.yScale(Number(p.max));
-      const yLow = layout.yScale(Number(p.min));
-      const yAvg = layout.yScale(p.avg);
+      // Clamp to the cap so off-chart spikes stay inside the frame.
+      const yHigh = layout.yScale(Math.min(Number(p.max), cap));
+      const yLow = layout.yScale(Math.min(Number(p.min), cap));
+      const yAvg = layout.yScale(Math.min(p.avg, cap));
       top.push(`${x.toFixed(1)},${yHigh.toFixed(1)}`);
       bot.unshift(`${x.toFixed(1)},${yLow.toFixed(1)}`);
       avg.push(`${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${yAvg.toFixed(1)}`);
     }
     const ribbon = `M${top[0]} L${top.slice(1).join(' L')} L${bot.join(' L')} Z`;
     return { ribbon, avg: avg.join(' ') };
-  }, [layout, points]);
+  }, [layout, points, cap]);
+
+  // Contiguous day-runs whose max exceeds the ceiling — painted as a
+  // hatched top strip so the clamped flat-top reads as "spike off chart"
+  // rather than a genuine plateau (same cue as the whole-chain view).
+  const offChartRuns = useMemo(() => {
+    const runs: { x1: number; x2: number }[] = [];
+    if (!layout) return runs;
+    let runStart: number | null = null;
+    let runEnd: number | null = null;
+    for (let i = 0; i < points.length; i += 1) {
+      const mx = Number(points[i].max);
+      if (Number.isFinite(mx) && mx > cap) {
+        const x = layout.xScale(points[i].ts);
+        if (runStart === null) runStart = x;
+        runEnd = x;
+      } else if (runStart !== null && runEnd !== null) {
+        runs.push({ x1: runStart, x2: runEnd });
+        runStart = null;
+        runEnd = null;
+      }
+    }
+    if (runStart !== null && runEnd !== null) runs.push({ x1: runStart, x2: runEnd });
+    return runs;
+  }, [layout, points, cap]);
 
   // Map a mouse X position to the nearest data point. Linear scan over
   // ~365 points is essentially free per move event; binary search is
@@ -819,17 +972,24 @@ function YearDetailChart({
 
   const hover = hoverIdx !== null ? points[hoverIdx] : null;
   const hoverX = hover ? layout.xScale(hover.ts) : 0;
+  // Only one detail chart renders at a time, so a fixed id is safe and
+  // can't collide with the per-year tile patterns or the whole-chain one.
+  const hatchId = 'difficulty-offchart-hatch-detail';
 
   return (
     <Box sx={{ position: 'relative' }}>
+      <ZoomResetButton zoom={zoom} />
       <svg
         ref={svgRef}
         width="100%"
         height={frame.height}
         viewBox={`0 0 ${frame.width} ${frame.height}`}
-        onMouseMove={handleMove}
-        onMouseLeave={() => setHoverIdx(null)}
-        style={{ display: 'block' }}
+        onMouseDown={zoom.onMouseDown}
+        onMouseMove={(e) => { zoom.onMouseMove(e); if (zoom.dragging) setHoverIdx(null); else handleMove(e); }}
+        onMouseUp={zoom.onMouseUp}
+        onMouseLeave={() => { zoom.onMouseLeave(); setHoverIdx(null); }}
+        onDoubleClick={zoom.onDoubleClick}
+        style={{ display: 'block', cursor: 'crosshair' }}
       >
         <ChartAxes
           frame={frame}
@@ -841,7 +1001,32 @@ function YearDetailChart({
             return MONTHS_SHORT[d.getUTCMonth()] ?? '???';
           }}
         />
+        <defs>
+          <pattern
+            id={hatchId}
+            patternUnits="userSpaceOnUse"
+            width={6}
+            height={6}
+            patternTransform="rotate(45)"
+          >
+            <line x1={0} y1={0} x2={0} y2={6} stroke={theme.palette.warning.main} strokeWidth={1.5} />
+          </pattern>
+        </defs>
         <g transform={`translate(${frame.margin.left},${frame.margin.top})`}>
+          <ZoomViewport zoom={zoom}>
+          {offChartRuns.map((run) => (
+            <rect
+              key={`offchart-${run.x1}-${run.x2}`}
+              x={run.x1}
+              y={0}
+              width={Math.max(3, run.x2 - run.x1)}
+              height={10}
+              fill={`url(#${hatchId})`}
+              opacity={0.7}
+            >
+              <title>Daily max above the chart ceiling — clamped to the top edge.</title>
+            </rect>
+          ))}
           {paths && (
             <>
               <path
@@ -903,6 +1088,7 @@ function YearDetailChart({
               </g>
             );
           })}
+          </ZoomViewport>
           {hover && (
             <>
               <line
@@ -947,7 +1133,7 @@ function YearDetailChart({
                 color="text.secondary"
                 sx={{ display: 'block', mt: 0.5 }}
               >
-                {`${hover.samples} block${hover.samples === 1 ? '' : 's'} mined`}
+                {`${hover.samples} block${Number(hover.samples) === 1 ? '' : 's'} mined`}
               </Typography>
             </Box>
           )}

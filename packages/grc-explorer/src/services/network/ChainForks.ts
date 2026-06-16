@@ -1,5 +1,5 @@
 import { config } from '../../config';
-import { ch } from '../../lib/ch';
+import { query } from '../../lib/db';
 
 /**
  * Canonical Gridcoin consensus-fork table. Mirrors the gates pinned in
@@ -181,7 +181,7 @@ export interface ResolvedFork extends ChainFork {
 
 /**
  * Resolve every fork's activation block-time against the indexed
- * `blocks` table. Single CH query joining all heights at once — cheap
+ * `blocks` table. Single query joining all heights at once — cheap
  * (12 rows) and the result is monotonic so the route layer can cache
  * with a long TTL.
  */
@@ -193,17 +193,19 @@ export async function resolveChainForks(): Promise<ResolvedFork[]> {
   // claim activations that never happened.
   const applicable = CHAIN_FORKS.filter((f) => heightOf(f) !== null);
   const heights = Array.from(new Set(applicable.map((f) => heightOf(f) as number)));
-  const result = await ch.query({
-    query: `
-      SELECT height, toUnixTimestamp(time) AS ts
-      FROM blocks
-      WHERE height IN ({heights: Array(UInt32)})
-    `,
-    query_params: { heights },
-    format: 'JSONEachRow',
-  });
   const tsByHeight = new Map<number, number>();
-  for (const r of await result.json<{ height: number; ts: number }>()) {
+  if (heights.length === 0) {
+    return applicable.map((f) => ({ ...f, height: heightOf(f) as number, timestamp: null }));
+  }
+  const rows = await query<{ height: number; ts: number }>(
+    `
+      SELECT height, CAST(epoch(time) AS UINTEGER) AS ts
+      FROM blocks
+      WHERE height = ANY($heights)
+    `,
+    { heights },
+  );
+  for (const r of rows) {
     tsByHeight.set(r.height, r.ts);
   }
   return applicable.map((f) => {

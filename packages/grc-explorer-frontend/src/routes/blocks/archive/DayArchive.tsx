@@ -1,16 +1,13 @@
 import {
-  Box, Chip, Link as MuiLink, Paper, Stack, Table, TableBody, TableCell, TableHead, TablePagination, TableRow, Typography,
+  Box, Link as MuiLink, Paper, Stack, TablePagination, Typography,
 } from '@mui/material';
 import NextLink from 'next/link';
-import Link from 'next/link';
 import Head from 'next/head';
 import { useRouter } from 'next/router';
 import { Layout } from '../../../layouts/Layout';
-import { HashTrim } from '../../../components/HashTrim';
+import { BlockTable, BlockRowData } from '../../../components/BlockTable';
 import { Crumbs } from '../../../components/Crumbs';
-import {
-  formatNumber, formatTime, MONTHS_FULL, timeAgo,
-} from '../../../lib/format';
+import { formatNumber, MONTHS_FULL } from '../../../lib/format';
 import { PeriodStatRow } from './PeriodStats';
 import { EmptyPeriodBanner } from './EmptyPeriodBanner';
 import type { DayArchiveData } from './types';
@@ -20,6 +17,24 @@ export function DayArchive({ data }: { data: DayArchiveData }) {
   const {
     year, month, day, blocks, pagination,
   } = data;
+  // The archive is SSR-static, so the staker name is baked in server-side
+  // (no useCpidNames hook) — just map straight onto the shared row shape.
+  const tableRows: BlockRowData[] = blocks.map((b) => ({
+    height: b.height,
+    hash: b.hash,
+    time: b.time,
+    txCount: b.txCount,
+    isPos: b.isPos,
+    isSuperblock: b.isSuperblock,
+    isMrc: b.isMrc,
+    valueMoved: b.valueMoved,
+    feeTotal: b.feeTotal,
+    difficulty: b.difficulty,
+    size: b.size,
+    reward: b.mintGrc,
+    stakerCpid: b.stakerCpid,
+    stakerName: b.stakerName,
+  }));
   const monthName = MONTHS_FULL[month - 1];
   const isEmpty = data.blockCount === 0;
   const title = `Gridcoin blocks on ${day} ${monthName} ${year}`;
@@ -81,86 +96,11 @@ export function DayArchive({ data }: { data: DayArchiveData }) {
         ) : (
           <>
             <PeriodStatRow stats={data} />
+            {/* Shared <BlockTable> — same component the home ticker and
+                /blocks listing use. Static age (not live) since the
+                archive is SSR-only; names baked in server-side. */}
             <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
-              {/* Same column shape and styling as LiveBlockTicker (home)
-                  and the /blocks listing — height / hash / age / txs /
-                  type / staker. Click-anywhere row routing matches the
-                  home page so the look-and-feel is uniform across the
-                  three list contexts the user navigates between. */}
-              <Table size="small" sx={{ minWidth: 720 }}>
-                <TableHead>
-                  <TableRow>
-                    <TableCell sx={{ width: 110 }}>Height</TableCell>
-                    <TableCell>Hash</TableCell>
-                    <TableCell sx={{ width: 110 }}>Age</TableCell>
-                    <TableCell align="right" sx={{ width: 70 }}>Txs</TableCell>
-                    <TableCell sx={{ width: 130 }}>Type</TableCell>
-                    <TableCell sx={{ width: 140 }}>Staker</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {blocks.map((b) => (
-                    <TableRow
-                      key={b.hash}
-                      hover
-                      sx={{
-                        cursor: 'pointer',
-                        ...(b.isSuperblock && {
-                          backgroundColor: (theme) => `${theme.palette.secondary.main}26`,
-                          borderLeft: 4,
-                          borderLeftColor: 'secondary.main',
-                        }),
-                      }}
-                      onClick={() => {
-                        if (b.isSuperblock) router.push(`/superblocks/${b.height}`);
-                        else router.push(`/block/${b.height}`);
-                      }}
-                      onMouseEnter={() => {
-                        if (b.isSuperblock) router.prefetch(`/superblocks/${b.height}`);
-                        else router.prefetch(`/block/${b.height}`);
-                      }}
-                    >
-                      <TableCell sx={{ fontWeight: 600 }}>
-                        <Link
-                          href={b.isSuperblock ? `/superblocks/${b.height}` : `/block/${b.height}`}
-                          style={{ color: 'inherit', textDecoration: 'none' }}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {`#${formatNumber(b.height)}`}
-                        </Link>
-                      </TableCell>
-                      <TableCell sx={{ fontFamily: 'monospace', fontSize: 12, color: 'text.secondary' }}>
-                        <HashTrim text={b.hash} head={12} tail={6} />
-                      </TableCell>
-                      <TableCell title={formatTime(b.time)} sx={{ color: 'text.secondary' }}>
-                        {timeAgo(b.time)}
-                      </TableCell>
-                      <TableCell align="right">{b.txCount}</TableCell>
-                      <TableCell>
-                        <Box sx={{ display: 'flex', gap: 0.5 }}>
-                          {b.isSuperblock && <Chip label="SB" size="small" color="secondary" />}
-                          {b.isPos
-                            ? <Chip label="PoS" size="small" variant="outlined" />
-                            : <Chip label="PoW" size="small" variant="outlined" />}
-                        </Box>
-                      </TableCell>
-                      <TableCell sx={{ fontSize: 12 }}>
-                        {b.stakerCpid ? (
-                          <Link
-                            href={`/cpids/${b.stakerCpid}`}
-                            style={{ color: 'inherit', textDecoration: 'none', fontFamily: 'monospace' }}
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            {b.stakerCpid}
-                          </Link>
-                        ) : (
-                          <Box sx={{ color: 'text.disabled', fontStyle: 'italic' }}>investor</Box>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <BlockTable blocks={tableRows} />
             </Paper>
 
             {pagination.totalPages > 1 && (

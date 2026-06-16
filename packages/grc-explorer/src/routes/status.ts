@@ -1,7 +1,7 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { config } from '../config';
-import { ch } from '../lib/ch';
+import { query } from '../lib/db';
 import { getCursor } from '../lib/redis';
 import { withMeta } from '../lib/responseMeta';
 import { StatusPresenter } from '../presenters';
@@ -20,11 +20,9 @@ async function getMempoolSnapshotsFromHeight(): Promise<number | null> {
   if (snapshotsFromHeightCache && now < snapshotsFromHeightCache.expiresAt) {
     return snapshotsFromHeightCache.value;
   }
-  const r = await ch.query({
-    query: 'SELECT min(block_height) AS h FROM mempool_snapshots',
-    format: 'JSONEachRow',
-  });
-  const rows = await r.json<{ h: number | null }>();
+  const rows = await query<{ h: number | null }>(
+    'SELECT min(block_height) AS h FROM mempool_snapshots',
+  );
   const value = rows[0]?.h ?? null;
   snapshotsFromHeightCache = { value, expiresAt: now + SNAPSHOTS_TTL_MS };
   return value;
@@ -52,14 +50,12 @@ statusRouter.get('/', async (_req: Request, res: Response) => {
   // genesis won't backfill them — surfacing the cutoff lets clients
   // (docs page, dashboards, integrators) tell users when the
   // /api/blocks/:height/mempool-snapshot view starts being useful.
-  const [tipResult, mempoolSnapshotsFromHeight] = await Promise.all([
-    ch.query({
-      query: 'SELECT height, hash, toUnixTimestamp(time) AS time FROM blocks FINAL ORDER BY height DESC LIMIT 1',
-      format: 'JSONEachRow',
-    }),
+  const [tipRows, mempoolSnapshotsFromHeight] = await Promise.all([
+    query<{ height: number; hash: string; time: number }>(
+      'SELECT height, hash, CAST(epoch(time) AS UINTEGER) AS time FROM blocks ORDER BY height DESC LIMIT 1',
+    ),
     getMempoolSnapshotsFromHeight(),
   ]);
-  const tipRows = await tipResult.json<{ height: number; hash: string; time: number }>();
   const tip = tipRows[0] ?? null;
 
   const body = StatusPresenter.render({

@@ -15,9 +15,7 @@
 
 import { config } from '../config';
 import { log } from '../lib/log';
-import {
-  redis, redisStreams, redisSub, redisPub,
-} from '../lib/redis';
+import { closeRedis } from '../lib/redis';
 import { BoincStatsImportJob } from '../services/jobs/BoincStatsImportJob';
 
 interface Args {
@@ -89,13 +87,4 @@ main()
     log.error('fetchBoincNames failed', err);
     process.exitCode = 1;
   })
-  .finally(async () => {
-    // Close every Redis socket lib/redis.ts opened so node can exit
-    // cleanly. Same dance wipeExplorer / rebuildWallets do.
-    await Promise.all([
-      redis.quit(),
-      redisStreams.quit(),
-      redisSub.quit(),
-      redisPub.quit(),
-    ]);
-  });
+  .finally(closeRedis);

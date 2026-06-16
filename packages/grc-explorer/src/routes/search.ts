@@ -1,7 +1,7 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import Joi from 'joi';
-import { ch } from '../lib/ch';
+import { query } from '../lib/db';
 import { halford2grc } from '../lib/halford';
 import { isHiddenPoll } from '../lib/hiddenPolls';
 import { meili, meiliIndexId, MeiliIndexName } from '../lib/meili';
@@ -18,7 +18,7 @@ const MEILI_INDICES: MeiliIndexName[] = [
 // Logical buckets that are NOT Meili indexes but are still surfaced in
 // the response under these names so the frontend keeps requesting them,
 // the single-hit redirect keeps working, and Joi keeps accepting them:
-//   - blocks / transactions / claims → ClickHouse point lookups.
+//   - blocks / transactions / claims → DuckDB point lookups.
 //   - addresses → Redis rich-list ZSET.
 const CH_BUCKETS = ['blocks', 'transactions', 'claims'] as const;
 type ChBucket = (typeof CH_BUCKETS)[number];
@@ -52,11 +52,10 @@ async function chSearch(q: string, limit: number, want: Set<ChBucket>): Promise<
   const jobs: Array<Promise<SearchHit | null>> = [];
 
   if (want.has('transactions') && isHex64) {
-    jobs.push(ch.query({
-      query: 'SELECT tx_id FROM transactions FINAL WHERE tx_id = {q:String} LIMIT {lim:UInt32}',
-      query_params: { q: v, lim: limit },
-      format: 'JSONEachRow',
-    }).then((r) => r.json<{ tx_id: string }>()).then((rows) => ({
+    jobs.push(query<{ tx_id: string }>(
+      `SELECT tx_id FROM transactions WHERE tx_id = $q LIMIT ${limit}`,
+      { q: v },
+    ).then((rows) => ({
       index: 'transactions' as const,
       hits: rows.map((row) => ({ id: row.tx_id, tx_id: row.tx_id })),
       estimatedTotalHits: rows.length,
@@ -64,12 +63,12 @@ async function chSearch(q: string, limit: number, want: Set<ChBucket>): Promise<
   }
 
   if (want.has('blocks') && (isHex64 || asUint32 !== null)) {
-    const where = isHex64 ? 'hash = {q:String}' : 'height = {h:UInt32}';
-    jobs.push(ch.query({
-      query: `SELECT height, is_superblock FROM blocks FINAL WHERE ${where} LIMIT {lim:UInt32}`,
-      query_params: { q: v, h: asUint32 ?? 0, lim: limit },
-      format: 'JSONEachRow',
-    }).then((r) => r.json<{ height: number; is_superblock: boolean }>()).then((rows) => ({
+    const where = isHex64 ? 'hash = $q' : 'height = $h';
+    const p = isHex64 ? { q: v } : { h: asUint32 ?? 0 };
+    jobs.push(query<{ height: number; is_superblock: boolean }>(
+      `SELECT height, is_superblock FROM blocks WHERE ${where} LIMIT ${limit}`,
+      p,
+    ).then((rows) => ({
       index: 'blocks' as const,
       hits: rows.map((row) => ({
         id: String(row.height), height: row.height, is_superblock: row.is_superblock,
@@ -79,22 +78,21 @@ async function chSearch(q: string, limit: number, want: Set<ChBucket>): Promise<
   }
 
   if (want.has('claims') && (isHex32 || asUint32 !== null)) {
-    const where = isHex32 ? 'cpid = {q:String}' : 'block_height = {h:UInt32}';
-    jobs.push(ch.query({
-      query: `SELECT block_height, organization, cpid FROM claims FINAL WHERE ${where} LIMIT {lim:UInt32}`,
-      query_params: { q: v, h: asUint32 ?? 0, lim: limit },
-      format: 'JSONEachRow',
-    }).then((r) => r.json<{ block_height: number; organization: string; cpid: string | null }>())
-      .then((rows) => ({
-        index: 'claims' as const,
-        hits: rows.map((row) => ({
-          id: String(row.block_height),
-          block_height: row.block_height,
-          organization: row.organization,
-          cpid: row.cpid ?? '',
-        })),
-        estimatedTotalHits: rows.length,
-      })).catch(() => null));
+    const where = isHex32 ? 'cpid = $q' : 'block_height = $h';
+    const p = isHex32 ? { q: v } : { h: asUint32 ?? 0 };
+    jobs.push(query<{ block_height: number; organization: string; cpid: string | null }>(
+      `SELECT block_height, organization, cpid FROM claims WHERE ${where} LIMIT ${limit}`,
+      p,
+    ).then((rows) => ({
+      index: 'claims' as const,
+      hits: rows.map((row) => ({
+        id: String(row.block_height),
+        block_height: row.block_height,
+        organization: row.organization,
+        cpid: row.cpid ?? '',
+      })),
+      estimatedTotalHits: rows.length,
+    })).catch(() => null));
   }
 
   const settled = await Promise.all(jobs);
@@ -104,8 +102,10 @@ async function chSearch(q: string, limit: number, want: Set<ChBucket>): Promise<
 // Audit P0 #10. q ≤ 256 (closes L5 unbounded Meili input), indices
 // must be a comma-separated subset of ALL_INDICES (closes the
 // audit's "indices ⊂ ALL_INDICES" requirement at the edge), limit
-// clamped to 1–100. Joi runs in `validate` middleware so the route
-// handler can assume well-formed query.
+// clamped to 1–100. `offset` powers the frontend's per-bucket "Show
+// more" — capped at 980 so offset+limit stays under Meili's default
+// 1000-hit pagination ceiling. Joi runs in `validate` middleware so
+// the route handler can assume well-formed query.
 const searchQuerySchema = Joi.object({
   q: SEARCH_QUERY.optional().allow(''),
   indices: Joi.string()
@@ -120,6 +120,8 @@ const searchQuerySchema = Joi.object({
     .optional(),
   limit: Joi.number().integer().min(1).max(100)
     .optional(),
+  offset: Joi.number().integer().min(0).max(980)
+    .optional(),
 }).unknown(true);
 
 searchRouter.get('/', validate({ query: searchQuerySchema }), async (req: Request, res: Response) => {
@@ -133,6 +135,12 @@ searchRouter.get('/', validate({ query: searchQuerySchema }), async (req: Reques
     ? requested.split(',').filter((n): n is SearchableBucket => ALL_INDICES.includes(n as SearchableBucket))
     : ALL_INDICES;
   const limit = Math.min(parseInt(String(req.query.limit ?? '20'), 10) || 20, 100);
+  // Page offset for "Show more". Only the Meili buckets honour it (the
+  // exact-id / prefix / substring buckets report exactly what they
+  // return, so they never overflow a page); the frontend only renders
+  // a "Show more" where estimatedTotalHits > hits.length, which only
+  // Meili produces.
+  const offset = Math.min(Math.max(parseInt(String(req.query.offset ?? '0'), 10) || 0, 0), 980);
 
   // Meili pass — only the fuzzy-text indexes Meili actually owns.
   const meiliIndices = indices.filter(
@@ -141,7 +149,7 @@ searchRouter.get('/', validate({ query: searchQuerySchema }), async (req: Reques
   const results: SearchHit[] = await Promise.all(
     meiliIndices.map(async (index) => {
       try {
-        const r = await meili.index(meiliIndexId(index)).search(q, { limit });
+        const r = await meili.index(meiliIndexId(index)).search(q, { limit, offset });
         let hits = r.hits as Record<string, unknown>[];
         let total = r.estimatedTotalHits;
         if (index === 'polls') {
@@ -193,40 +201,36 @@ searchRouter.get('/', validate({ query: searchQuerySchema }), async (req: Reques
     }
   }
 
-  // Researcher display-name lookup. Mirrors `/cpids/resolve` (exact
-  // name match, highest-credit project first) so the search bar and
-  // the /cpids/<name> redirect resolve identically. Served from CH
-  // `project_users`, NOT Meili (the `cpid_names` index was retired).
+  // Researcher display-name lookup. The search bar is a discovery
+  // surface, so this is a case-insensitive *substring* match — typing
+  // "owens" finds "James C. Owens". This deliberately diverges from
+  // `/cpids/resolve`, which stays exact-match because it drives the
+  // `/cpids/<name>` redirect and a redirect needs a single definitive
+  // target. Served from `project_users`, NOT Meili (the `cpid_names`
+  // index was retired). `contains(lower(...))` rather than LIKE so a
+  // user-typed `%`/`_` can't smuggle in wildcards.
   if (indices.includes(NAMES_BUCKET) && q.length >= 2) {
     try {
-      const r = await ch.query({
-        // No FINAL: it ignores the idx_project_users_name bloom and
-        // full-scans ~5.8M rows. WHERE name prunes via the bloom
-        // (migration 0032); dedup each (cpid,project_name) to its
-        // latest _seq and re-assert the name post-dedup (HAVING) so a
-        // stale rename can't surface — exactly resolveCpidNames'
-        // verified pattern.
-        query: `
-          SELECT cpid, disp_name AS name, project_name FROM (
-            SELECT cpid, project_name,
-                   argMax(name, _seq)         AS disp_name,
-                   argMax(total_credit, _seq) AS total_credit
-            FROM project_users
-            WHERE name = {name: String}
-            GROUP BY cpid, project_name
-            HAVING disp_name = {name: String}
-          )
-          ORDER BY total_credit DESC
-          LIMIT {lim: UInt32}
+      // One researcher (cpid) has a row per project, so collapse to one
+      // hit per cpid via arg_max — the highest-credit project's name +
+      // attestation represents the researcher, ranked by that credit.
+      const rows = await query<{ cpid: string; name: string; project_name: string }>(
+        `
+          SELECT cpid,
+                 arg_max(name, total_credit)         AS name,
+                 arg_max(project_name, total_credit) AS project_name
+          FROM project_users
+          WHERE contains(lower(name), lower($name))
+          GROUP BY cpid
+          ORDER BY max(total_credit) DESC
+          LIMIT ${limit}
         `,
-        query_params: { name: q, lim: limit },
-        format: 'JSONEachRow',
-      });
-      const rows = await r.json<{ cpid: string; name: string; project_name: string }>();
+        { name: q },
+      );
       results.push({
         index: NAMES_BUCKET,
         hits: rows.map((m) => ({
-          id: `${m.cpid}:${m.project_name}`,
+          id: m.cpid,
           cpid: m.cpid,
           name: m.name,
           project_name: m.project_name,

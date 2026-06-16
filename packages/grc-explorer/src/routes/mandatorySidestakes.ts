@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { ch } from '../lib/ch';
+import { query } from '../lib/db';
 import { ErrorModel } from '../lib/errors';
 import { halford2grc } from '../lib/halford';
 import { param } from '../lib/req';
@@ -48,20 +48,17 @@ mandatorySidestakesRouter.get('/', async (_req: Request, res: Response) => {
     res.status(StatusCodes.OK).send(registryCache.body);
     return;
   }
-  const result = await ch.query({
-    query: `
+  const rows = await query<ActiveRegistryRow>(
+    `
       WITH latest AS (
         SELECT address,
-               argMax(status, block_height)         AS status,
-               argMax(allocation_pct, block_height) AS allocation_pct,
-               argMax(description, block_height)    AS description,
-               argMax(tx_id, block_height)          AS tx_id,
-               -- NOT "AS block_height": that alias shadows the column
-               -- and the argMax below then binds to this aggregate
-               -- (ClickHouse error 184, aggregate-inside-aggregate).
-               max(block_height)                    AS last_height,
-               argMax(toUnixTimestamp(time), block_height) AS time
-        FROM mandatory_sidestakes FINAL
+               arg_max(status, block_height)         AS status,
+               arg_max(allocation_pct, block_height) AS allocation_pct,
+               arg_max(description, block_height)    AS description,
+               arg_max(tx_id, block_height)          AS tx_id,
+               max(block_height)                     AS last_height,
+               arg_max(CAST(epoch(time) AS BIGINT), block_height) AS time
+        FROM mandatory_sidestakes
         GROUP BY address
       )
       SELECT
@@ -71,22 +68,20 @@ mandatorySidestakesRouter.get('/', async (_req: Request, res: Response) => {
         l.tx_id                                    AS tx_id,
         l.last_height                              AS block_height,
         l.time                                     AS time,
-        toString(coalesce(p.total_paid, toUInt256(0))) AS total_paid,
+        CAST(coalesce(p.total_paid, 0) AS VARCHAR) AS total_paid,
         coalesce(p.payout_count, 0)                AS payout_count
       FROM latest l
       LEFT JOIN (
         SELECT address,
-               toUInt256(sum(amount)) AS total_paid,
-               count()                AS payout_count
-        FROM coinstake_sidestakes FINAL
+               sum(amount) AS total_paid,
+               count(*)    AS payout_count
+        FROM coinstake_sidestakes
         GROUP BY address
       ) p ON p.address = l.address
       WHERE l.status = 'MANDATORY'
       ORDER BY l.allocation_pct DESC, l.address
     `,
-    format: 'JSONEachRow',
-  });
-  const rows = await result.json<ActiveRegistryRow>();
+  );
   const body = withMeta({
     data: rows.map((r) => ({
       type: 'mandatory_sidestakes',
@@ -113,53 +108,47 @@ mandatorySidestakesRouter.get('/', async (_req: Request, res: Response) => {
  */
 mandatorySidestakesRouter.get('/:address', async (req: Request, res: Response) => {
   const address = param(req, 'address');
-  const [registryResult, payoutsResult, totalsResult] = await Promise.all([
-    ch.query({
-      query: `
+  const [registry, payouts, totalsRows] = await Promise.all([
+    query<{
+      address: string; action: string; status: string;
+      allocation_pct: number; description: string;
+      tx_id: string; block_height: number; time: number;
+    }>(
+      `
         SELECT address, action, status, allocation_pct, description,
-               tx_id, block_height, toUnixTimestamp(time) AS time
-        FROM mandatory_sidestakes FINAL
-        WHERE address = {addr: String}
+               tx_id, block_height, CAST(epoch(time) AS BIGINT) AS time
+        FROM mandatory_sidestakes
+        WHERE address = $addr
         ORDER BY block_height
       `,
-      query_params: { addr: address },
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `
+      { addr: address },
+    ),
+    query<{
+      block_height: number; vout_idx: number; tx_id: string;
+      amount: string; time: number;
+    }>(
+      `
         SELECT block_height, vout_idx, tx_id,
-               toString(amount)         AS amount,
-               toUnixTimestamp(time)    AS time
-        FROM coinstake_sidestakes FINAL
-        WHERE address = {addr: String}
+               CAST(amount AS VARCHAR)      AS amount,
+               CAST(epoch(time) AS BIGINT)  AS time
+        FROM coinstake_sidestakes
+        WHERE address = $addr
         ORDER BY block_height DESC, vout_idx
         LIMIT 200
       `,
-      query_params: { addr: address },
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `
-        SELECT toString(toUInt256(sum(amount))) AS total,
-               count()                          AS payout_count
-        FROM coinstake_sidestakes FINAL
-        WHERE address = {addr: String}
+      { addr: address },
+    ),
+    query<{ total: string; payout_count: number | string }>(
+      `
+        SELECT CAST(coalesce(sum(amount), 0) AS VARCHAR) AS total,
+               count(*)                                  AS payout_count
+        FROM coinstake_sidestakes
+        WHERE address = $addr
       `,
-      query_params: { addr: address },
-      format: 'JSONEachRow',
-    }),
+      { addr: address },
+    ),
   ]);
-  const registry = await registryResult.json<{
-    address: string; action: string; status: string;
-    allocation_pct: number; description: string;
-    tx_id: string; block_height: number; time: number;
-  }>();
-  const payouts = await payoutsResult.json<{
-    block_height: number; vout_idx: number; tx_id: string;
-    amount: string; time: number;
-  }>();
-  const totalsRow = (await totalsResult.json<{ total: string; payout_count: number | string }>())[0]
-    ?? { total: '0', payout_count: 0 };
+  const totalsRow = totalsRows[0] ?? { total: '0', payout_count: 0 };
 
   if (registry.length === 0) {
     res.status(StatusCodes.NOT_FOUND).send({

@@ -1,4 +1,4 @@
-import { ch } from './ch';
+import { query } from './db';
 
 const CPID_RE = /^[0-9a-f]{32}$/;
 
@@ -17,12 +17,10 @@ const RESOLVE_CHUNK = 1000;
  * truncated hash. Use `cpidDisplayName()` to look up by a possibly
  * mixed-case chain CPID.
  *
- * No FINAL: project_users is ~48% un-merged duplicate rows, so FINAL
- * is load-bearing for correctness AND a full merge-scan. We reproduce
- * it cheaply — dedup each (cpid, project_name) to its latest `_seq`,
- * then pick the name from the BOINC project where the user has the
- * most credit. `cpid IN (...)` is primary-key-pruned (cpid leads the
- * ORDER BY). Verified row-for-row identical to the FINAL form.
+ * (cpid, project_name) is the PRIMARY KEY (one row per pair via
+ * upsert), so no dedup is needed — we just pick the name from the BOINC
+ * project where the user has the most credit. `cpid = ANY(...)` is
+ * primary-key-pruned (cpid leads the PK).
  */
 export async function resolveCpidNames(
   cpids: ReadonlyArray<string>,
@@ -39,33 +37,19 @@ export async function resolveCpidNames(
   }
   await Promise.all(chunks.map(async (chunk) => {
     try {
-      const result = await ch.query({
-        // Inner aliases are `nm`/`tc` (not `display_name`) and the
-        // empty-name filter is a HAVING on the inner aggregate — a
-        // WHERE/outer-alias collision here resolves to the outer
-        // argMax aggregate and ClickHouse rejects it (error 184,
-        // ILLEGAL_AGGREGATION).
-        query: `
-          SELECT cpid, argMax(nm, tc) AS display_name
-          FROM (
-            SELECT cpid, project_name,
-                   argMax(name, _seq)         AS nm,
-                   argMax(total_credit, _seq) AS tc
-            FROM project_users
-            WHERE cpid IN ({cpids: Array(String)})
-            GROUP BY cpid, project_name
-            HAVING nm != ''
-          )
+      const rows = await query<{ cpid: string; display_name: string }>(
+        `
+          SELECT cpid, arg_max(name, total_credit) AS display_name
+          FROM project_users
+          WHERE cpid = ANY($cpids) AND name != ''
           GROUP BY cpid
         `,
-        query_params: { cpids: chunk },
-        format: 'JSONEachRow',
-      });
-      const rows = await result.json<{ cpid: string; display_name: string }>();
+        { cpids: chunk },
+      );
       for (const r of rows) if (r.display_name) out.set(r.cpid, r.display_name);
     } catch {
-      // Table absent (pre-migration 0015) or transient CH error —
-      // degrade to no names; callers fall back to truncated hashes.
+      // Table absent (pre-migration) — degrade to no names; callers
+      // fall back to truncated hashes.
     }
   }));
   return out;

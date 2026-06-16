@@ -1,19 +1,14 @@
 import {
-  Box, Card, CardContent, Chip, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography,
+  Box, Card, CardContent, Stack, Typography,
 } from '@mui/material';
-import Link from 'next/link';
-import { useRouter } from 'next/router';
 import {
-  useEffect, useRef, useState,
+  useEffect, useMemo, useRef, useState,
 } from 'react';
 import { api } from '../lib/api';
-import { formatGrc } from '../lib/format';
 import { useSSE } from '../hooks/useSSE';
 import { useCpidNames } from '../hooks/useCpidNames';
 import { atParam, useTimeMachine } from '../hooks/useTimeMachine';
-import { CpidLabel } from './CpidLabel';
-import { HashTrim } from './HashTrim';
-import { TimeAgo } from './TimeAgo';
+import { BlockTable, BlockRowData } from './BlockTable';
 
 export interface BlockEntry {
   height: number;
@@ -25,11 +20,58 @@ export interface BlockEntry {
   is_mrc: boolean;
   value_moved: string;
   fee_total: string;
+  difficulty: string;
+  size: number;
+  mint: string;
   miner_address?: string | null;
   staker_cpid?: string | null;
   // Server-resolved staker name from the REST seed (absent on the SSE
   // live path — useCpidNames resolves those client-side).
   staker_name?: string | null;
+}
+
+// REST `/blocks` attributes (JSON:API camelCase). The SSR seed (home
+// page) and the polled fallback below both receive this shape and map
+// it onto the snake_case BlockEntry the ticker stores — which mirrors
+// the SSE payload, so the two update paths can't disagree on field
+// names. Without this map a polled refresh wiped staker / PoS / tx-count
+// to undefined and rendered every row as "investor".
+export interface BlockAttrs {
+  height: number;
+  hash: string;
+  time: number;
+  txCount: number;
+  isPos: boolean;
+  isSuperblock: boolean;
+  isMrc?: boolean;
+  valueMoved?: string;
+  feeTotal?: string;
+  difficulty?: string;
+  size?: number;
+  mint?: string;
+  minerAddress?: string | null;
+  stakerCpid?: string | null;
+  stakerName?: string | null;
+}
+
+export function mapBlockAttrsToEntry(a: BlockAttrs): BlockEntry {
+  return {
+    height: a.height,
+    hash: a.hash,
+    time: a.time,
+    tx_count: a.txCount,
+    is_pos: a.isPos,
+    is_superblock: a.isSuperblock,
+    is_mrc: Boolean(a.isMrc),
+    value_moved: a.valueMoved ?? '0',
+    fee_total: a.feeTotal ?? '0',
+    difficulty: a.difficulty ?? '0',
+    size: a.size ?? 0,
+    mint: a.mint ?? '0',
+    miner_address: a.minerAddress ?? null,
+    staker_cpid: a.stakerCpid ?? null,
+    staker_name: a.stakerName ?? null,
+  };
 }
 
 const MAX_VISIBLE = 12;
@@ -41,7 +83,6 @@ export function LiveBlockTicker({
   initialBlocks?: BlockEntry[];
   initialNames?: Record<string, string>;
 } = {}) {
-  const router = useRouter();
   const tm = useTimeMachine();
   const [blocks, setBlocks] = useState<BlockEntry[]>(initialBlocks);
   const skipFirstFetchRef = useRef(initialBlocks.length > 0);
@@ -55,46 +96,12 @@ export function LiveBlockTicker({
   const lastEventAtRef = useRef<number>(Date.now());
   useEffect(() => {
     let cancelled = false;
-    // The REST presenter emits camelCase attributes (txCount, stakerCpid,
-    // isPos, …) — JSON:API convention. Our local BlockEntry happens to
-    // mirror the SSE payload, which the indexer emits in snake_case
-    // (block_writer.ts publishes `tx_count` / `staker_cpid` / etc. so
-    // SSE consumers see exactly the on-chain field names). Map between
-    // the two here; without this, every polled refresh wiped staker /
-    // PoS / tx-count fields to undefined and rendered every row as
-    // "investor" — the bug that made the table look like it grew or
-    // lost data right after the 30 s poll fired.
-    interface BlockApiAttrs {
-      height: number;
-      hash: string;
-      time: number;
-      txCount: number;
-      isPos: boolean;
-      isSuperblock: boolean;
-      isMrc: boolean;
-      valueMoved?: string;
-      feeTotal?: string;
-      minerAddress?: string | null;
-      stakerCpid?: string | null;
-    }
     const fetchOnce = () => api.get('/blocks', {
       params: { 'page[size]': MAX_VISIBLE, ...atParam(tm.at) },
     }).then((r) => {
       if (cancelled) return;
-      const data = (r.data?.data ?? []) as Array<{ attributes: BlockApiAttrs }>;
-      const next: BlockEntry[] = data.map((d) => ({
-        height: d.attributes.height,
-        hash: d.attributes.hash,
-        time: d.attributes.time,
-        tx_count: d.attributes.txCount,
-        is_pos: d.attributes.isPos,
-        is_superblock: d.attributes.isSuperblock,
-        is_mrc: Boolean(d.attributes.isMrc),
-        value_moved: d.attributes.valueMoved ?? '0',
-        fee_total: d.attributes.feeTotal ?? '0',
-        miner_address: d.attributes.minerAddress ?? null,
-        staker_cpid: d.attributes.stakerCpid ?? null,
-      }));
+      const data = (r.data?.data ?? []) as Array<{ attributes: BlockAttrs }>;
+      const next: BlockEntry[] = data.map((d) => mapBlockAttrsToEntry(d.attributes));
       setBlocks((prev) => {
         // Merge instead of replace. Replacing dropped any SSE-delivered
         // blocks that landed *after* this fetch was issued but *before*
@@ -203,6 +210,25 @@ export function LiveBlockTicker({
     .filter((c): c is string => typeof c === 'string' && c.length > 0);
   const names = useCpidNames(stakerCpids, initialNames);
 
+  // Map the snake_case SSE/seed shape onto the shared BlockTable row.
+  // Recomputes when names resolve so late-arriving CPIDs show up.
+  const rows: BlockRowData[] = useMemo(() => blocks.map((b) => ({
+    height: b.height,
+    hash: b.hash,
+    time: b.time,
+    txCount: b.tx_count,
+    isPos: b.is_pos,
+    isSuperblock: b.is_superblock,
+    isMrc: b.is_mrc,
+    valueMoved: b.value_moved,
+    feeTotal: b.fee_total,
+    difficulty: b.difficulty,
+    size: b.size,
+    reward: b.mint,
+    stakerCpid: b.staker_cpid ?? null,
+    stakerName: b.staker_cpid ? names.get(b.staker_cpid) ?? null : null,
+  })), [blocks, names]);
+
   return (
     <Card variant="outlined">
       <CardContent sx={{ p: 0, ':last-child': { pb: 0 } }}>
@@ -228,117 +254,12 @@ export function LiveBlockTicker({
           </Stack>
         </Box>
         <Box sx={{ overflowX: 'auto' }}>
-        <Table size="small" sx={{ minWidth: 720 }}>
-          <TableHead>
-            <TableRow>
-              <TableCell sx={{ width: 110 }}>Height</TableCell>
-              <TableCell>Hash</TableCell>
-              <TableCell sx={{ width: 110 }}>Age</TableCell>
-              <TableCell align="right" sx={{ width: 70 }}>Txs</TableCell>
-              <TableCell align="right" sx={{ width: 110 }}>Amount</TableCell>
-              <TableCell align="right" sx={{ width: 90 }}>Fees</TableCell>
-              <TableCell sx={{ width: 130 }}>Type</TableCell>
-              <TableCell sx={{ width: 140 }}>Staker</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {blocks.map((b) => (
-              <TableRow
-                key={b.hash}
-                hover
-                sx={{
-                  cursor: 'pointer',
-                  // Superblock rows pop out: brand-coloured left border +
-                  // stronger tint. Clicks go to the dedicated superblock
-                  // page (with magnitudes / projects / verified beacons)
-                  // instead of the generic block detail.
-                  ...(b.is_superblock && {
-                    backgroundColor: (theme) => `${theme.palette.secondary.main}26`,
-                    borderLeft: 4,
-                    borderLeftColor: 'secondary.main',
-                  }),
-                }}
-                onClick={() => {
-                  if (b.is_superblock) router.push(`/superblocks/${b.height}`);
-                  else router.push(`/block/${b.height}`);
-                }}
-                onMouseEnter={() => {
-                  if (b.is_superblock) router.prefetch(`/superblocks/${b.height}`);
-                  else router.prefetch(`/block/${b.height}`);
-                }}
-              >
-                <TableCell sx={{ fontWeight: 600 }}>
-                  <Link
-                    href={b.is_superblock ? `/superblocks/${b.height}` : `/block/${b.height}`}
-                    style={{ color: 'inherit', textDecoration: 'none' }}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    #{b.height.toLocaleString()}
-                  </Link>
-                </TableCell>
-                <TableCell sx={{ fontFamily: 'monospace', fontSize: 12, color: 'text.secondary' }}>
-                  <HashTrim text={b.hash} head={12} tail={6} />
-                </TableCell>
-                <TableCell sx={{ color: 'text.secondary' }}><TimeAgo unixSec={b.time} /></TableCell>
-                <TableCell align="right">{b.tx_count}</TableCell>
-                <TableCell align="right" sx={{ color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}>
-                  {formatGrc(b.value_moved ?? '0')}
-                </TableCell>
-                <TableCell align="right" sx={{ color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}>
-                  {formatGrc(b.fee_total ?? '0')}
-                </TableCell>
-                <TableCell>
-                  <Stack direction="row" spacing={0.5}>
-                    {b.is_superblock && <Chip label="SB" size="small" color="secondary" />}
-                    {b.is_mrc && <Chip label="MRC" size="small" color="secondary" variant="outlined" />}
-                    {b.is_pos
-                      ? <Chip label="PoS" size="small" variant="outlined" />
-                      : <Chip label="PoW" size="small" variant="outlined" />}
-                  </Stack>
-                </TableCell>
-                <TableCell sx={{ fontSize: 12, maxWidth: 220 }}>
-                  {b.staker_cpid ? (
-                    <Link
-                      href={`/cpids/${b.staker_cpid}`}
-                      style={{ color: 'inherit', textDecoration: 'none', display: 'block', minWidth: 0 }}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <CpidLabel cpid={b.staker_cpid} name={names.get(b.staker_cpid)} />
-                    </Link>
-                  ) : (
-                    <Box sx={{ color: 'text.disabled', fontStyle: 'italic' }}>investor</Box>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
-            {/* Pad the row count to MAX_VISIBLE so the card is always
-                12 rows tall. Without this the table grows from 1 row
-                (placeholder) to 12 rows when the API resolves, plus
-                shrinks if the indexer briefly has fewer blocks than
-                the visible window — both reflow the rest of the page,
-                which is the "scroll drift" symptom.
-                The first placeholder row carries the waiting message
-                if there's no data yet; the rest are blank rows of the
-                same size as a real row. */}
-            {Array.from({ length: Math.max(0, MAX_VISIBLE - blocks.length) }).map((_, i) => (
-              <TableRow key={`pad-${i}`} sx={{ '& td': { borderColor: 'transparent' } }}>
-                <TableCell
-                  colSpan={8}
-                  sx={{
-                    textAlign: 'center',
-                    color: 'text.secondary',
-                    height: 41, // matches a real small-Table row height
-                    py: 0,
-                  }}
-                >
-                  {i === 0 && blocks.length === 0
-                    ? 'Waiting for the indexer to catch up to chain tip…'
-                    : ' '}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+          <BlockTable
+            blocks={rows}
+            liveAge
+            minRows={MAX_VISIBLE}
+            emptyMessage="Waiting for the indexer to catch up to chain tip…"
+          />
         </Box>
       </CardContent>
     </Card>

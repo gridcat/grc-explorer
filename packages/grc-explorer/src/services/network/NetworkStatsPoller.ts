@@ -1,4 +1,4 @@
-import { ch } from '../../lib/ch';
+import { query, run } from '../../lib/db';
 import { events } from '../../lib/emitter';
 import { liveRpc } from '../../lib/gridcoin';
 import { log } from '../../lib/log';
@@ -44,9 +44,8 @@ export interface NetworkStatsPayload {
 // Polls the daemon every NETWORK_STATS_INTERVAL_MS:
 //   1. caches the latest snapshot in Redis (so /network is O(1)),
 //   2. emits an SSE `network.stats` event,
-//   3. inserts a row into ClickHouse `network_snapshots` so
-//      /network/history can serve a time-series for the dashboard
-//      sparklines. The CH table has a 7-day TTL so prune is automatic.
+//   3. inserts a row into `network_snapshots` so /network/history can
+//      serve a time-series for the dashboard sparklines.
 export class NetworkStatsPoller {
   async tick(): Promise<void> {
     // Promise.allSettled rather than Promise.all: when one RPC call
@@ -59,21 +58,16 @@ export class NetworkStatsPoller {
       // Difficulty as observed by the indexer (not the daemon's
       // "live" reading) — the two diverge during backfill, and
       // explorers conventionally show the historical value.
-      ch.query({
-        // No FINAL: it disables primary-key pruning and forces a full
-        // merge-scan of `blocks` on every poll (and every boot, via
-        // schedule()'s immediate first tick). PK is ORDER BY (height),
-        // so read the max-height granule and take the highest _seq —
-        // exactly the row FINAL would resolve for the chain tip.
-        query: `
+      query<{ difficulty: number; height: number; hash: string }>(
+        // The `height` PK makes the max-height row unique, so a plain
+        // top-1 read returns the chain tip's difficulty directly.
+        `
           SELECT difficulty, height, hash
           FROM blocks
           WHERE height = (SELECT max(height) FROM blocks)
-          ORDER BY _seq DESC
           LIMIT 1
         `,
-        format: 'JSONEachRow',
-      }).then((r) => r.json<{ difficulty: string; height: number; hash: string }>()).then((rows) => rows[0] ?? null),
+      ).then((rows) => rows[0] ?? null),
       getCursor(),
     ]);
 
@@ -85,7 +79,7 @@ export class NetworkStatsPoller {
     const net = pick<NetworkInfo>(1);
     const mempoolCount = pick<number>(2);
     const peerCount = pick<number>(3);
-    const latestIndexed = pick<{ difficulty: string; height: number; hash: string } | null>(4) ?? null;
+    const latestIndexed = pick<{ difficulty: number; height: number; hash: string } | null>(4) ?? null;
     const cursor = pick<{ height: number; status: string } | null>(5) ?? null;
 
     if (!chain && !net && peerCount === undefined && mempoolCount === undefined && !latestIndexed && !cursor) {
@@ -127,24 +121,27 @@ export class NetworkStatsPoller {
 
     if (peerCount !== undefined && mempoolCount !== undefined && chain) {
       try {
-        await ch.insert({
-          table: 'network_snapshots',
-          format: 'JSONEachRow',
-          values: [{
+        // Append-only: network_snapshots has no PK, so a plain INSERT.
+        // ts is unix-seconds → make_timestamp; difficulty is DOUBLE.
+        await run(
+          `
+            INSERT INTO network_snapshots (ts, peer_count, mempool_size, difficulty, tip_height)
+            VALUES (make_timestamp($ts::BIGINT * 1000000), $peer_count, $mempool_size, $difficulty, $tip_height)
+          `,
+          {
             ts,
             peer_count: peerCount,
             mempool_size: mempoolCount,
-            difficulty: difficultyStr,
+            difficulty: Number(difficultyStr),
             tip_height: chain.blocks,
-          }],
-        });
+          },
+        );
       } catch (err) {
         log.warn('NetworkStatsPoller failed to persist snapshot', err);
       }
     }
-    // Pruning is no longer the indexer's job — the CH `network_snapshots`
-    // table has `TTL ts + INTERVAL 7 DAY` declared at migration time,
-    // so the merge engine drops expired rows automatically.
+    // network_snapshots retention is handled out of band; the poller
+    // only appends.
   }
 
   static async readCache(): Promise<unknown | null> {

@@ -8,14 +8,17 @@ import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  CartesianGrid, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
+import { useRechartsXZoom } from '../../components/charts/useRechartsXZoom';
+import { ZoomResetButton } from '../../components/charts/useXZoom';
 import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
 import { formatCompact, formatNumber } from '../../lib/format';
 import { pushPaginationQuery, readPageFromQuery, readPageSizeFromQuery } from '../../lib/pagination';
 import { ChartLegend } from '../../components/charts/SvgChart';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
+import { CopyLinkButton } from '../../components/CopyLinkButton';
 import { HashTrim } from '../../components/HashTrim';
 import { makeRechartsTooltip } from '../../components/charts/RechartsTooltip';
 
@@ -61,6 +64,7 @@ export default function SuperblocksList({
 }: SuperblocksListProps) {
   const router = useRouter();
   const theme = useTheme();
+  const timelineZoom = useRechartsXZoom('z');
   const [rows, setRows] = useState<Superblock[]>(initialRows);
   const [total, setTotal] = useState<number>(initialTotal);
   const [loading, setLoading] = useState(false);
@@ -117,10 +121,12 @@ export default function SuperblocksList({
   return (
     <Layout>
       <Stack spacing={2}>
-        <Crumbs items={[
-          RESEARCHERS_CRUMB,
-          { label: 'Superblocks' },
-        ]}
+        <Crumbs
+          items={[
+            RESEARCHERS_CRUMB,
+            { label: 'Superblocks' },
+          ]}
+          trailing={<CopyLinkButton />}
         />
         <Typography variant="h4" sx={{ fontWeight: 700 }}>Superblocks</Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
@@ -143,13 +149,23 @@ export default function SuperblocksList({
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5 }}>
                 {`${formatNumber(initialTimeline.length)} superblocks — project count (left axis), CPID count (right axis).`}
               </Typography>
+              <Box sx={{ position: 'relative' }}>
+              <ZoomResetButton zoom={timelineZoom} />
               <ResponsiveContainer width="100%" height={260}>
-                <LineChart data={initialTimeline} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
+                <LineChart
+                  data={initialTimeline}
+                  margin={{ top: 8, right: 16, left: 0, bottom: 0 }}
+                  onMouseDown={timelineZoom.onMouseDown}
+                  onMouseMove={timelineZoom.onMouseMove}
+                  onMouseUp={timelineZoom.onMouseUp}
+                  style={{ cursor: 'crosshair' }}
+                >
                   <CartesianGrid strokeDasharray="3 3" stroke={theme.palette.divider} />
                   <XAxis
                     dataKey="height"
                     type="number"
-                    domain={['dataMin', 'dataMax']}
+                    domain={timelineZoom.domain ?? ['dataMin', 'dataMax']}
+                    allowDataOverflow
                     tickFormatter={(h: number) => formatCompact(h, 1)}
                     fontSize={11}
                   />
@@ -189,8 +205,29 @@ export default function SuperblocksList({
                     dot={false}
                     name="CPIDs"
                   />
+                  {timelineZoom.refLeft !== null && timelineZoom.refRight !== null && (
+                    <ReferenceArea
+                      yAxisId="projects"
+                      x1={timelineZoom.refLeft}
+                      x2={timelineZoom.refRight}
+                      strokeOpacity={0.3}
+                      fill={theme.palette.primary.main}
+                      fillOpacity={0.12}
+                    />
+                  )}
+                  {timelineZoom.marker !== null && (
+                    <ReferenceLine
+                      yAxisId="projects"
+                      x={timelineZoom.marker}
+                      stroke={theme.palette.secondary.main}
+                      strokeDasharray="2 3"
+                      strokeWidth={1.5}
+                      ifOverflow="hidden"
+                    />
+                  )}
                 </LineChart>
               </ResponsiveContainer>
+              </Box>
               <Box sx={{ mt: 1 }}>
                 <ChartLegend items={[
                   { label: 'Projects', color: theme.palette.primary.main },

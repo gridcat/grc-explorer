@@ -16,6 +16,7 @@ import Link from 'next/link';
 import { useRouter, NextRouter } from 'next/router';
 import { useEffect, useState } from 'react';
 import { IS_TESTNET } from '../lib/network';
+import { activeChildHref } from '../lib/navActive';
 import { track } from '../lib/track';
 import { ModeToggle } from './ModeToggle';
 import { NavMenuMobile, NavEntry } from './NavMenuMobile';
@@ -111,7 +112,13 @@ const NAV_ITEMS: NavEntry[] = [
   { href: '/blocks', label: 'Blocks' },
   { href: '/history', label: 'History' },
   { href: '/mempool', label: 'Mempool' },
-  { href: '/wallets', label: 'Wallets' },
+  {
+    label: 'Wallets',
+    children: [
+      { href: '/wallets', label: 'Top wallets' },
+      { href: '/wallets/versions', label: 'Versions' },
+    ],
+  },
   {
     label: 'Researchers',
     children: [
@@ -156,7 +163,10 @@ function GroupNavItem({
 }) {
   const anchorRef = useRef<HTMLLIElement | null>(null);
   const [open, setOpen] = useState(false);
-  const isActive = group.children.some((c) => router.pathname.startsWith(c.href));
+  // Longest-match so a parent child (/wallets) doesn't light up on a
+  // nested sibling (/wallets/versions).
+  const activeHref = activeChildHref(router.pathname, group.children);
+  const isActive = activeHref !== null;
   return (
     <>
       <NavItem
@@ -192,7 +202,7 @@ function GroupNavItem({
         slotProps={{ paper: { sx: { mt: 1, minWidth: 160 } } }}
       >
         {group.children.map((c) => {
-          const childActive = router.pathname.startsWith(c.href);
+          const childActive = activeHref === c.href;
           return (
             <MenuItem
               key={c.href}

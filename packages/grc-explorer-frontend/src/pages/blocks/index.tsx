@@ -1,24 +1,20 @@
 import {
-  Box, Chip, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography,
+  Box, Chip, Paper, Stack, Typography,
 } from '@mui/material';
 import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
-import { useRouter } from 'next/router';
 import { useMemo, useState } from 'react';
 import { useSSE } from '../../hooks/useSSE';
 import { useCpidNames } from '../../hooks/useCpidNames';
 import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
-import { formatGrc, formatTime, timeAgo } from '../../lib/format';
-import { track } from '../../lib/track';
-import { CpidLabel } from '../../components/CpidLabel';
+import { BlockTable, BlockRowData } from '../../components/BlockTable';
 import { Crumbs } from '../../components/Crumbs';
-import { HashTrim } from '../../components/HashTrim';
 import { fetchYearList, type YearListItem } from '../../routes/blocks/archive/fetch';
 
-// Same table contract as the home page's LiveBlockTicker — same column
-// names, widths, hash truncation, and badge layout. The only difference
-// is the row count (50 here vs ~12 on home).
+// Renders the shared <BlockTable> (same component the home ticker and
+// the date archive use). The only difference here is the row count
+// (PAGE_SIZE vs ~12 on home) and the analytics source on row clicks.
 
 interface Block {
   height: number;
@@ -38,6 +34,8 @@ interface Block {
   stakerName?: string | null;
   minerAddress?: string | null;
   difficulty?: string;
+  size?: number;
+  mint?: string;
 }
 
 const PAGE_SIZE = 60;
@@ -48,7 +46,6 @@ interface BlocksListProps {
 }
 
 export default function BlocksList({ initialRows, years }: BlocksListProps) {
-  const router = useRouter();
   const [rows, setRows] = useState<Block[]>(initialRows);
 
   // Live updates — same dedupe + descending-sort pattern as
@@ -59,6 +56,7 @@ export default function BlocksList({ initialRows, years }: BlocksListProps) {
       height: number; hash: string; time: number; tx_count: number;
       is_pos: boolean; is_superblock: boolean; is_mrc?: boolean;
       value_moved?: string; fee_total?: string;
+      difficulty?: string; size?: number; mint?: string;
       staker_cpid: string | null; miner_address?: string | null;
     };
     const incoming: Block = {
@@ -71,6 +69,9 @@ export default function BlocksList({ initialRows, years }: BlocksListProps) {
       isMrc: Boolean(p.is_mrc),
       valueMoved: p.value_moved ?? '0',
       feeTotal: p.fee_total ?? '0',
+      difficulty: p.difficulty ?? '0',
+      size: p.size ?? 0,
+      mint: p.mint ?? '0',
       stakerCpid: p.staker_cpid,
       minerAddress: p.miner_address ?? null,
     };
@@ -101,6 +102,25 @@ export default function BlocksList({ initialRows, years }: BlocksListProps) {
   );
   const names = useCpidNames(stakerCpids, initialCpidNames);
 
+  // Map onto the shared BlockTable row. SSE rows carry no stakerName, so
+  // prefer the live-resolved name and fall back to the SSR seed's.
+  const tableRows: BlockRowData[] = useMemo(() => rows.map((b) => ({
+    height: b.height,
+    hash: b.hash,
+    time: b.time,
+    txCount: b.txCount,
+    isPos: b.isPos,
+    isSuperblock: b.isSuperblock,
+    isMrc: b.isMrc,
+    valueMoved: b.valueMoved ?? '0',
+    feeTotal: b.feeTotal ?? '0',
+    difficulty: b.difficulty ?? '0',
+    size: b.size ?? 0,
+    reward: b.mint ?? '0',
+    stakerCpid: b.stakerCpid,
+    stakerName: b.stakerCpid ? names.get(b.stakerCpid) ?? b.stakerName ?? null : null,
+  })), [rows, names]);
+
   return (
     <Layout>
       <Stack spacing={2}>
@@ -108,121 +128,12 @@ export default function BlocksList({ initialRows, years }: BlocksListProps) {
         {years.length > 0 && <ArchiveRail years={years} />}
         <Typography variant="h4" sx={{ fontWeight: 700 }}>Recent blocks</Typography>
         <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell sx={{ width: 110 }}>Height</TableCell>
-                <TableCell>Hash</TableCell>
-                <TableCell sx={{ width: 110 }}>Age</TableCell>
-                <TableCell align="right" sx={{ width: 70 }}>Txs</TableCell>
-                <TableCell align="right" sx={{ width: 110 }}>Amount</TableCell>
-                <TableCell align="right" sx={{ width: 90 }}>Fees</TableCell>
-                <TableCell sx={{ width: 130 }}>Type</TableCell>
-                <TableCell sx={{ width: 140 }}>Staker</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {rows.map((b) => (
-                <TableRow
-                  key={b.hash}
-                  hover
-                  sx={{
-                    cursor: 'pointer',
-                    // Superblock rows are visually anchored: a brand-coloured
-                    // left border bar + a stronger background tint so they
-                    // stand out at a glance in a long list, since they hold
-                    // the magnitude payouts everyone wants to find.
-                    ...(b.isSuperblock && {
-                      backgroundColor: (theme) => `${theme.palette.secondary.main}26`,
-                      borderLeft: 4,
-                      borderLeftColor: 'secondary.main',
-                    }),
-                  }}
-                  onClick={() => {
-                    if (b.isSuperblock) {
-                      track('Superblock: open', { from: 'block-list' });
-                      router.push(`/superblocks/${b.height}`);
-                    } else {
-                      track('Block: open', { from: 'block-list' });
-                      router.push(`/block/${b.height}`);
-                    }
-                  }}
-                  onMouseEnter={() => {
-                    if (b.isSuperblock) router.prefetch(`/superblocks/${b.height}`);
-                    else router.prefetch(`/block/${b.height}`);
-                  }}
-                >
-                  <TableCell sx={{ fontWeight: 600 }}>
-                    <Link
-                      href={b.isSuperblock ? `/superblocks/${b.height}` : `/block/${b.height}`}
-                      style={{ color: 'inherit', textDecoration: 'none' }}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      #{b.height.toLocaleString('en-US')}
-                    </Link>
-                  </TableCell>
-                  <TableCell sx={{ fontFamily: 'monospace', fontSize: 12, color: 'text.secondary' }}>
-                    <HashTrim text={b.hash} head={12} tail={6} />
-                  </TableCell>
-                  <TableCell title={formatTime(b.time)} sx={{ color: 'text.secondary' }}>
-                    {timeAgo(b.time)}
-                  </TableCell>
-                  <TableCell align="right">{b.txCount}</TableCell>
-                  <TableCell align="right" sx={{ color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}>
-                    {formatGrc(b.valueMoved ?? '0')}
-                  </TableCell>
-                  <TableCell align="right" sx={{ color: 'text.secondary', fontVariantNumeric: 'tabular-nums' }}>
-                    {formatGrc(b.feeTotal ?? '0')}
-                  </TableCell>
-                  <TableCell>
-                    <Box sx={{ display: 'flex', gap: 0.5 }}>
-                      {b.isSuperblock && <Chip label="SB" size="small" color="secondary" />}
-                      {b.isMrc && <Chip label="MRC" size="small" color="secondary" variant="outlined" />}
-                      {b.isPos
-                        ? <Chip label="PoS" size="small" variant="outlined" />
-                        : <Chip label="PoW" size="small" variant="outlined" />}
-                    </Box>
-                  </TableCell>
-                  <TableCell sx={{ fontSize: 12, maxWidth: 220 }}>
-                    {b.stakerCpid ? (
-                      <Link
-                        href={`/cpids/${b.stakerCpid}`}
-                        style={{
-                          color: 'inherit', textDecoration: 'none', display: 'block', minWidth: 0,
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <CpidLabel cpid={b.stakerCpid} name={names.get(b.stakerCpid)} />
-                      </Link>
-                    ) : (
-                      <Box sx={{ color: 'text.disabled', fontStyle: 'italic' }}>investor</Box>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-              {/* Pad up to PAGE_SIZE so the table is always 50 rows
-                  tall. Without this, the table grows from 1 row
-                  (placeholder) to 50 when the API resolves, which
-                  reflows the rest of the page and drags scroll. */}
-              {Array.from({ length: Math.max(0, PAGE_SIZE - rows.length) }).map((_, i) => (
-                <TableRow key={`pad-${i}`} sx={{ '& td': { borderColor: 'transparent' } }}>
-                  <TableCell
-                    colSpan={8}
-                    sx={{
-                      textAlign: 'center',
-                      color: 'text.secondary',
-                      height: 41,
-                      py: 0,
-                    }}
-                  >
-                    {i === 0 && rows.length === 0
-                      ? 'Waiting for the indexer to catch up to chain tip…'
-                      : ' '}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <BlockTable
+            blocks={tableRows}
+            minRows={PAGE_SIZE}
+            emptyMessage="Waiting for the indexer to catch up to chain tip…"
+            trackSource="block-list"
+          />
         </Paper>
       </Stack>
     </Layout>

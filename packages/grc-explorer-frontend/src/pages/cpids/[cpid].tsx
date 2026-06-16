@@ -9,8 +9,10 @@ import {
   Fragment, useEffect, useMemo, useRef, useState,
 } from 'react';
 import {
-  Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
+import { useRechartsXZoom } from '../../components/charts/useRechartsXZoom';
+import { ZoomResetButton } from '../../components/charts/useXZoom';
 import { Layout } from '../../layouts/Layout';
 import { Stat } from '../../components/Stat';
 import { api, notFoundOrRethrow } from '../../lib/api';
@@ -20,6 +22,7 @@ import {
 import { HashTrim } from '../../components/HashTrim';
 import { makeRechartsTooltip } from '../../components/charts/RechartsTooltip';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
+import { CopyLinkButton } from '../../components/CopyLinkButton';
 
 interface CpidSummary {
   cpid: string;
@@ -93,6 +96,7 @@ export default function CpidDetail({
   initialLinkedWallets, initialCombinedBalance, initialCombinedSharePct, initialCombinedCount,
 }: CpidDetailProps) {
   const theme = useTheme();
+  const magnitudeZoom = useRechartsXZoom('z');
   const router = useRouter();
   const { cpid } = router.query;
   const [summary, setSummary] = useState<CpidSummary | null>(initialSummary);
@@ -154,11 +158,13 @@ export default function CpidDetail({
   return (
     <Layout>
       <Stack spacing={2}>
-        <Crumbs items={[
-          RESEARCHERS_CRUMB,
-          { label: 'CPIDs', href: '/cpids/cohorts' },
-          { label: shortHash(summary.cpid, 8, 6) },
-        ]}
+        <Crumbs
+          items={[
+            RESEARCHERS_CRUMB,
+            { label: 'CPIDs', href: '/cpids/cohorts' },
+            { label: shortHash(summary.cpid, 8, 6) },
+          ]}
+          trailing={<CopyLinkButton />}
         />
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ alignItems: { sm: 'baseline' } }}>
           {summary.displayName ? (
@@ -273,17 +279,50 @@ export default function CpidDetail({
         <Card variant="outlined">
           <CardContent>
             <Typography variant="subtitle2" color="text.secondary">Magnitude history</Typography>
+            <Box sx={{ position: 'relative' }}>
+            <ZoomResetButton zoom={magnitudeZoom} />
             <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={[...magnitudes].reverse()}>
-                <XAxis dataKey="superblockHeight" fontSize={11} />
+              <LineChart
+                data={[...magnitudes].reverse()}
+                onMouseDown={magnitudeZoom.onMouseDown}
+                onMouseMove={magnitudeZoom.onMouseMove}
+                onMouseUp={magnitudeZoom.onMouseUp}
+                style={{ cursor: 'crosshair' }}
+              >
+                <XAxis
+                  dataKey="superblockHeight"
+                  type="number"
+                  domain={magnitudeZoom.domain ?? ['dataMin', 'dataMax']}
+                  allowDataOverflow
+                  fontSize={11}
+                />
                 <YAxis fontSize={11} />
                 <Tooltip
                   cursor={{ stroke: theme.palette.divider, strokeDasharray: '3 3' }}
                   content={<MagnitudeTooltip />}
                 />
                 <Line type="monotone" dataKey="magnitude" stroke={theme.palette.primary.main} strokeWidth={2} dot={false} />
+                {magnitudeZoom.refLeft !== null && magnitudeZoom.refRight !== null && (
+                  <ReferenceArea
+                    x1={magnitudeZoom.refLeft}
+                    x2={magnitudeZoom.refRight}
+                    strokeOpacity={0.3}
+                    fill={theme.palette.primary.main}
+                    fillOpacity={0.12}
+                  />
+                )}
+                {magnitudeZoom.marker !== null && (
+                  <ReferenceLine
+                    x={magnitudeZoom.marker}
+                    stroke={theme.palette.secondary.main}
+                    strokeDasharray="2 3"
+                    strokeWidth={1.5}
+                    ifOverflow="hidden"
+                  />
+                )}
               </LineChart>
             </ResponsiveContainer>
+            </Box>
           </CardContent>
         </Card>
 

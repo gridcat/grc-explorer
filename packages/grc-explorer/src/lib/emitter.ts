@@ -49,8 +49,16 @@ export interface BlockNewPayload {
   tx_count: number;
   is_pos: boolean;
   is_superblock: boolean;
+  is_mrc: boolean;
   miner_address: string | null;
   staker_cpid: string | null;
+  // GRC strings (halford2grc'd) and raw difficulty/size, so SSE-pushed
+  // rows render the same columns as a REST refresh without re-fetching.
+  value_moved: string;
+  fee_total: string;
+  difficulty: string;
+  size: number;
+  mint: string;
 }
 
 // Fired in addition to `block.new` when an indexed block is a

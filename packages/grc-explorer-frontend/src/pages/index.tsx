@@ -5,7 +5,9 @@ import { BeaconSurvival, Point as BeaconSurvivalPoint } from '../components/Beac
 import { CohortRetentionPreview, CohortPayload } from '../components/CohortRetentionPreview';
 import { GradientLine } from '../components/GradientLine';
 import { LazyOnVisible } from '../components/LazyOnVisible';
-import { LiveBlockTicker, BlockEntry as LiveBlockEntry } from '../components/LiveBlockTicker';
+import {
+  LiveBlockTicker, BlockEntry as LiveBlockEntry, BlockAttrs, mapBlockAttrsToEntry,
+} from '../components/LiveBlockTicker';
 import { LiveTxFeed, Entry as LiveTxEntry } from '../components/LiveTxFeed';
 import { MagnitudeLeaderboard, Entry as LeaderboardEntryRow, LeaderboardEntry } from '../components/MagnitudeLeaderboard';
 import { MandatorySidestakesTile, MssMetrics } from '../components/MandatorySidestakesTile';
@@ -246,28 +248,8 @@ export const getServerSideProps: GetServerSideProps<HomeProps> = async () => {
   // do — without this, every PoS / MRC chip read "investor" after first
   // paint until the next live event.
   const initialLiveBlocks: LiveBlockEntry[] = blocksRes.status === 'fulfilled'
-    ? ((blocksRes.value.data?.data ?? []) as Array<{
-      attributes: {
-        height: number; hash: string; time: number; txCount: number;
-        isPos: boolean; isSuperblock: boolean; isMrc?: boolean;
-        valueMoved?: string; feeTotal?: string;
-        minerAddress?: string | null; stakerCpid?: string | null;
-        stakerName?: string | null;
-      };
-    }>).map((d) => ({
-      height: d.attributes.height,
-      hash: d.attributes.hash,
-      time: d.attributes.time,
-      tx_count: d.attributes.txCount,
-      is_pos: d.attributes.isPos,
-      is_superblock: d.attributes.isSuperblock,
-      is_mrc: Boolean(d.attributes.isMrc),
-      value_moved: d.attributes.valueMoved ?? '0',
-      fee_total: d.attributes.feeTotal ?? '0',
-      miner_address: d.attributes.minerAddress ?? null,
-      staker_cpid: d.attributes.stakerCpid ?? null,
-      staker_name: d.attributes.stakerName ?? null,
-    })).slice(0, 12)
+    ? ((blocksRes.value.data?.data ?? []) as Array<{ attributes: BlockAttrs }>)
+      .map((d) => mapBlockAttrsToEntry(d.attributes)).slice(0, 12)
     : [];
 
   // Seed the cpid-name map only from the SSR'd blocks; useCpidNames

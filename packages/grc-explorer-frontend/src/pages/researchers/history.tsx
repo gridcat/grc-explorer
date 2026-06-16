@@ -16,9 +16,11 @@ import {
 } from '../../components/charts/SvgChart';
 import { CpidLabel } from '../../components/CpidLabel';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
+import { CopyLinkButton } from '../../components/CopyLinkButton';
+import { useXZoom, ZoomViewport, ZoomResetButton } from '../../components/charts/useXZoom';
 import { useCpidNames } from '../../hooks/useCpidNames';
 import { api } from '../../lib/api';
-import { buildSmoothLinePath } from '../../lib/chartUtils';
+import { buildSmoothLinePath, paletteColor } from '../../lib/chartUtils';
 import { formatCount, formatYmdDate, MONTHS_SHORT } from '../../lib/format';
 
 interface Point {
@@ -118,6 +120,7 @@ export default function ResearchersHistory({ points }: ResearchersHistoryProps) 
 
       <Stack spacing={3}>
         <Crumbs
+          trailing={<CopyLinkButton />}
           items={selectedYear !== null
             ? [
               RESEARCHERS_CRUMB,
@@ -191,8 +194,8 @@ export default function ResearchersHistory({ points }: ResearchersHistoryProps) 
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
               {selectedYear !== null
-                ? 'Each line is one CPID — magnitude per superblock for the year. Top-30 ranked by total magnitude across the year (a weight of both peak and persistence). Hover any line to identify the researcher.'
-                : 'Each line is one CPID — magnitude per superblock across every recorded superblock. Top-30 ranked by total magnitude across the whole chain. Hover any line to identify the researcher.'}
+                ? 'Each line is one CPID — magnitude per superblock for the year. Top-20 ranked by total magnitude across the year (a weight of both peak and persistence). Hover any line to identify the researcher.'
+                : 'Each line is one CPID — magnitude per superblock across every recorded superblock. Top-20 ranked by total magnitude across the whole chain. Hover any line to identify the researcher.'}
             </Typography>
             {selectedYear !== null
               ? <YearMultiLineChart year={selectedYear} yearPoints={selectedPoints} />
@@ -215,8 +218,11 @@ export default function ResearchersHistory({ points }: ResearchersHistoryProps) 
               Year by year
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
-              Each tile shows one calendar year of active researchers.
-              Click a tile to see that year&apos;s top-20 trajectories.
+              Each tile traces the number of active researchers (distinct
+              CPIDs earning magnitude) per superblock for one calendar
+              year — a participation overview, not magnitude. Click a tile
+              to drill into that year&apos;s top-20 researchers by magnitude
+              above.
             </Typography>
             <Grid container spacing={2}>
               {yearGroups.map((g) => (
@@ -253,17 +259,6 @@ function Stat({ label, value }: { label: string; value: string }) {
 }
 
 const SERIES_LIMIT = 20;
-
-// Golden-angle hue assignment for the multi-line palette. Each rank
-// is multiplied by 137.508° so adjacent ranks land on widely-spaced
-// hues — minimises confusion when two top-rank lines cross. Lightness
-// adapts to theme so the lines stay readable on both backgrounds.
-function paletteColor(rank: number, isDark: boolean): string {
-  const hue = (rank * 137.508) % 360;
-  return isDark
-    ? `hsl(${hue.toFixed(1)}, 70%, 65%)`
-    : `hsl(${hue.toFixed(1)}, 65%, 45%)`;
-}
 
 interface YearGroup {
   year: number;
@@ -402,6 +397,11 @@ function YearTile({
               {points.length === 1 ? '' : 's'}
             </Typography>
           </Stack>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+            Active researchers · peak
+            {' '}
+            {formatCount(maxActive(points))}
+          </Typography>
           <ChartFrameProvider
             height={120}
             margin={{
@@ -580,6 +580,11 @@ function MultiLineChart({
   const isDark = theme.palette.mode === 'dark';
   const svgRef = useRef<SVGSVGElement | null>(null);
 
+  const fullDomain = useMemo<[number, number]>(() => [xMin, xMax], [xMin, xMax]);
+  const zoom = useXZoom({
+    fullDomain, frame, svgRef, urlKey: 'z',
+  });
+
   // Build a height → superblock-time lookup. Lets us position each
   // series sample on the same x scale as the reference points without
   // needing the server to re-emit times in the series payload.
@@ -591,7 +596,8 @@ function MultiLineChart({
 
   const layout = useMemo(() => {
     if (referencePoints.length < 2 || frame.innerWidth <= 0) return null;
-    const xScale = linearScale(xMin, xMax, 0, frame.innerWidth);
+    const [dMin, dMax] = zoom.domain;
+    const xScale = linearScale(dMin, dMax, 0, frame.innerWidth);
     let yMax = 0;
     for (const s of series) {
       for (const p of s.points) if (p.magnitude > yMax) yMax = p.magnitude;
@@ -600,11 +606,15 @@ function MultiLineChart({
     const yPad = yMax * 0.05;
     const yScale = linearScale(0, yMax + yPad, frame.innerHeight, 0);
     const yTicks = niceTicks(0, yMax + yPad, 5);
-    const xTicks = xTickValues.map((value) => ({ value, x: xScale(value) }));
+    // Drop ticks outside the effective (possibly zoomed) window so they
+    // rescale instead of piling up at the edges.
+    const xTicks = xTickValues
+      .filter((value) => value >= dMin && value <= dMax)
+      .map((value) => ({ value, x: xScale(value) }));
     return {
       xScale, yScale, yTicks, xTicks, yMax: yMax + yPad,
     };
-  }, [series, referencePoints, xMin, xMax, xTickValues, frame.innerWidth, frame.innerHeight]);
+  }, [series, referencePoints, xTickValues, frame.innerWidth, frame.innerHeight, zoom.domain]);
 
   // Pre-compute the per-series colour from rank so all renders agree.
   // Hovering doesn't change the colour — the focused line stays its
@@ -686,15 +696,19 @@ function MultiLineChart({
   if (!layout || frame.width === 0) return null;
 
   return (
-    <>
+    <Box sx={{ position: 'relative' }}>
+      <ZoomResetButton zoom={zoom} />
       <svg
         ref={svgRef}
         width="100%"
         height={frame.height}
         viewBox={`0 0 ${frame.width} ${frame.height}`}
-        onMouseMove={handleMove}
-        onMouseLeave={() => setHover(null)}
-        style={{ display: 'block' }}
+        onMouseDown={zoom.onMouseDown}
+        onMouseMove={(e) => { zoom.onMouseMove(e); if (zoom.dragging) setHover(null); else handleMove(e); }}
+        onMouseUp={zoom.onMouseUp}
+        onMouseLeave={() => { zoom.onMouseLeave(); setHover(null); }}
+        onDoubleClick={zoom.onDoubleClick}
+        style={{ display: 'block', cursor: 'crosshair' }}
       >
         <ChartAxes
           frame={frame}
@@ -704,32 +718,34 @@ function MultiLineChart({
           xFormat={xFormat}
         />
         <g transform={`translate(${frame.margin.left},${frame.margin.top})`}>
-          {/* Render highest ranks LAST so they paint over the others.
-              Hover-target line gets full opacity + bumped stroke; the
-              rest dim out around it. Distinct hue per rank from the
-              golden-angle palette means every line keeps its identity
-              even when stacked. */}
-          {seriesPaths.slice().reverse().map(({ cpid, path }, revIdx) => {
-            if (path === null) return null;
-            const rank = seriesPaths.length - 1 - revIdx;
-            const isFocus = hover?.cpid === cpid;
-            const dimmed = hover !== null && !isFocus;
-            const opacity = isFocus ? 1 : dimmed ? 0.08 : 0.7;
-            const strokeWidth = isFocus ? 2.5 : 1.4;
-            return (
-              <path
-                key={cpid}
-                d={path}
-                fill="none"
-                stroke={colors[rank]}
-                strokeWidth={strokeWidth}
-                strokeLinejoin="round"
-                strokeLinecap="round"
-                opacity={opacity}
-                style={{ transition: 'opacity 80ms ease' }}
-              />
-            );
-          })}
+          <ZoomViewport zoom={zoom}>
+            {/* Render highest ranks LAST so they paint over the others.
+                Hover-target line gets full opacity + bumped stroke; the
+                rest dim out around it. Distinct hue per rank from the
+                golden-angle palette means every line keeps its identity
+                even when stacked. */}
+            {seriesPaths.slice().reverse().map(({ cpid, path }, revIdx) => {
+              if (path === null) return null;
+              const rank = seriesPaths.length - 1 - revIdx;
+              const isFocus = hover?.cpid === cpid;
+              const dimmed = hover !== null && !isFocus;
+              const opacity = isFocus ? 1 : dimmed ? 0.08 : 0.7;
+              const strokeWidth = isFocus ? 2.5 : 1.4;
+              return (
+                <path
+                  key={cpid}
+                  d={path}
+                  fill="none"
+                  stroke={colors[rank]}
+                  strokeWidth={strokeWidth}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  opacity={opacity}
+                  style={{ transition: 'opacity 80ms ease' }}
+                />
+              );
+            })}
+          </ZoomViewport>
           {hover && (
             <circle
               cx={hover.x - frame.margin.left}
@@ -774,7 +790,7 @@ function MultiLineChart({
           )}
         />
       )}
-    </>
+    </Box>
   );
 }
 

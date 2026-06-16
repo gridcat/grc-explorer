@@ -14,6 +14,8 @@ import {
   ChartAxes, ChartFrame, ChartFrameProvider, ChartTooltip, linearScale, niceTicks,
 } from '../../components/charts/SvgChart';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
+import { CopyLinkButton } from '../../components/CopyLinkButton';
+import { useXZoom, ZoomViewport, ZoomResetButton } from '../../components/charts/useXZoom';
 import { api } from '../../lib/api';
 import { formatCompact, formatYmdDate, MONTHS_SHORT } from '../../lib/format';
 
@@ -168,6 +170,7 @@ export default function StakersHistory({ points: rawPoints }: StakersHistoryProp
 
       <Stack spacing={3}>
         <Crumbs
+          trailing={<CopyLinkButton />}
           items={selectedYear !== null
             ? [
               RESEARCHERS_CRUMB,
@@ -383,11 +386,19 @@ function buildStackPaths(
 
 function WholeChainChart({ frame, points }: { frame: ChartFrame; points: Point[] }) {
   const theme = useTheme();
+  const svgRef = useRef<SVGSVGElement | null>(null);
+
+  const fullDomain = useMemo<[number, number]>(
+    () => [points[0]?.ts ?? 0, points[points.length - 1]?.ts ?? 1],
+    [points],
+  );
+  const zoom = useXZoom({
+    fullDomain, frame, svgRef, urlKey: 'z',
+  });
 
   const layout = useMemo(() => {
     if (points.length < 2 || frame.innerWidth <= 0) return null;
-    const tsMin = points[0].ts;
-    const tsMax = points[points.length - 1].ts;
+    const [tsMin, tsMax] = zoom.domain;
     const xScale = linearScale(tsMin, tsMax, 0, frame.innerWidth);
     let yMax = 0;
     for (const p of points) {
@@ -402,7 +413,7 @@ function WholeChainChart({ frame, points }: { frame: ChartFrame; points: Point[]
     return {
       tsMin, tsMax, xScale, yScale, yTicks,
     };
-  }, [points, frame.innerWidth, frame.innerHeight]);
+  }, [points, frame.innerWidth, frame.innerHeight, zoom.domain]);
 
   const paths = useMemo(() => {
     if (!layout) return null;
@@ -428,29 +439,40 @@ function WholeChainChart({ frame, points }: { frame: ChartFrame; points: Point[]
   }
 
   return (
-    <svg
-      width="100%"
-      height={frame.height}
-      viewBox={`0 0 ${frame.width} ${frame.height}`}
-      style={{ display: 'block' }}
-    >
-      <ChartAxes
-        frame={frame}
-        yTicks={layout.yTicks}
-        xTicks={xTicks}
-        yFormat={(v) => formatCount(v)}
-        xFormat={(ts) => String(new Date(ts * 1000).getUTCFullYear())}
-      />
-      <g transform={`translate(${frame.margin.left},${frame.margin.top})`}>
-        {paths && (
-          <>
-            <path d={paths.researcherArea} fill={theme.palette.primary.main} fillOpacity={0.55} stroke="none" />
-            <path d={paths.investorArea} fill={theme.palette.secondary.main} fillOpacity={0.4} stroke="none" />
-            <path d={paths.topLine} fill="none" stroke={theme.palette.secondary.main} strokeWidth={1.25} />
-          </>
-        )}
-      </g>
-    </svg>
+    <Box sx={{ position: 'relative' }}>
+      <ZoomResetButton zoom={zoom} />
+      <svg
+        ref={svgRef}
+        width="100%"
+        height={frame.height}
+        viewBox={`0 0 ${frame.width} ${frame.height}`}
+        onMouseDown={zoom.onMouseDown}
+        onMouseMove={zoom.onMouseMove}
+        onMouseUp={zoom.onMouseUp}
+        onMouseLeave={zoom.onMouseLeave}
+        onDoubleClick={zoom.onDoubleClick}
+        style={{ display: 'block', cursor: 'crosshair' }}
+      >
+        <ChartAxes
+          frame={frame}
+          yTicks={layout.yTicks}
+          xTicks={xTicks}
+          yFormat={(v) => formatCount(v)}
+          xFormat={(ts) => String(new Date(ts * 1000).getUTCFullYear())}
+        />
+        <g transform={`translate(${frame.margin.left},${frame.margin.top})`}>
+          <ZoomViewport zoom={zoom}>
+            {paths && (
+              <>
+                <path d={paths.researcherArea} fill={theme.palette.primary.main} fillOpacity={0.55} stroke="none" />
+                <path d={paths.investorArea} fill={theme.palette.secondary.main} fillOpacity={0.4} stroke="none" />
+                <path d={paths.topLine} fill="none" stroke={theme.palette.secondary.main} strokeWidth={1.25} />
+              </>
+            )}
+          </ZoomViewport>
+        </g>
+      </svg>
+    </Box>
   );
 }
 
@@ -586,11 +608,19 @@ function YearDetailChart({
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
-  const layout = useMemo(() => {
-    if (points.length < 2 || frame.innerWidth <= 0) return null;
+  const fullDomain = useMemo<[number, number]>(() => {
     const yearStart = Math.floor(Date.UTC(year, 0, 1) / 1000);
     const yearEnd = Math.floor(Date.UTC(year + 1, 0, 1) / 1000) - 1;
-    const xScale = linearScale(yearStart, yearEnd, 0, frame.innerWidth);
+    return [yearStart, yearEnd];
+  }, [year]);
+  const zoom = useXZoom({
+    fullDomain, frame, svgRef, urlKey: 'z',
+  });
+
+  const layout = useMemo(() => {
+    if (points.length < 2 || frame.innerWidth <= 0) return null;
+    const [tsMin, tsMax] = zoom.domain;
+    const xScale = linearScale(tsMin, tsMax, 0, frame.innerWidth);
     let yMax = 0;
     for (const p of points) {
       const stacked = p.researchers + p.investors;
@@ -603,12 +633,13 @@ function YearDetailChart({
     const xTicks: { value: number; x: number }[] = [];
     for (let m = 0; m < 12; m += 1) {
       const ts = Math.floor(Date.UTC(year, m, 1) / 1000);
+      if (ts < tsMin || ts > tsMax) continue;
       xTicks.push({ value: ts, x: xScale(ts) });
     }
     return {
-      yearStart, yearEnd, xScale, yScale, yTicks, xTicks,
+      yearStart: tsMin, yearEnd: tsMax, xScale, yScale, yTicks, xTicks,
     };
-  }, [points, frame.innerWidth, frame.innerHeight, year]);
+  }, [points, frame.innerWidth, frame.innerHeight, year, zoom.domain]);
 
   const paths = useMemo(() => {
     if (!layout) return null;
@@ -647,14 +678,18 @@ function YearDetailChart({
 
   return (
     <Box sx={{ position: 'relative' }}>
+      <ZoomResetButton zoom={zoom} />
       <svg
         ref={svgRef}
         width="100%"
         height={frame.height}
         viewBox={`0 0 ${frame.width} ${frame.height}`}
-        onMouseMove={handleMove}
-        onMouseLeave={() => setHoverIdx(null)}
-        style={{ display: 'block' }}
+        onMouseDown={zoom.onMouseDown}
+        onMouseMove={(e) => { zoom.onMouseMove(e); if (zoom.dragging) setHoverIdx(null); else handleMove(e); }}
+        onMouseUp={zoom.onMouseUp}
+        onMouseLeave={() => { zoom.onMouseLeave(); setHoverIdx(null); }}
+        onDoubleClick={zoom.onDoubleClick}
+        style={{ display: 'block', cursor: 'crosshair' }}
       >
         <ChartAxes
           frame={frame}
@@ -667,13 +702,15 @@ function YearDetailChart({
           }}
         />
         <g transform={`translate(${frame.margin.left},${frame.margin.top})`}>
-          {paths && (
-            <>
-              <path d={paths.researcherArea} fill={theme.palette.primary.main} fillOpacity={0.55} stroke="none" />
-              <path d={paths.investorArea} fill={theme.palette.secondary.main} fillOpacity={0.4} stroke="none" />
-              <path d={paths.topLine} fill="none" stroke={theme.palette.secondary.main} strokeWidth={1.5} />
-            </>
-          )}
+          <ZoomViewport zoom={zoom}>
+            {paths && (
+              <>
+                <path d={paths.researcherArea} fill={theme.palette.primary.main} fillOpacity={0.55} stroke="none" />
+                <path d={paths.investorArea} fill={theme.palette.secondary.main} fillOpacity={0.4} stroke="none" />
+                <path d={paths.topLine} fill="none" stroke={theme.palette.secondary.main} strokeWidth={1.5} />
+              </>
+            )}
+          </ZoomViewport>
           {hover && (
             <>
               <line

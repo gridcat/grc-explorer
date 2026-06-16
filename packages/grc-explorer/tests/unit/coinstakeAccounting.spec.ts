@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { processTransactions } from '../../src/services/indexer/ContractParser';
+import { parseBlock, processTransactions } from '../../src/services/indexer/ContractParser';
 import { grc2halford } from '../../src/lib/halford';
 import type { VerboseBlock, BlockTx, Vout } from '../../src/services/indexer/types';
 
@@ -116,5 +116,72 @@ describe('coinstake-aware received/sent accounting', () => {
     expect(a.received).toBe(grc2halford(70)); // change still counted (convention)
     expect(a.delta).toBe(grc2halford(70) - grc2halford(100)); // -30
     expect(recipient.received).toBe(grc2halford(30));
+  });
+});
+
+describe('MRC payout vouts are not captured as sidestakes (V13+)', () => {
+  // miner.cpp appends MRC outputs (claimants + one combined foundation-fee
+  // output) at the tail of the coinstake, after the sidestakes. The
+  // sidestake extractor must skip them.
+  it('skips the tail MRC outputs, keeps the genuine sidestake, stores the MRC fee', () => {
+    const prev = (t: string, v: number) => (t === 'p0' && v === 0
+      ? { address: STAKER, value: grc2halford(1000) }
+      : null);
+    const b = {
+      ...block([
+        tx('cb', [{ coinbase: '00', sequence: 0 }], [vout(0, 0, null)]),
+        tx(
+          'cs',
+          [{ txid: 'p0', vout: 0, sequence: 0 }],
+          // [marker], [staker split 1], [staker split 2], then: sidestake 2,
+          // foundation MRC fee 8, MRC claimant net 90. The same-address
+          // split at vout 2 is returned principal, not a sidestake.
+          [
+            vout(0, 0, null),
+            vout(515, 1, STAKER),
+            vout(500, 2, STAKER),
+            vout(2, 3, SIDE),
+            vout(8, 4, 'S_foundation'),
+            vout(90, 5, 'S_claimant'),
+          ],
+        ),
+      ]),
+      version: 13,
+      flags: 'proof-of-stake proof-of-research',
+      signature: 'sig',
+      mint: 115,
+      moneySupply: 500_000_000,
+      mrcFoundationFees: 8,
+      mrcStakerFees: 2,
+      claim: {
+        version: 4,
+        miningId: 'aa113c1182dc7ca9014f90f516abfbe4',
+        clientVersion: 'v5.4.9.0',
+        organization: '',
+        blockSubsidy: 10,
+        researchSubsidy: 5,
+        magnitude: 9,
+        magnitudeUnit: 0.25,
+        signature: 's',
+        quorumHash: '',
+        quorumAddress: '',
+        mMrcTxMapSize: 1,
+        mrcs: [{
+          cpid: '53113c1182dc7ca9014f90f516abfbe4', researchSubsidy: 100, fee: 10, magnitude: 7,
+        }],
+      },
+    } as unknown as VerboseBlock;
+
+    const p = parseBlock(b, prev);
+    expect(p.coinstakeSidestakes).toHaveLength(1);
+    expect(p.coinstakeSidestakes[0]).toMatchObject({
+      voutIdx: 3, address: SIDE, amount: grc2halford(2),
+    });
+    expect(p.claimMrcs).toHaveLength(1);
+    expect(p.claimMrcs[0]).toMatchObject({
+      cpid: '53113c1182dc7ca9014f90f516abfbe4',
+      researchSubsidy: grc2halford(100),
+      fee: grc2halford(10),
+    });
   });
 });

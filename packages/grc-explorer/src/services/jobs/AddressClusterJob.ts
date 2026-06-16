@@ -1,6 +1,6 @@
-import { ch } from '../../lib/ch';
+import { query, upsert } from '../../lib/db';
 import { log } from '../../lib/log';
-import { nextSeq, redis } from '../../lib/redis';
+import { redis } from '../../lib/redis';
 
 // Address clustering via the common-input-ownership heuristic: every
 // input of a tx is signed by its owner, so all input addresses of a
@@ -21,7 +21,7 @@ import { nextSeq, redis } from '../../lib/redis';
 // Memory: a string→int intern map over every address that has ever
 // been a tx input (~1-2M on mainnet) plus parallel typed arrays —
 // a few hundred MB transient during the run. Acceptable for a 12h
-// job; the heavy lifting (the GROUP BY) is on ClickHouse.
+// job; the heavy lifting (the GROUP BY) is on DuckDB.
 //
 // Caveat: over-merges on multi-party txs (CoinJoin/PayJoin) and fuses
 // everything an exchange hot-wallet co-spends with. Rare on Gridcoin;
@@ -77,27 +77,23 @@ export class AddressClusterJob {
         if (minAddr[rb] < minAddr[ra]) minAddr[ra] = minAddr[rb];
       };
 
-      // No FINAL: a tx's input-address SET is unaffected by un-merged
-      // duplicate _seq rows (groupUniqArray dedups), and FINAL would
-      // force the merge path. Heavy full GROUP BY — periodic by design.
-      const rs = await ch.query({
-        query: `
-          SELECT groupUniqArray(address) AS addrs
+      // The (tx_id, vin_n) PK makes each input row unique, so the
+      // per-tx input-address SET is exactly list(DISTINCT address).
+      // Heavy full GROUP BY — periodic by design.
+      const groups = await query<{ addrs: string[] }>(
+        `
+          SELECT list(DISTINCT address) AS addrs
           FROM tx_inputs
           WHERE address != ''
           GROUP BY tx_id
         `,
-        format: 'JSONEachRow',
-      });
+      );
       let txGroups = 0;
-      for await (const batch of rs.stream()) {
-        for (const row of batch) {
-          const { addrs } = row.json<{ addrs: string[] }>();
-          if (!addrs || addrs.length < 2) continue; // singletons cluster nothing
-          const base = intern(addrs[0]);
-          for (let i = 1; i < addrs.length; i += 1) union(base, intern(addrs[i]));
-          txGroups += 1;
-        }
+      for (const { addrs } of groups) {
+        if (!addrs || addrs.length < 2) continue; // singletons cluster nothing
+        const base = intern(addrs[0]);
+        for (let i = 1; i < addrs.length; i += 1) union(base, intern(addrs[i]));
+        txGroups += 1;
       }
 
       // Resolve every address to its cluster's min-address id; emit
@@ -107,14 +103,13 @@ export class AddressClusterJob {
         const r = find(i);
         clusterSizeByRoot.set(r, (clusterSizeByRoot.get(r) ?? 0) + 1);
       }
-      const seq = (await nextSeq()).toString();
       let rows: Array<{
-        address: string; cluster_id: string; cluster_size: number; _seq: string;
+        address: string; cluster_id: string; cluster_size: number;
       }> = [];
       let written = 0;
       const flush = async (): Promise<void> => {
         if (rows.length === 0) return;
-        await ch.insert({ table: 'address_clusters', format: 'JSONEachRow', values: rows });
+        await upsert('address_clusters', rows, { pk: ['address'] });
         written += rows.length;
         rows = [];
       };
@@ -123,7 +118,7 @@ export class AddressClusterJob {
         const cSize = clusterSizeByRoot.get(r) ?? 1;
         if (cSize < 2) continue;
         rows.push({
-          address: addrOf[i], cluster_id: minAddr[r], cluster_size: cSize, _seq: seq,
+          address: addrOf[i], cluster_id: minAddr[r], cluster_size: cSize,
         });
         if (rows.length >= INSERT_CHUNK) {
           // eslint-disable-next-line no-await-in-loop

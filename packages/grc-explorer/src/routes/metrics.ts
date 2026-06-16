@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { ch } from '../lib/ch';
+import { query } from '../lib/db';
 import { cpidDisplayName, resolveCpidNames } from '../lib/cpidNames';
 import { ErrorModel } from '../lib/errors';
 import { halford2grc } from '../lib/halford';
@@ -56,96 +56,78 @@ async function buildMetricBuckets(
 ): Promise<MetricBucket[]> {
   const anchor = at ?? await getTipAnchor();
   // Snap right edge to the latest non-empty bucket at-or-before anchor.
-  const latestResult = await ch.query({
-    query: `SELECT max(bucket_ts) AS bt FROM ${table} WHERE bucket_ts <= {at: UInt32}`,
-    query_params: { at: anchor },
-    format: 'JSONEachRow',
-  });
-  const latest = (await latestResult.json<{ bt: number | null }>())[0];
-  const rightEdge = latest?.bt ?? anchor;
+  const latestRows = await query<{ bt: number | null }>(
+    `SELECT max(bucket_ts) AS bt FROM ${table} WHERE bucket_ts <= $at`,
+    { at: anchor },
+  );
+  const rightEdge = latestRows[0]?.bt ?? anchor;
   const since = rightEdge - hours * 3600;
 
-  // Pull rolled-up base metrics from the MV. Pull derived metrics
-  // (research, beacons, staker mix) per-bucket from the source tables
-  // by binning on the same boundary the MV uses.
-  const [bucketsResult, derivedResult, txResult] = await Promise.all([
-    ch.query({
-      // SummingMergeTree auto-collapses duplicate-key rows on merge, but
-      // unmerged rows may still exist between merges. Aggregate at read
-      // time so the result is correct regardless of merge state.
-      query: `
-        SELECT
-          bucket_ts,
-          toUInt32(sum(block_count))   AS block_count,
-          toUInt32(sum(tx_count))      AS tx_count,
-          toString(sum(mint_total))    AS mint_total,
-          toUInt32(sum(bytes_total))   AS bytes_total
-        FROM ${table}
-        WHERE bucket_ts >= {since: UInt32} AND bucket_ts <= {end: UInt32}
-        GROUP BY bucket_ts
-        ORDER BY bucket_ts ASC
-      `,
-      query_params: { since, end: rightEdge },
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      // Force `bucket_ts` to UInt32 so JSONEachRow ships it as a JSON
-      // number (CH defaults wider int types to JSON strings). The
-      // bucket-key Map.get on the JS side has to match the network_5m
-      // MV's UInt32 bucket_ts; a number-vs-string mismatch makes every
-      // lookup miss and the chart goes empty.
-      query: `
-        SELECT
-          toUInt32(intDiv(toUInt32(time), {step: UInt32}) * {step: UInt32}) AS bucket_ts,
-          toString(sum(coalesce(c.research_subsidy, 0)))                       AS research_subsidy_total,
-          toString(sum(coalesce(c.block_subsidy, 0)))                          AS block_subsidy_total,
-          toUInt32(countIf(b.staker_cpid IS NOT NULL AND b.staker_cpid != '')) AS researcher_blocks,
-          toUInt32(countIf(b.staker_cpid IS NULL OR b.staker_cpid = ''))       AS investor_blocks
-        FROM blocks AS b FINAL
-        LEFT JOIN claims AS c FINAL ON c.block_height = b.height
-        WHERE b.time >= toDateTime({since: UInt32})
-          AND b.time <= toDateTime({end: UInt32})
-        GROUP BY bucket_ts
-        ORDER BY bucket_ts ASC
-      `,
-      query_params: { since, end: rightEdge, step: bucketSec },
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      // Per-bucket transactions aggregate. Excludes coinbase/coinstake
-      // (those are reward-emitting txs already accounted via claims —
-      // including their total_out would double-count subsidies).
-      query: `
-        SELECT
-          toUInt32(intDiv(toUInt32(time), {step: UInt32}) * {step: UInt32}) AS bucket_ts,
-          toString(sum(total_out)) AS value_moved,
-          toString(sum(fee))       AS fee_total
-        FROM transactions FINAL
-        WHERE NOT is_coinbase AND NOT is_coinstake
-          AND time >= toDateTime({since: UInt32})
-          AND time <= toDateTime({end: UInt32})
-        GROUP BY bucket_ts
-        ORDER BY bucket_ts ASC
-      `,
-      query_params: { since, end: rightEdge, step: bucketSec },
-      format: 'JSONEachRow',
-    }),
-  ]);
-
-  const buckets = await bucketsResult.json<BucketRow>();
   type DerivedRow = {
     bucket_ts: number; research_subsidy_total: string; block_subsidy_total: string;
     researcher_blocks: number; investor_blocks: number;
   };
   type TxBucketRow = { bucket_ts: number; value_moved: string; fee_total: string };
+
+  // Base metrics come from the rollup view (already one row per bucket).
+  // Derived metrics (research, staker mix) bin the source tables on the
+  // same boundary the view uses. bucket_ts is cast UINTEGER so it
+  // deserialises as a JS number to match the view's bucket key.
+  const [buckets, derivedRows, txRows] = await Promise.all([
+    query<BucketRow>(
+      `
+        SELECT
+          bucket_ts,
+          CAST(block_count AS UINTEGER) AS block_count,
+          CAST(tx_count AS UINTEGER)    AS tx_count,
+          CAST(mint_total AS VARCHAR)   AS mint_total,
+          CAST(bytes_total AS UINTEGER) AS bytes_total
+        FROM ${table}
+        WHERE bucket_ts >= $since AND bucket_ts <= $end
+        ORDER BY bucket_ts ASC
+      `,
+      { since, end: rightEdge },
+    ),
+    query<DerivedRow>(
+      `
+        SELECT
+          CAST((CAST(epoch(b.time) AS BIGINT) // $step) * $step AS UINTEGER)        AS bucket_ts,
+          CAST(coalesce(sum(c.research_subsidy), 0) AS VARCHAR)                     AS research_subsidy_total,
+          CAST(coalesce(sum(c.block_subsidy), 0) AS VARCHAR)                        AS block_subsidy_total,
+          CAST(count(*) FILTER (WHERE b.staker_cpid IS NOT NULL AND b.staker_cpid != '') AS UINTEGER) AS researcher_blocks,
+          CAST(count(*) FILTER (WHERE b.staker_cpid IS NULL OR b.staker_cpid = '') AS UINTEGER)       AS investor_blocks
+        FROM blocks AS b
+        LEFT JOIN claims AS c ON c.block_height = b.height
+        WHERE b.time >= make_timestamp($since::BIGINT * 1000000)
+          AND b.time <= make_timestamp($end::BIGINT * 1000000)
+        GROUP BY bucket_ts
+        ORDER BY bucket_ts ASC
+      `,
+      { since, end: rightEdge, step: bucketSec },
+    ),
+    query<TxBucketRow>(
+      // Excludes coinbase/coinstake (reward-emitting txs already counted
+      // via claims — including total_out would double-count subsidies).
+      `
+        SELECT
+          CAST((CAST(epoch(time) AS BIGINT) // $step) * $step AS UINTEGER) AS bucket_ts,
+          CAST(coalesce(sum(total_out), 0) AS VARCHAR) AS value_moved,
+          CAST(coalesce(sum(fee), 0) AS VARCHAR)       AS fee_total
+        FROM transactions
+        WHERE NOT is_coinbase AND NOT is_coinstake
+          AND time >= make_timestamp($since::BIGINT * 1000000)
+          AND time <= make_timestamp($end::BIGINT * 1000000)
+        GROUP BY bucket_ts
+        ORDER BY bucket_ts ASC
+      `,
+      { since, end: rightEdge, step: bucketSec },
+    ),
+  ]);
+
   const derivedByTs = new Map<number, DerivedRow>();
-  for (const d of await derivedResult.json<DerivedRow>()) {
-    derivedByTs.set(d.bucket_ts, d);
-  }
+  for (const d of derivedRows) derivedByTs.set(d.bucket_ts, d);
   const txByTs = new Map<number, TxBucketRow>();
-  for (const t of await txResult.json<TxBucketRow>()) {
-    txByTs.set(t.bucket_ts, t);
-  }
+  for (const t of txRows) txByTs.set(t.bucket_ts, t);
 
   return buckets.map((r) => {
     const d = derivedByTs.get(r.bucket_ts);
@@ -197,30 +179,26 @@ async function buildMagLeaderboard(
   // Rolling 14-superblock window so a CPID dropping out of one
   // superblock doesn't dominate the row count.
   const WINDOW = 14;
-  const sbResult = await ch.query({
-    query: `
-      SELECT height FROM superblocks FINAL
-      WHERE height <= {h: UInt32}
-      ORDER BY height DESC LIMIT {w: UInt32}
+  const sbHeights = (await query<{ height: number }>(
+    `
+      SELECT height FROM superblocks
+      WHERE height <= $h
+      ORDER BY height DESC LIMIT ${WINDOW}
     `,
-    query_params: { h: latestHeight, w: WINDOW },
-    format: 'JSONEachRow',
-  });
-  const sbHeights = (await sbResult.json<{ height: number }>()).map((r) => r.height);
+    { h: latestHeight },
+  )).map((r) => r.height);
   if (sbHeights.length === 0) return [];
   const windowMin = sbHeights[sbHeights.length - 1];
 
-  const magResult = await ch.query({
-    query: `
+  const windowRows = await query<{ cpid: string; superblock_height: number; magnitude: number }>(
+    `
       SELECT cpid, superblock_height, magnitude
-      FROM superblock_magnitudes FINAL
-      WHERE superblock_height >= {min: UInt32} AND superblock_height <= {max: UInt32}
+      FROM superblock_magnitudes
+      WHERE superblock_height >= $min AND superblock_height <= $max
       ORDER BY superblock_height DESC
     `,
-    query_params: { min: windowMin, max: latestHeight },
-    format: 'JSONEachRow',
-  });
-  const windowRows = await magResult.json<{ cpid: string; superblock_height: number; magnitude: number }>();
+    { min: windowMin, max: latestHeight },
+  );
 
   const latestByCpid = new Map<string, number>();
   const histByCpid = new Map<string, Array<{ height: number; magnitude: number }>>();
@@ -293,12 +271,11 @@ const RESEARCHERS_HISTORY_TTL_MS = 60 * 60 * 1000;
 
 interface ResearchersHistoryRow {
   height: number;
-  time: number;
-  // CH `countIf` returns UInt64, which JSONEachRow serialises as a
-  // *string* (precision-preserving). We coerce to Number in the row
-  // mapper below, but the type stays honest about what comes off the
-  // wire so future callers know to cast.
-  active: string;
+  // epoch(...)::BIGINT and count(*) come off the DuckDB wire as decimal
+  // *strings* (64-bit ints aren't JS-safe), so the types stay honest and
+  // the row mapper coerces with Number().
+  time: number | string;
+  active: number | string;
   total_magnitude: number;
   top10_magnitude: number;
 }
@@ -308,49 +285,47 @@ async function buildResearchersHistory(): Promise<ResearchersHistoryPoint[]> {
   // gives top-10 magnitude per superblock without a window function or
   // self-join. Block time comes from blocks via a final LEFT JOIN on
   // height (cheap; one row per superblock).
-  const result = await ch.query({
-    query: `
+  const rows = await query<ResearchersHistoryRow>(
+    `
       SELECT
         m.height AS height,
-        toUnixTimestamp(b.time) AS time,
+        CAST(epoch(b.time) AS BIGINT) AS time,
         m.active AS active,
         m.total_magnitude AS total_magnitude,
         m.top10_magnitude AS top10_magnitude
       FROM (
         SELECT
           superblock_height AS height,
-          countIf(magnitude > 0) AS active,
+          count(*) FILTER (WHERE magnitude > 0) AS active,
           sum(magnitude) AS total_magnitude,
-          arraySum(arraySlice(arrayReverseSort(groupArrayIf(magnitude, magnitude > 0)), 1, 10)) AS top10_magnitude
-        FROM superblock_magnitudes FINAL
+          list_sum(list_slice(list_sort(array_agg(magnitude) FILTER (WHERE magnitude > 0), 'DESC'), 1, 10)) AS top10_magnitude
+        FROM superblock_magnitudes
         GROUP BY superblock_height
       ) m
-      LEFT JOIN (
-        -- No FINAL: only superblock heights are needed (the
-        -- superblocks table is ~4k rows), so bound blocks to that
-        -- set (PK point lookups) and dedup time per height with
-        -- argMax(_,_seq). FINAL here was a full blocks merge scan.
-        -- The superblock_magnitudes FINAL aggregate above is the
-        -- remaining cost (MV territory, see perf-audit memo).
-        SELECT height, argMax(time, _seq) AS time
-        FROM blocks
-        WHERE height IN (SELECT height FROM superblocks)
-        GROUP BY height
-      ) AS b ON b.height = m.height
+      -- INNER JOIN on the blocks PK: a superblock only appears once its
+      -- block row is committed. During backfill the magnitudes for the
+      -- newest superblock can land just before the block row (blocks are
+      -- written last), so a LEFT JOIN would emit a NULL time — which
+      -- became epoch 0 / 1970-01-01 and dragged the chart's x-axis origin
+      -- back to 1970. INNER JOIN drops that transient row instead.
+      JOIN blocks AS b ON b.height = m.height
       ORDER BY m.height ASC
     `,
-    format: 'JSONEachRow',
+  );
+  return rows.map((r) => {
+    // epoch(...)::BIGINT comes off the wire as a decimal string; coerce so
+    // ts is a real number (the chart x-axis and Date math depend on it).
+    const ts = Number(r.time);
+    return {
+      height: r.height,
+      ts,
+      date: new Date(ts * 1000).toISOString().slice(0, 10),
+      active: Number(r.active),
+      totalMagnitude: r.total_magnitude,
+      top10Magnitude: r.top10_magnitude,
+      top10Share: r.total_magnitude > 0 ? r.top10_magnitude / r.total_magnitude : 0,
+    };
   });
-  const rows = await result.json<ResearchersHistoryRow>();
-  return rows.map((r) => ({
-    height: r.height,
-    ts: r.time,
-    date: new Date(r.time * 1000).toISOString().slice(0, 10),
-    active: Number(r.active),
-    totalMagnitude: r.total_magnitude,
-    top10Magnitude: r.top10_magnitude,
-    top10Share: r.total_magnitude > 0 ? r.top10_magnitude / r.total_magnitude : 0,
-  }));
 }
 
 const getResearchersHistory = swrCached(buildResearchersHistory, RESEARCHERS_HISTORY_TTL_MS);
@@ -388,30 +363,28 @@ async function buildSeries(minH: number, maxH: number, limit: number): Promise<S
   // `superblock_magnitudes` only has rows for actual superblock
   // heights, so a height range filter is implicit-superblock without
   // a separate join.
-  const result = await ch.query({
-    query: `
+  const rows = await query<SeriesRow>(
+    `
       WITH top_cpids AS (
         SELECT cpid
-        FROM superblock_magnitudes FINAL
-        WHERE superblock_height >= {minH: UInt32}
-          AND superblock_height <= {maxH: UInt32}
+        FROM superblock_magnitudes
+        WHERE superblock_height >= $minH
+          AND superblock_height <= $maxH
           AND magnitude > 0
         GROUP BY cpid
         ORDER BY sum(magnitude) DESC
-        LIMIT {n: UInt32}
+        LIMIT ${Number(limit)}
       )
       SELECT cpid, superblock_height AS height, magnitude
-      FROM superblock_magnitudes FINAL
+      FROM superblock_magnitudes
       WHERE cpid IN (SELECT cpid FROM top_cpids)
-        AND superblock_height >= {minH: UInt32}
-        AND superblock_height <= {maxH: UInt32}
+        AND superblock_height >= $minH
+        AND superblock_height <= $maxH
         AND magnitude > 0
       ORDER BY cpid, superblock_height
     `,
-    query_params: { minH, maxH, n: limit },
-    format: 'JSONEachRow',
-  });
-  const rows = await result.json<SeriesRow>();
+    { minH, maxH },
+  );
 
   const byCpid = new Map<string, Array<{ height: number; magnitude: number }>>();
   for (const r of rows) {
@@ -530,33 +503,31 @@ metricsRouter.get('/mandatory-sidestakes', async (_req: Request, res: Response) 
   }
   const at = await getTipAnchor();
   const since24h = at - 24 * 3600;
-  const result = await ch.query({
-    query: `
+  const row = (await query<{
+    amount_24h: string; count_24h: number;
+    amount_all: string; count_all: number;
+    active_recipients: number;
+  }>(
+    `
       WITH active AS (
         SELECT address
         FROM (
-          SELECT address, argMax(status, block_height) AS status
-          FROM mandatory_sidestakes FINAL
+          SELECT address, arg_max(status, block_height) AS status
+          FROM mandatory_sidestakes
           GROUP BY address
         )
         WHERE status = 'MANDATORY'
       )
       SELECT
-        toString(toUInt256(sumIf(amount, time >= toDateTime({since: UInt32})))) AS amount_24h,
-        toUInt32(countIf(time >= toDateTime({since: UInt32})))                  AS count_24h,
-        toString(toUInt256(sum(amount)))                                         AS amount_all,
-        toUInt32(count())                                                        AS count_all,
-        toUInt32((SELECT count() FROM active))                                   AS active_recipients
-      FROM coinstake_sidestakes FINAL
+        CAST(coalesce(sum(amount) FILTER (WHERE time >= make_timestamp($since::BIGINT * 1000000)), 0) AS VARCHAR) AS amount_24h,
+        CAST(count(*) FILTER (WHERE time >= make_timestamp($since::BIGINT * 1000000)) AS UINTEGER)                AS count_24h,
+        CAST(coalesce(sum(amount), 0) AS VARCHAR)                                                                 AS amount_all,
+        CAST(count(*) AS UINTEGER)                                                                                AS count_all,
+        CAST((SELECT count(*) FROM active) AS UINTEGER)                                                           AS active_recipients
+      FROM coinstake_sidestakes
     `,
-    query_params: { since: since24h },
-    format: 'JSONEachRow',
-  });
-  const row = (await result.json<{
-    amount_24h: string; count_24h: number;
-    amount_all: string; count_all: number;
-    active_recipients: number;
-  }>())[0] ?? {
+    { since: since24h },
+  ))[0] ?? {
     amount_24h: '0', count_24h: 0, amount_all: '0', count_all: 0, active_recipients: 0,
   };
   const body = withMeta({
@@ -590,24 +561,22 @@ metricsRouter.get('/research-split', async (req: Request, res: Response) => {
   const at = parseAt(req) ?? await getTipAnchor();
   const data = await getResearchSplit(`${hours}:${at}`, async () => {
     const since = at - hours * 3600;
-    const result = await ch.query({
-      query: `
-        SELECT
-          toString(sum(c.research_subsidy))                                  AS research_subsidy,
-          toString(sum(c.block_subsidy))                                     AS block_subsidy,
-          toUInt32(countIf(b.staker_cpid IS NOT NULL AND b.staker_cpid != '')) AS researcher_blocks,
-          toUInt32(countIf(b.staker_cpid IS NULL OR b.staker_cpid = ''))       AS investor_blocks
-        FROM blocks AS b FINAL
-        LEFT JOIN claims AS c FINAL ON c.block_height = b.height
-        WHERE b.time >= toDateTime({since: UInt32}) AND b.time <= toDateTime({end: UInt32})
-      `,
-      query_params: { since, end: at },
-      format: 'JSONEachRow',
-    });
-    const row = (await result.json<{
+    const row = (await query<{
       research_subsidy: string; block_subsidy: string;
       researcher_blocks: number; investor_blocks: number;
-    }>())[0] ?? {
+    }>(
+      `
+        SELECT
+          CAST(coalesce(sum(c.research_subsidy), 0) AS VARCHAR) AS research_subsidy,
+          CAST(coalesce(sum(c.block_subsidy), 0) AS VARCHAR)    AS block_subsidy,
+          CAST(count(*) FILTER (WHERE b.staker_cpid IS NOT NULL AND b.staker_cpid != '') AS UINTEGER) AS researcher_blocks,
+          CAST(count(*) FILTER (WHERE b.staker_cpid IS NULL OR b.staker_cpid = '') AS UINTEGER)       AS investor_blocks
+        FROM blocks AS b
+        LEFT JOIN claims AS c ON c.block_height = b.height
+        WHERE b.time >= make_timestamp($since::BIGINT * 1000000) AND b.time <= make_timestamp($end::BIGINT * 1000000)
+      `,
+      { since, end: at },
+    ))[0] ?? {
       research_subsidy: '0', block_subsidy: '0', researcher_blocks: 0, investor_blocks: 0,
     };
     const research = BigInt(row.research_subsidy);
@@ -637,19 +606,16 @@ metricsRouter.get('/beacon-flux', async (req: Request, res: Response) => {
   const evalAt = parseAt(req) ?? await getTipAnchor();
   const data = await getBeaconFlux(`${hours}:${evalAt}`, async () => {
     const since = evalAt - hours * 3600;
-    const result = await ch.query({
-      query: `
+    const row = (await query<{ active: number; new_: number; expired_: number }>(
+      `
         SELECT
-          toUInt32(countIf(timestamp <= toDateTime({end: UInt32}) AND expiration > toDateTime({end: UInt32}) AND status != 'revoked')) AS active,
-          toUInt32(countIf(timestamp >= toDateTime({since: UInt32}) AND timestamp <= toDateTime({end: UInt32}) AND status != 'revoked')) AS new_,
-          toUInt32(countIf(expiration >= toDateTime({since: UInt32}) AND expiration < toDateTime({end: UInt32}))) AS expired_
-        FROM beacons FINAL
+          CAST(count(*) FILTER (WHERE timestamp <= make_timestamp($end::BIGINT * 1000000) AND expiration > make_timestamp($end::BIGINT * 1000000) AND status != 'revoked') AS UINTEGER) AS active,
+          CAST(count(*) FILTER (WHERE timestamp >= make_timestamp($since::BIGINT * 1000000) AND timestamp <= make_timestamp($end::BIGINT * 1000000) AND status != 'revoked') AS UINTEGER) AS new_,
+          CAST(count(*) FILTER (WHERE expiration >= make_timestamp($since::BIGINT * 1000000) AND expiration < make_timestamp($end::BIGINT * 1000000)) AS UINTEGER) AS expired_
+        FROM beacons
       `,
-      query_params: { since, end: evalAt },
-      format: 'JSONEachRow',
-    });
-    const row = (await result.json<{ active: number; new_: number; expired_: number }>())[0]
-      ?? { active: 0, new_: 0, expired_: 0 };
+      { since, end: evalAt },
+    ))[0] ?? { active: 0, new_: 0, expired_: 0 };
     return {
       type: 'beacon_flux',
       id: `last_${hours}h`,
@@ -672,25 +638,23 @@ const getWealthDist = swrCachedLiveKeyed<JsonApiResource | null>(WEALTH_DIST_TTL
 metricsRouter.get('/wealth-distribution', async (req: Request, res: Response) => {
   const at = parseAt(req) ?? await getTipAnchor();
   const data = await getWealthDist(String(at), async () => {
-    const result = await ch.query({
-      query: `
-        SELECT
-          toUnixTimestamp(bucket_ts) AS bucket_ts,
-          toString(total_supply)     AS total_supply,
-          addresses_with_balance, gini, top1pct_share, top10pct_share, top100_share,
-          active_24h, new_24h, hodler_30d, hodler_180d
-        FROM wealth_snapshots
-        WHERE bucket_ts <= toDateTime({at: UInt32})
-        ORDER BY bucket_ts DESC LIMIT 1
-      `,
-      query_params: { at },
-      format: 'JSONEachRow',
-    });
-    const snap = (await result.json<{
+    const snap = (await query<{
       bucket_ts: number; total_supply: string; addresses_with_balance: number;
       gini: string; top1pct_share: string; top10pct_share: string; top100_share: string;
       active_24h: number; new_24h: number; hodler_30d: number; hodler_180d: number;
-    }>())[0] ?? null;
+    }>(
+      `
+        SELECT
+          CAST(epoch(bucket_ts) AS BIGINT) AS bucket_ts,
+          CAST(total_supply AS VARCHAR)    AS total_supply,
+          addresses_with_balance, gini, top1pct_share, top10pct_share, top100_share,
+          active_24h, new_24h, hodler_30d, hodler_180d
+        FROM wealth_snapshots
+        WHERE bucket_ts <= make_timestamp($at::BIGINT * 1000000)
+        ORDER BY bucket_ts DESC LIMIT 1
+      `,
+      { at },
+    ))[0] ?? null;
     return snap
       ? {
         type: 'wealth_distribution',
@@ -725,23 +689,21 @@ metricsRouter.get('/wealth-distribution/series', async (req: Request, res: Respo
   const fromTs = Number.isFinite(from) && from > 0 ? from : toTs - 365 * 86_400;
 
   const data = await getWealthSeries(`${fromTs}-${toTs}`, async () => {
-    const result = await ch.query({
-      query: `
-        SELECT
-          toUnixTimestamp(bucket_ts) AS bucket_ts,
-          toString(total_supply)     AS total_supply,
-          addresses_with_balance, gini, top1pct_share, top10pct_share, top100_share
-        FROM wealth_snapshots
-        WHERE bucket_ts >= toDateTime({from: UInt32}) AND bucket_ts <= toDateTime({to: UInt32})
-        ORDER BY bucket_ts ASC
-      `,
-      query_params: { from: fromTs, to: toTs },
-      format: 'JSONEachRow',
-    });
-    const rows = await result.json<{
+    const rows = await query<{
       bucket_ts: number; total_supply: string; addresses_with_balance: number;
       gini: string; top1pct_share: string; top10pct_share: string; top100_share: string;
-    }>();
+    }>(
+      `
+        SELECT
+          CAST(epoch(bucket_ts) AS BIGINT) AS bucket_ts,
+          CAST(total_supply AS VARCHAR)    AS total_supply,
+          addresses_with_balance, gini, top1pct_share, top10pct_share, top100_share
+        FROM wealth_snapshots
+        WHERE bucket_ts >= make_timestamp($from::BIGINT * 1000000) AND bucket_ts <= make_timestamp($to::BIGINT * 1000000)
+        ORDER BY bucket_ts ASC
+      `,
+      { from: fromTs, to: toTs },
+    );
     return {
       type: 'wealth_distribution_series',
       id: `${fromTs}-${toTs}`,
@@ -784,42 +746,30 @@ async function buildFeePercentiles(
   //   3. Count of non-empty buckets across all time (so the empty-
   //      state can distinguish "MV literally bare" from "data exists
   //      but not in this window").
-  const [latestInRangeResult, latestEverResult, totalResult] = await Promise.all([
-    ch.query({
-      query: `
+  const [latestInRangeRows, latestEverRows, totalRows] = await Promise.all([
+    query<{ bucket_ts: number }>(
+      `
         SELECT bucket_ts FROM fee_quantiles_1h
-        WHERE bucket_ts <= {at: UInt32}
-        GROUP BY bucket_ts
-        HAVING countMerge(tx_count_state) > 0
+        WHERE bucket_ts <= $at AND tx_count > 0
         ORDER BY bucket_ts DESC LIMIT 1
       `,
-      query_params: { at: anchor },
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `
-        SELECT bucket_ts, countMerge(tx_count_state) AS tx_count
+      { at: anchor },
+    ),
+    query<{ bucket_ts: number; tx_count: string | number }>(
+      `
+        SELECT bucket_ts, tx_count
         FROM fee_quantiles_1h
-        GROUP BY bucket_ts
-        HAVING tx_count > 0
+        WHERE tx_count > 0
         ORDER BY bucket_ts DESC LIMIT 1
       `,
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `
-        SELECT count() AS c FROM (
-          SELECT bucket_ts FROM fee_quantiles_1h
-          GROUP BY bucket_ts
-          HAVING countMerge(tx_count_state) > 0
-        )
-      `,
-      format: 'JSONEachRow',
-    }),
+    ),
+    query<{ c: string | number }>(
+      'SELECT count(*) AS c FROM fee_quantiles_1h WHERE tx_count > 0',
+    ),
   ]);
-  const latestInRange = (await latestInRangeResult.json<{ bucket_ts: number }>())[0];
-  const latestEver = (await latestEverResult.json<{ bucket_ts: number; tx_count: string | number }>())[0];
-  const totalRow = (await totalResult.json<{ c: string | number }>())[0];
+  const latestInRange = latestInRangeRows[0];
+  const latestEver = latestEverRows[0];
+  const totalRow = totalRows[0];
 
   const rightEdge = latestInRange?.bucket_ts ?? anchor;
   const since = rightEdge - hours * 3600;
@@ -831,26 +781,25 @@ async function buildFeePercentiles(
   // fix landed, where all rows had size=0 and got dropped by the
   // WHERE filter — leaving no input but somehow a bucket entry).
   // Filtering at read time keeps the chart honest regardless.
-  const result = await ch.query({
-    query: `
+  // The fee_quantiles_1h view exposes p50/p95/p99 + tx_count directly
+  // (CH stored t-digest/count states). Truncate the percentiles to an
+  // integer string to match the prior toUInt64(...) wire shape.
+  const rows = await query<{
+    bucket_ts: number; p50: string; p95: string; p99: string; tx_count: string | number;
+  }>(
+    `
       SELECT
         bucket_ts,
-        toString(toUInt64(quantilesTDigestMerge(0.5, 0.95, 0.99)(quantile_state)[1])) AS p50,
-        toString(toUInt64(quantilesTDigestMerge(0.5, 0.95, 0.99)(quantile_state)[2])) AS p95,
-        toString(toUInt64(quantilesTDigestMerge(0.5, 0.95, 0.99)(quantile_state)[3])) AS p99,
-        countMerge(tx_count_state) AS tx_count
+        CAST(CAST(p50 AS BIGINT) AS VARCHAR) AS p50,
+        CAST(CAST(p95 AS BIGINT) AS VARCHAR) AS p95,
+        CAST(CAST(p99 AS BIGINT) AS VARCHAR) AS p99,
+        tx_count
       FROM fee_quantiles_1h
-      WHERE bucket_ts >= {since: UInt32} AND bucket_ts <= {end: UInt32}
-      GROUP BY bucket_ts
-      HAVING tx_count > 0
+      WHERE bucket_ts >= $since AND bucket_ts <= $end AND tx_count > 0
       ORDER BY bucket_ts ASC
     `,
-    query_params: { since, end: rightEdge },
-    format: 'JSONEachRow',
-  });
-  const rows = await result.json<{
-    bucket_ts: number; p50: string; p95: string; p99: string; tx_count: string | number;
-  }>();
+    { since, end: rightEdge },
+  );
   return {
     type: 'fee_percentiles_series',
     id: `${granularityKey}:${hours}h`,
@@ -899,29 +848,27 @@ async function buildBeaconSurvival(): Promise<JsonApiResource> {
   const now = await getTipAnchor();
   const since = now - 365 * 86_400;
   // CH-side cohort bucketing by month-start.
-  const result = await ch.query({
-    query: `
-      SELECT
-        formatDateTime(toStartOfMonth(timestamp), '%Y-%m')      AS cohort,
-        toUInt32(count())                                        AS advertised,
-        toUInt32(countIf(status != 'revoked'))                   AS confirmed,
-        toUInt32(countIf(superseded_at_height IS NOT NULL))      AS renewed,
-        toUInt32(countIf(expiration <= toDateTime({now: UInt32}))) AS expired_
-      FROM beacons FINAL
-      WHERE timestamp >= toDateTime({since: UInt32})
-      GROUP BY cohort
-      ORDER BY cohort ASC
-    `,
-    query_params: { now, since },
-    format: 'JSONEachRow',
-  });
-  const rows = await result.json<{
+  const rows = await query<{
     cohort: string;
     advertised: string | number;
     confirmed: string | number;
     renewed: string | number;
     expired_: string | number;
-  }>();
+  }>(
+    `
+      SELECT
+        strftime(date_trunc('month', timestamp), '%Y-%m')        AS cohort,
+        CAST(count(*) AS UINTEGER)                               AS advertised,
+        CAST(count(*) FILTER (WHERE status != 'revoked') AS UINTEGER)              AS confirmed,
+        CAST(count(*) FILTER (WHERE superseded_at_height IS NOT NULL) AS UINTEGER) AS renewed,
+        CAST(count(*) FILTER (WHERE expiration <= make_timestamp($now::BIGINT * 1000000)) AS UINTEGER) AS expired_
+      FROM beacons
+      WHERE timestamp >= make_timestamp($since::BIGINT * 1000000)
+      GROUP BY cohort
+      ORDER BY cohort ASC
+    `,
+    { now, since },
+  );
   return {
     type: 'beacon_survival',
     id: 'last_12mo',
@@ -959,18 +906,17 @@ async function buildCohortRetention(
   horizonEnd: number,
 ): Promise<JsonApiResource> {
   // CPIDs first observed staking in this cohort window.
-  const cohortResult = await ch.query({
-    query: `
-      SELECT staker_cpid AS cpid, toUnixTimestamp(min(time)) AS first_ts
-      FROM blocks FINAL
+  const cohortRows = await query<{ cpid: string; first_ts: number }>(
+    `
+      SELECT staker_cpid AS cpid, CAST(epoch(min(time)) AS BIGINT) AS first_ts
+      FROM blocks
       WHERE staker_cpid IS NOT NULL AND staker_cpid != ''
       GROUP BY staker_cpid
-      HAVING first_ts >= {start: UInt32} AND first_ts < {end: UInt32}
+      HAVING min(time) >= make_timestamp($start::BIGINT * 1000000)
+         AND min(time) <  make_timestamp($end::BIGINT * 1000000)
     `,
-    query_params: { start: cohortStart, end: cohortEnd },
-    format: 'JSONEachRow',
-  });
-  const cohortRows = await cohortResult.json<{ cpid: string; first_ts: number }>();
+    { start: cohortStart, end: cohortEnd },
+  );
   if (cohortRows.length === 0) {
     return {
       type: 'cpid_cohort_retention',
@@ -984,24 +930,26 @@ async function buildCohortRetention(
 
   // Distinct cpids per month bucket within the horizon. CH's
   // toStartOfMonth bucketing handles variable month length cleanly.
-  const monthlyResult = await ch.query({
-    query: `
+  const monthlyRows = await query<{ bucket_ts: number | string; active: number | string }>(
+    `
       SELECT
-        toUnixTimestamp(toStartOfMonth(time)) AS bucket_ts,
-        toUInt32(uniqExact(staker_cpid))      AS active
-      FROM blocks FINAL
-      WHERE staker_cpid IN ({cpids: Array(String)})
-        AND time >= toDateTime({start: UInt32})
-        AND time <  toDateTime({end: UInt32})
+        CAST(epoch(date_trunc('month', time)) AS BIGINT) AS bucket_ts,
+        CAST(count(DISTINCT staker_cpid) AS UINTEGER)    AS active
+      FROM blocks
+      WHERE staker_cpid = ANY($cpids)
+        AND time >= make_timestamp($start::BIGINT * 1000000)
+        AND time <  make_timestamp($end::BIGINT * 1000000)
       GROUP BY bucket_ts
       ORDER BY bucket_ts ASC
     `,
-    query_params: { cpids, start: cohortStart, end: horizonEnd },
-    format: 'JSONEachRow',
-  });
-  const monthlyRows = await monthlyResult.json<{ bucket_ts: number; active: number }>();
+    { cpids, start: cohortStart, end: horizonEnd },
+  );
+  // bucket_ts is epoch(...)::BIGINT — DuckDB returns it as a decimal
+  // STRING. The lookup key below is a JS number (Date.UTC), and Map keys
+  // compare by identity, so without coercing both to numbers every lookup
+  // misses and the whole retention curve collapses to 0 (flat/empty chart).
   const seenByBucket = new Map<number, number>();
-  for (const r of monthlyRows) seenByBucket.set(r.bucket_ts, r.active);
+  for (const r of monthlyRows) seenByBucket.set(Number(r.bucket_ts), Number(r.active));
 
   const points = Array.from({ length: horizon }, (_, off) => {
     const bucketTs = Math.floor(Date.UTC(year, month - 1 + off, 1) / 1000);
@@ -1052,34 +1000,32 @@ metricsRouter.get('/active-stakers', async (req: Request, res: Response) => {
   const at = parseAt(req) ?? await getTipAnchor();
   const since = at - hours * 3600;
 
-  const [headlineResult, seriesResult] = await Promise.all([
-    ch.query({
-      query: `
-        SELECT uniqExact(staker_cpid) AS c
-        FROM blocks FINAL
-        WHERE time >= toDateTime({since: UInt32}) AND time <= toDateTime({end: UInt32})
+  const [headlineRows, seriesRows] = await Promise.all([
+    query<{ c: string | number }>(
+      `
+        SELECT count(DISTINCT staker_cpid) AS c
+        FROM blocks
+        WHERE time >= make_timestamp($since::BIGINT * 1000000) AND time <= make_timestamp($end::BIGINT * 1000000)
           AND staker_cpid IS NOT NULL AND staker_cpid != ''
       `,
-      query_params: { since, end: at },
-      format: 'JSONEachRow',
-    }),
-    ch.query({
-      query: `
+      { since, end: at },
+    ),
+    query<{ bucket_ts: number; count: number }>(
+      `
         SELECT
-          toUInt32(intDiv(toUInt32(time), 3600) * 3600) AS bucket_ts,
-          toUInt32(uniqExact(staker_cpid))              AS count
-        FROM blocks FINAL
-        WHERE time >= toDateTime({since: UInt32}) AND time <= toDateTime({end: UInt32})
+          CAST((CAST(epoch(time) AS BIGINT) // 3600) * 3600 AS UINTEGER) AS bucket_ts,
+          CAST(count(DISTINCT staker_cpid) AS UINTEGER)                  AS count
+        FROM blocks
+        WHERE time >= make_timestamp($since::BIGINT * 1000000) AND time <= make_timestamp($end::BIGINT * 1000000)
           AND staker_cpid IS NOT NULL AND staker_cpid != ''
         GROUP BY bucket_ts
         ORDER BY bucket_ts ASC
       `,
-      query_params: { since, end: at },
-      format: 'JSONEachRow',
-    }),
+      { since, end: at },
+    ),
   ]);
-  const current = Number((await headlineResult.json<{ c: string | number }>())[0]?.c ?? 0);
-  const points = (await seriesResult.json<{ bucket_ts: number; count: number }>()).map((p) => ({
+  const current = Number(headlineRows[0]?.c ?? 0);
+  const points = seriesRows.map((p) => ({
     ts: p.bucket_ts,
     count: Number(p.count),
   }));
@@ -1103,14 +1049,13 @@ async function buildStakerMix(
   at: number | undefined,
 ): Promise<JsonApiResource> {
   // Latest block at-or-before the anchor.
-  const tipResult = await ch.query({
-    query: at !== undefined
-      ? 'SELECT height FROM blocks FINAL WHERE time <= toDateTime({at: UInt32}) ORDER BY height DESC LIMIT 1'
-      : 'SELECT height FROM blocks FINAL ORDER BY height DESC LIMIT 1',
-    query_params: at !== undefined ? { at } : {},
-    format: 'JSONEachRow',
-  });
-  const tipHeight = (await tipResult.json<{ height: number }>())[0]?.height;
+  const tipRows = at !== undefined
+    ? await query<{ height: number }>(
+      'SELECT height FROM blocks WHERE time <= make_timestamp($at::BIGINT * 1000000) ORDER BY height DESC LIMIT 1',
+      { at },
+    )
+    : await query<{ height: number }>('SELECT height FROM blocks ORDER BY height DESC LIMIT 1');
+  const tipHeight = tipRows[0]?.height;
   if (tipHeight === undefined) {
     return {
       type: 'staker_mix',
@@ -1121,19 +1066,16 @@ async function buildStakerMix(
     };
   }
   const minHeight = Math.max(0, tipHeight - blocks);
-  const result = await ch.query({
-    query: `
+  const row = (await query<{ researcher: number; total: number }>(
+    `
       SELECT
-        toUInt32(countIf(staker_cpid IS NOT NULL AND staker_cpid != '')) AS researcher,
-        toUInt32(count())                                                AS total
-      FROM blocks FINAL
-      WHERE height >= {min: UInt32} AND height <= {max: UInt32}
+        CAST(count(*) FILTER (WHERE staker_cpid IS NOT NULL AND staker_cpid != '') AS UINTEGER) AS researcher,
+        CAST(count(*) AS UINTEGER)                                                              AS total
+      FROM blocks
+      WHERE height >= $min AND height <= $max
     `,
-    query_params: { min: minHeight, max: tipHeight },
-    format: 'JSONEachRow',
-  });
-  const row = (await result.json<{ researcher: number; total: number }>())[0]
-    ?? { researcher: 0, total: 0 };
+    { min: minHeight, max: tipHeight },
+  ))[0] ?? { researcher: 0, total: 0 };
   return {
     type: 'staker_mix',
     id: `last_${blocks}_blocks`,

@@ -8,6 +8,21 @@
  */
 
 /**
+ * Categorical series colour by index, using a golden-angle hue rotation
+ * so adjacent series stay visually distinct without a hand-picked
+ * palette. Lightness/saturation are tuned per mode for contrast on the
+ * card background. Shared by every multi-series chart (researcher
+ * history lines, wallet-version bands) so a given slot reads the same
+ * across the family.
+ */
+export function paletteColor(rank: number, isDark: boolean): string {
+  const hue = (rank * 137.508) % 360;
+  return isDark
+    ? `hsl(${hue.toFixed(1)}, 70%, 65%)`
+    : `hsl(${hue.toFixed(1)}, 65%, 45%)`;
+}
+
+/**
  * Fritsch–Carlson monotone cubic interpolation. Rounds the corners
  * of a piecewise-linear series without overshoot — important for the
  * project history charts because a non-monotone spline would invent
