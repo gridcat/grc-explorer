@@ -1,3 +1,15 @@
+# [grc-explorer-frontend-v1.4.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.3.0...grc-explorer-frontend-v1.4.0) (2026-06-16)
+
+
+### Bug Fixes
+
+* update deps ([97c0bed](https://github.com/gridcat/grc-explorer/commit/97c0bed9cb894e3dddab61fcc59f73ba89807424))
+
+
+### Features
+
+* migrate to duckdb ([a0e32b3](https://github.com/gridcat/grc-explorer/commit/a0e32b3f62a94e98882675da7f7be7d93876573f))
+
 # [grc-explorer-frontend-v1.3.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.2.1...grc-explorer-frontend-v1.3.0) (2026-05-17)
 
 
