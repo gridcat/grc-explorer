@@ -5,7 +5,7 @@ import { Layout } from '../layouts/Layout';
 import { PageContents, PageContentsEntry } from '../components/PageContents/PageContents';
 import { NextMuiLink } from '../components/NextMuiLink';
 
-const CONTACT_EMAIL = 'gridcat@gridcoin.club';
+const CONTACT_EMAIL = 'gridcat@proton.me';
 const GOVERNING_LAW = '[Operator’s principal place of business]';
 const EFFECTIVE_DATE = '2026-05-07';
 

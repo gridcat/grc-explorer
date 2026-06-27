@@ -5,7 +5,7 @@ import { log } from './log';
 // Community-maintained list of CPIDs whose owners have asked us not
 // to mirror their BOINC name. The file is checked into the repo so
 // the audit trail is public, and the request mechanism is documented
-// in /disclaimer (mail gridcat@gridcoin.club).
+// in /disclaimer (mail gridcat@proton.me).
 //
 // The job re-reads the file on every tick — small file, no need for
 // hot-reload signalling. Missing file means "no opt-outs yet" and is
