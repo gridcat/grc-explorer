@@ -1,3 +1,10 @@
+# [grc-explorer-v1.6.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.6.0...grc-explorer-v1.6.1) (2026-06-27)
+
+
+### Bug Fixes
+
+* crash fix prod ([cc9cc5f](https://github.com/gridcat/grc-explorer/commit/cc9cc5fc347ebcad9e030bd483f3c14b3d1ea9e4))
+
 # [grc-explorer-v1.6.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.5.0...grc-explorer-v1.6.0) (2026-06-27)
 
 
