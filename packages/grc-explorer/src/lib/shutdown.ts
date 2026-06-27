@@ -38,7 +38,19 @@ export function onShutdown(fn: CleanupFn): void {
 // promise removes itself once settled.
 export function trackInflight<T>(promise: Promise<T>): Promise<T> {
   inflight.add(promise);
-  void promise.finally(() => inflight.delete(promise));
+  // The settlement-tracking branch must not create a floating
+  // rejection. `promise.finally()` returns a NEW promise that
+  // re-rejects when `promise` rejects, and `void` does not attach a
+  // handler — so a rejecting tick surfaced here as an unhandled
+  // rejection and crashed the process, even though the real awaiter
+  // (schedule.ts) already catches it. Use a two-arm `.then` so both
+  // settlements run cleanup and the rejection is consumed on this
+  // branch; the original `promise` is returned untouched so the caller
+  // still sees the rejection.
+  promise.then(
+    () => inflight.delete(promise),
+    () => inflight.delete(promise),
+  );
   return promise;
 }
 
