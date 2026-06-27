@@ -1,3 +1,10 @@
+# [grc-explorer-frontend-v1.5.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.4.0...grc-explorer-frontend-v1.5.0) (2026-06-27)
+
+
+### Features
+
+* change email, cpid block list ([670967a](https://github.com/gridcat/grc-explorer/commit/670967af366da144b3c14c9aae2818f0b90fe7e4))
+
 # [grc-explorer-frontend-v1.4.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.3.0...grc-explorer-frontend-v1.4.0) (2026-06-16)
 
 
