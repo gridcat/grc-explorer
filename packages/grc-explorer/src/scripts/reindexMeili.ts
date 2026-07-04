@@ -1,6 +1,8 @@
 import { query } from '../lib/db';
 import { log } from '../lib/log';
-import { enqueueMeiliBatch, MeiliEnvelope } from '../lib/meili';
+import {
+  meili, meiliIndexId, enqueueMeiliBatch, MeiliEnvelope, MeiliIndexName,
+} from '../lib/meili';
 import { normalizeProjectName } from '../lib/projectName';
 import { closeRedis } from '../lib/redis';
 
@@ -27,6 +29,39 @@ import { closeRedis } from '../lib/redis';
 // container to be UP so its MeiliIndexer consumes the stream.
 
 const ENQUEUE_CHUNK = 1_000;
+
+// The four fuzzy corpora this script owns (mirrors MeiliIndexer's
+// ACTIVE_INDEXES). Obsolete indexes are dropped by MeiliIndexer's boot
+// ensureIndices() — not our concern here.
+const ACTIVE_INDEXES: MeiliIndexName[] = ['superblocks', 'polls', 'beacons', 'messages'];
+
+// Clear existing docs from the explorer's own indexes before
+// repopulating, so a rebuild after a physical DB restore doesn't leave
+// stale documents behind — a prior deployment's rows that no longer
+// exist in the restored DB, or malformed docs from before a shape fix
+// (e.g. the old colon-id beacons). deleteAllDocuments KEEPS the index
+// and the searchable/filterable/primaryKey settings MeiliIndexer
+// applied on boot, so nothing has to be re-derived. Only touches
+// grc_explorer_mainnet_* — sibling indexes on a shared Meili are safe.
+// Awaits each clear so the repopulating upserts can't race ahead of it.
+async function clearIndices(): Promise<void> {
+  for (const name of ACTIVE_INDEXES) {
+    const id = meiliIndexId(name);
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const task = await meili.index(id).deleteAllDocuments();
+      // eslint-disable-next-line no-await-in-loop
+      await meili.tasks.waitForTask(task.taskUid);
+      log.info(`reindexMeili: cleared existing docs in ${id}`);
+    } catch (err) {
+      // A not-yet-created index (fresh Meili) 404s — nothing to clear.
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/not.?found|index_not_found/i.test(message)) {
+        log.warn(`reindexMeili: deleteAllDocuments(${id}) failed`, err);
+      }
+    }
+  }
+}
 
 async function flush(envelopes: MeiliEnvelope[]): Promise<void> {
   for (let i = 0; i < envelopes.length; i += ENQUEUE_CHUNK) {
@@ -163,6 +198,7 @@ async function reindexMessages(): Promise<number> {
 }
 
 export async function reindexMeili(): Promise<number> {
+  await clearIndices();
   const sb = await reindexSuperblocks();
   log.info(`reindexMeili: enqueued ${sb} superblock doc(s)`);
   const polls = await reindexPolls();
