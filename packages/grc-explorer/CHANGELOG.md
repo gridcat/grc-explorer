@@ -1,3 +1,10 @@
+# [grc-explorer-v2.0.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.0.0...grc-explorer-v2.0.1) (2026-07-04)
+
+
+### Bug Fixes
+
+* reindex meili, not just drop all ([a02061f](https://github.com/gridcat/grc-explorer/commit/a02061f21513c3fbe740b8c26e035bf48b185931))
+
 # [grc-explorer-v2.0.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v1.6.1...grc-explorer-v2.0.0) (2026-07-04)
 
 
