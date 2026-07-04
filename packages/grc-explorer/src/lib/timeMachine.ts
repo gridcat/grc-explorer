@@ -41,7 +41,7 @@ export async function resolveAtHeight(at: number | undefined): Promise<number | 
     return rows[0]?.height ?? null;
   }
   const rows = await query<{ height: number }>(
-    'SELECT height FROM blocks WHERE time <= make_timestamp($at::BIGINT * 1000000) ORDER BY height DESC LIMIT 1',
+    'SELECT height FROM blocks WHERE time <= FROM_UNIXTIME($at) ORDER BY height DESC LIMIT 1',
     { at },
   );
   return rows[0]?.height ?? null;
@@ -69,7 +69,7 @@ export async function resolveAtSuperblockHeight(at: number | undefined): Promise
   const rows = await query<{ height: number }>(
     `
       SELECT height FROM blocks
-      WHERE is_superblock = true AND time <= make_timestamp($at::BIGINT * 1000000)
+      WHERE is_superblock = true AND time <= FROM_UNIXTIME($at)
       ORDER BY height DESC LIMIT 1
     `,
     { at },

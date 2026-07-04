@@ -1,4 +1,5 @@
 import type { GetServerSideProps } from 'next';
+import { Seo } from '@/components/Seo';
 import { YearArchive } from '../../routes/blocks/archive/YearArchive';
 import { fetchYearArchive, fetchYearList } from '../../routes/blocks/archive/fetch';
 import type { YearArchiveData } from '../../routes/blocks/archive/types';
@@ -19,13 +20,21 @@ interface Props {
 export default function YearPage({
   data, prevYear, nextYear, article,
 }: Props) {
+  const { year } = data;
   return (
-    <YearArchive
-      data={data}
-      prevYear={prevYear}
-      nextYear={nextYear}
-      article={article}
-    />
+    <>
+      <Seo
+        title={`Blocks in ${year} · Gridcoin Block Explorer`}
+        description={`Gridcoin blocks staked during ${year}, broken down by month and day.`}
+        path={`/blocks/${year}`}
+      />
+      <YearArchive
+        data={data}
+        prevYear={prevYear}
+        nextYear={nextYear}
+        article={article}
+      />
+    </>
   );
 }
 

@@ -1,6 +1,7 @@
 import {
   Alert, AlertTitle, Box, Container, Divider, Grid, Typography,
 } from '@mui/material';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../layouts/Layout';
 import { PageContents, PageContentsEntry } from '../components/PageContents/PageContents';
 import { NextMuiLink } from '../components/NextMuiLink';
@@ -39,6 +40,12 @@ const entries: PageContentsEntry[] = [
 
 export default function DisclaimerPage() {
   return (
+    <>
+      <Seo
+        title="Disclaimer · Gridcoin Block Explorer"
+        description="Data-accuracy disclaimer and terms for the Gridcoin block explorer."
+        path="/disclaimer"
+      />
     <Layout showTimeMachine={false}>
       <Container maxWidth="xl" sx={{ flexGrow: 1 }}>
         <Grid container spacing={3}>
@@ -591,5 +598,6 @@ export default function DisclaimerPage() {
         </Grid>
       </Container>
     </Layout>
+    </>
   );
 }

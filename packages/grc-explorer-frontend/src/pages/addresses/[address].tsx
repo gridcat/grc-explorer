@@ -5,6 +5,7 @@ import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useEffect, useRef, useState } from 'react';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import { AddressBalanceSparkline } from '../../components/AddressBalanceSparkline';
 import { useSSE } from '../../hooks/useSSE';
@@ -139,7 +140,13 @@ export default function AddressDetail({
   if (!addr) return <Layout><Typography>Loading…</Typography></Layout>;
 
   return (
-    <Layout>
+    <>
+      <Seo
+        title={`Address ${addr.address} · Gridcoin Block Explorer`}
+        description={`Balance, totals, transaction history and researcher links for Gridcoin address ${addr.address}.`}
+        path={`/addresses/${addr.address}`}
+      />
+      <Layout>
       <Stack spacing={2}>
         <Crumbs items={[
           { label: 'Wallets', href: '/wallets' },
@@ -337,7 +344,8 @@ export default function AddressDetail({
           )}
         </Box>
       </Stack>
-    </Layout>
+      </Layout>
+    </>
   );
 }
 

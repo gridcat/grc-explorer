@@ -1,11 +1,11 @@
 import { query, run } from '../../lib/db';
 import { HALFORD } from '../../lib/halford';
+import { getTipAnchor } from '../../lib/indexerTip';
 import { log } from '../../lib/log';
 import { WEIGHT_TYPE } from '../indexer/ContractParser';
 import { forkHeight } from '../network/ChainForks';
 
-// Vote-weight + AV-W aggregator. For every closed poll where
-// `weights_computed_at_height` is still NULL:
+// Vote-weight + AV-W aggregator. For each poll it processes:
 //   1. Find the latest superblock at-or-before poll.block_height
 //      (snapshot magnitudes at the poll's start).
 //   2. For each vote, look up the voter's balance at poll.block_height
@@ -18,12 +18,25 @@ import { forkHeight } from '../network/ChainForks';
 //      UPDATE each row's assigned weight in place.
 //   4. Compute AV-W (eligible-balance + eligible-magnitude totals at
 //      poll-start) and UPDATE the poll row with av_w_balance,
-//      av_w_magnitude, weights_computed_at_height set, and the
-//      `magnitude_weight_factor` actually used.
+//      av_w_magnitude and the `magnitude_weight_factor` actually used.
+//
+// A cast vote's weight is a fixed snapshot (balance at the poll-start
+// height, magnitude at the snapshot superblock) — none of it depends on
+// the poll being closed. So we compute weights live for *active* polls
+// too, recomputing each tick: re-weighting already-cast votes is
+// idempotent, and the pass just folds in any newly-arrived votes. This
+// matches the wallet, which shows live results while a poll is open.
+//
+// `weights_computed_at_height` doubles as the "finalised" sentinel: we
+// only stamp it once a poll has *closed* (so the poll keeps getting
+// recomputed while active, and gets exactly one final pass after close
+// to catch votes cast in the last blocks before it ended).
 //
 // See `reference_gridcoin_voting_weight_rules.md` for the full
-// canonical formula. Capped at POLLS_PER_TICK polls per pass so a
-// backlog never monopolises the scheduler.
+// canonical formula. The closed-backlog bucket is capped at
+// POLLS_PER_TICK per pass so a backlog never monopolises the scheduler;
+// the active bucket is uncapped (only ever a handful of polls open at
+// once).
 const POLLS_PER_TICK = 5;
 
 // Magnitude-weight factor for BALANCE_AND_MAGNITUDE polls. The wallet
@@ -70,32 +83,62 @@ interface VoteRow {
 export class PollWeightAggregator {
   async tick(): Promise<void> {
     try {
-      // Find closed polls with no computed weights yet, ordered by
-      // end_time ascending — process the oldest backlog first.
-      const polls = await query<PollSnapshot>(
-        `
-          SELECT poll_id, block_height, weight_type,
-                 CAST(epoch(start_time) AS UINTEGER) AS start_time
-          FROM polls
-          WHERE weights_computed_at_height IS NULL
-            AND end_time <= now()
-          ORDER BY end_time ASC
-          LIMIT ${POLLS_PER_TICK}
-        `,
-      );
-      if (polls.length === 0) return;
+      // Anchor "is this poll closed?" on the indexer cursor rather than
+      // wall-clock: during a backfill the two diverge by years, and we
+      // must not finalise a poll before the blocks carrying its final
+      // votes have been indexed (see getTipAnchor / the cursor memory).
+      const anchor = await getTipAnchor();
 
-      log.info(`PollWeightAggregator: processing ${polls.length} closed poll(s)`);
-      for (const poll of polls) {
+      // Two buckets:
+      //  - Active polls (end after the cursor): recomputed every tick,
+      //    uncapped, left un-finalised so the post-close pass still fires.
+      //  - Closed backlog (ended, never finalised): computed once and
+      //    stamped. Capped so a big backlog can't starve the scheduler.
+      const [activePolls, closedBacklog] = await Promise.all([
+        query<PollSnapshot>(
+          `
+            SELECT poll_id, block_height, weight_type,
+                   UNIX_TIMESTAMP(start_time) AS start_time
+            FROM polls
+            WHERE end_time > FROM_UNIXTIME($anchor)
+            ORDER BY end_time ASC
+          `,
+          { anchor },
+        ),
+        query<PollSnapshot>(
+          `
+            SELECT poll_id, block_height, weight_type,
+                   UNIX_TIMESTAMP(start_time) AS start_time
+            FROM polls
+            WHERE end_time <= FROM_UNIXTIME($anchor)
+              AND weights_computed_at_height IS NULL
+            ORDER BY end_time ASC
+            LIMIT ${POLLS_PER_TICK}
+          `,
+          { anchor },
+        ),
+      ]);
+      if (activePolls.length === 0 && closedBacklog.length === 0) return;
+
+      log.info(
+        `PollWeightAggregator: ${activePolls.length} active + ${closedBacklog.length} closed poll(s)`,
+      );
+      // Active first (un-finalised: weights_computed_at_height stays NULL).
+      for (const poll of activePolls) {
         // eslint-disable-next-line no-await-in-loop
-        await this.processPoll(poll);
+        await this.processPoll(poll, false);
+      }
+      // Then the closed backlog (finalised: stamps weights_computed_at_height).
+      for (const poll of closedBacklog) {
+        // eslint-disable-next-line no-await-in-loop
+        await this.processPoll(poll, true);
       }
     } catch (err) {
       log.warn('PollWeightAggregator.tick failed', err);
     }
   }
 
-  private async processPoll(poll: PollSnapshot): Promise<void> {
+  private async processPoll(poll: PollSnapshot, finalize: boolean): Promise<void> {
     const startHeight = poll.block_height;
 
     // Latest superblock at-or-before poll start. Determines magnitude
@@ -118,20 +161,20 @@ export class PollWeightAggregator {
     const [eligBalRows, eligMagRows, votes] = await Promise.all([
       query<{ total: string | null }>(
         `
-          SELECT CAST(sum(bal) AS VARCHAR) AS total FROM (
+          SELECT CAST(sum(bal) AS CHAR) AS total FROM (
             SELECT sum(delta) AS bal
             FROM address_balance_history
             WHERE valid_from_height <= $h
             GROUP BY address
             HAVING sum(delta) > 0
-          )
+          ) AS t
         `,
         { h: startHeight },
       ),
       sbHeight !== null
         ? query<{ total: string | null }>(
           `
-            SELECT CAST(sum(magnitude) AS VARCHAR) AS total FROM superblock_magnitudes
+            SELECT CAST(sum(magnitude) AS CHAR) AS total FROM superblock_magnitudes
             WHERE superblock_height = $h
           `,
           { h: sbHeight },
@@ -140,8 +183,8 @@ export class PollWeightAggregator {
       query<VoteRow>(
         `
           SELECT poll_id, voter_address, voter_cpid, mining_id, choice_idx,
-                 CAST(weight AS VARCHAR)         AS weight,
-                 CAST(weight_balance AS VARCHAR) AS weight_balance,
+                 CAST(weight AS CHAR)         AS weight,
+                 CAST(weight_balance AS CHAR) AS weight_balance,
                  weight_magnitude, tx_id, block_height
           FROM votes
           WHERE poll_id = $id
@@ -163,7 +206,7 @@ export class PollWeightAggregator {
         avwMagnitude,
         computedAtHeight: sbHeight ?? startHeight,
         magnitudeWeightFactor: magFactorAsFloat,
-      });
+      }, finalize);
       return;
     }
 
@@ -181,9 +224,9 @@ export class PollWeightAggregator {
       voterAddresses.length > 0
         ? query<{ address: string; bal: string }>(
           `
-            SELECT address, CAST(sum(delta) AS VARCHAR) AS bal
+            SELECT address, CAST(sum(delta) AS CHAR) AS bal
             FROM address_balance_history
-            WHERE address = ANY($addrs)
+            WHERE address IN ($addrs)
               AND valid_from_height <= $h
             GROUP BY address
           `,
@@ -195,7 +238,7 @@ export class PollWeightAggregator {
           `
             SELECT cpid, magnitude FROM superblock_magnitudes
             WHERE superblock_height = $h
-              AND cpid = ANY($cpids)
+              AND cpid IN ($cpids)
           `,
           { h: sbHeight, cpids: voterCpids },
         )
@@ -292,7 +335,7 @@ export class PollWeightAggregator {
       await run(
         `UPDATE votes
          SET weight = $weight, weight_balance = $wb, weight_magnitude = $wm
-         WHERE tx_id = $tx AND choice_idx = ANY($idxs)`,
+         WHERE tx_id = $tx AND choice_idx IN ($idxs)`,
         {
           weight: responseWeight,
           wb: balance,
@@ -307,9 +350,9 @@ export class PollWeightAggregator {
       avwMagnitude,
       computedAtHeight: sbHeight ?? startHeight,
       magnitudeWeightFactor: magFactorAsFloat,
-    });
+    }, finalize);
     log.info(
-      `PollWeightAggregator: poll ${poll.poll_id} done (${votes.length} votes, ${byGroup.size} voters, AV-W bal=${avwBalance}, mag=${avwMagnitude.toFixed(2)})`,
+      `PollWeightAggregator: poll ${poll.poll_id} ${finalize ? 'finalised' : 'live'} (${votes.length} votes, ${byGroup.size} voters, AV-W bal=${avwBalance}, mag=${avwMagnitude.toFixed(2)})`,
     );
   }
 
@@ -333,11 +376,11 @@ export class PollWeightAggregator {
   ): Promise<{ num: bigint; den: bigint } | null> {
     const rows = await query<{ value: string | null }>(
       `
-        SELECT value
+        SELECT \`value\`
         FROM protocol_entries
-        WHERE key = 'magnitudeweightfactor'
+        WHERE \`key\` = 'magnitudeweightfactor'
           AND status = 'ACTIVE'
-          AND time <= make_timestamp($ts::BIGINT * 1000000)
+          AND time <= FROM_UNIXTIME($ts)
         ORDER BY time DESC
         LIMIT 1
       `,
@@ -368,13 +411,18 @@ export class PollWeightAggregator {
   private async markPollComputed(
     poll: PollSnapshot,
     aggregates: ComputedPollAggregates,
+    finalize: boolean,
   ): Promise<void> {
     const {
       avwBalance, avwMagnitude, computedAtHeight, magnitudeWeightFactor,
     } = aggregates;
     // Fill the deferred annotations in place. The freshly computed
     // magnitude_weight_factor wins over any prior value (re-run
-    // scenario) because we have the canonical formula.
+    // scenario) because we have the canonical formula. AV-W and the
+    // factor are written every pass (idempotent for an active poll);
+    // `weights_computed_at_height` is only stamped on the finalising
+    // (post-close) pass — leaving it NULL keeps an active poll in the
+    // recompute set and guarantees a single final pass after it closes.
     await run(
       `UPDATE polls
        SET magnitude_weight_factor = $factor,
@@ -386,7 +434,7 @@ export class PollWeightAggregator {
         factor: magnitudeWeightFactor,
         bal: avwBalance,
         mag: avwMagnitude,
-        height: computedAtHeight,
+        height: finalize ? computedAtHeight : null,
         id: poll.poll_id,
       },
     );

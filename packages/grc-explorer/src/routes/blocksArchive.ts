@@ -128,7 +128,7 @@ blocksArchiveRouter.get('/years', async (_req: Request, res: Response) => {
     }>(
       `
         SELECT
-          year(bucket_date)     AS year,
+          YEAR(bucket_date)     AS year,
           sum(block_count)      AS block_count,
           sum(tx_count)         AS tx_count,
           sum(mint_total)       AS mint_total,
@@ -143,7 +143,7 @@ blocksArchiveRouter.get('/years', async (_req: Request, res: Response) => {
     }>(
       `
         SELECT
-          year(bucket_date)   AS year,
+          YEAR(bucket_date)   AS year,
           sum(value_moved)    AS value_moved,
           sum(fee_total)      AS fee_total
         FROM archive_txs_daily
@@ -185,20 +185,20 @@ blocksArchiveRouter.get('/:year', async (req: Request, res: Response) => {
   if (!isYearShape(year)) { badParam(res, `year must be 2009-2099, got ${year}`); return; }
 
   const [stats, monthsBlocks, monthsTxs] = await Promise.all([
-    periodStats('year(bucket_date) = $year', { year }),
+    periodStats('YEAR(bucket_date) = $year', { year }),
     query<{
       month: number; block_count: string; tx_count: string;
       mint_total: string; superblock_count: string;
     }>(
       `
         SELECT
-          month(bucket_date)    AS month,
+          MONTH(bucket_date)    AS month,
           sum(block_count)      AS block_count,
           sum(tx_count)         AS tx_count,
           sum(mint_total)       AS mint_total,
           sum(superblock_count) AS superblock_count
         FROM archive_blocks_daily
-        WHERE year(bucket_date) = $year
+        WHERE YEAR(bucket_date) = $year
         GROUP BY month
         ORDER BY month ASC
       `,
@@ -207,11 +207,11 @@ blocksArchiveRouter.get('/:year', async (req: Request, res: Response) => {
     query<{ month: number; value_moved: string; fee_total: string }>(
       `
         SELECT
-          month(bucket_date)   AS month,
+          MONTH(bucket_date)   AS month,
           sum(value_moved)     AS value_moved,
           sum(fee_total)       AS fee_total
         FROM archive_txs_daily
-        WHERE year(bucket_date) = $year
+        WHERE YEAR(bucket_date) = $year
         GROUP BY month
       `,
       { year },
@@ -257,7 +257,7 @@ blocksArchiveRouter.get('/:year/:month', async (req: Request, res: Response) => 
   if (!isYearShape(year)) { badParam(res, `year must be 2009-2099, got ${year}`); return; }
   if (!isMonthShape(month)) { badParam(res, `month must be 1-12, got ${month}`); return; }
 
-  const where = 'year(bucket_date) = $year AND month(bucket_date) = $month';
+  const where = 'YEAR(bucket_date) = $year AND MONTH(bucket_date) = $month';
   const queryParams = { year, month };
 
   const [stats, daysBlocks, daysTxs] = await Promise.all([
@@ -268,7 +268,7 @@ blocksArchiveRouter.get('/:year/:month', async (req: Request, res: Response) => 
     }>(
       `
         SELECT
-          day(bucket_date) AS day,
+          DAY(bucket_date) AS day,
           block_count,
           tx_count,
           mint_total,
@@ -282,7 +282,7 @@ blocksArchiveRouter.get('/:year/:month', async (req: Request, res: Response) => 
     query<{ day: number; value_moved: string; fee_total: string }>(
       `
         SELECT
-          day(bucket_date) AS day,
+          DAY(bucket_date) AS day,
           value_moved,
           fee_total
         FROM archive_txs_daily
@@ -356,8 +356,8 @@ blocksArchiveRouter.get('/:year/:month/:day', async (req: Request, res: Response
   const pageNumber = Math.max(1, parseInt(page.number ?? '', 10) || 1);
   const offset = (pageNumber - 1) * pageSize;
 
-  const where = 'bucket_date = $iso::DATE';
-  const blockWhere = 'b.time >= make_timestamp($start::BIGINT * 1000000) AND b.time < make_timestamp($end::BIGINT * 1000000)';
+  const where = 'bucket_date = CAST($iso AS DATE)';
+  const blockWhere = 'b.time >= FROM_UNIXTIME($start) AND b.time < FROM_UNIXTIME($end)';
 
   const [stats, rows] = await Promise.all([
     periodStats(where, { iso }),
@@ -372,7 +372,7 @@ blocksArchiveRouter.get('/:year/:month/:day', async (req: Request, res: Response
       // list endpoint (claims is PK by block_height, so the join is a
       // point lookup per row).
       `
-        SELECT b.height, b.hash, CAST(epoch(b.time) AS BIGINT) AS time, b.n_version, b.size, b.tx_count, b.is_pos,
+        SELECT b.height, b.hash, UNIX_TIMESTAMP(b.time) AS time, b.n_version, b.size, b.tx_count, b.is_pos,
                b.miner_address, b.staker_cpid, b.is_superblock, b.mint, b.difficulty, c.is_mrc AS is_mrc
         FROM blocks AS b
         LEFT JOIN claims AS c ON c.block_height = b.height

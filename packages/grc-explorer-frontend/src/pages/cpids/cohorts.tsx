@@ -4,6 +4,7 @@ import {
 import { useTheme } from '@mui/material/styles';
 import type { GetServerSideProps } from 'next';
 import { useState } from 'react';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { api } from '../../lib/api';
@@ -37,6 +38,12 @@ export default function CpidCohortsPage({ initialCohorts }: CpidCohortsProps) {
   const [cohorts] = useState<CohortPayload[]>(initialCohorts);
 
   return (
+    <>
+      <Seo
+        title="Researcher cohorts · Gridcoin Block Explorer"
+        description="Gridcoin researchers grouped by join era and activity."
+        path="/cpids/cohorts"
+      />
     <Layout>
       <Stack spacing={3}>
         <Crumbs items={[
@@ -145,6 +152,7 @@ export default function CpidCohortsPage({ initialCohorts }: CpidCohortsProps) {
         )}
       </Stack>
     </Layout>
+    </>
   );
 }
 

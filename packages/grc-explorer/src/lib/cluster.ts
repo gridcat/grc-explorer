@@ -25,7 +25,7 @@ export async function getClustersForAddresses(seed: string[]): Promise<string[]>
       `
         SELECT DISTINCT cluster_id AS cid
         FROM address_clusters
-        WHERE address = ANY($addrs) AND cluster_id != ''
+        WHERE address IN ($addrs) AND cluster_id != ''
       `,
       { addrs: uniqueSeed },
     );
@@ -35,7 +35,7 @@ export async function getClustersForAddresses(seed: string[]): Promise<string[]>
       `
         SELECT address
         FROM address_clusters
-        WHERE cluster_id = ANY($cids)
+        WHERE cluster_id IN ($cids)
         LIMIT ${CLUSTER_MEMBER_CAP}
       `,
       { cids },

@@ -73,7 +73,7 @@ export async function getV11BlockTimestamp(): Promise<number | null> {
   pendingV11Query = (async () => {
     try {
       const rows = await query<{ t: number | string | null }>(
-        'SELECT CAST(epoch(min(time)) AS BIGINT) AS t FROM blocks WHERE n_version >= 11',
+        'SELECT UNIX_TIMESTAMP(min(time)) AS t FROM blocks WHERE n_version >= 11',
       );
       const raw = rows[0]?.t;
       if (raw === null || raw === undefined || raw === 0) return null;
@@ -96,9 +96,9 @@ export async function getBlockTimes(heights: ReadonlyArray<number>): Promise<Map
   if (unique.length === 0) return out;
   const rows = await query<{ height: number; t: number | string }>(
     `
-      SELECT height, CAST(epoch(time) AS BIGINT) AS t
+      SELECT height, UNIX_TIMESTAMP(time) AS t
       FROM blocks
-      WHERE height = ANY($heights)
+      WHERE height IN ($heights)
     `,
     { heights: unique },
   );

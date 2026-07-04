@@ -45,11 +45,11 @@ interface SnapshotRow {
 async function buildFallbackAttrs(snapshotAtOrBefore?: number): Promise<Record<string, unknown> | null> {
   const snapPromise = snapshotAtOrBefore !== undefined
     ? query<SnapshotRow>(
-      'SELECT CAST(epoch(ts) AS BIGINT) AS ts, peer_count, mempool_size, difficulty, tip_height FROM network_snapshots WHERE ts <= make_timestamp($at::BIGINT * 1000000) ORDER BY ts DESC LIMIT 1',
+      'SELECT UNIX_TIMESTAMP(ts) AS ts, peer_count, mempool_size, difficulty, tip_height FROM network_snapshots WHERE ts <= FROM_UNIXTIME($at) ORDER BY ts DESC LIMIT 1',
       { at: snapshotAtOrBefore },
     )
     : query<SnapshotRow>(
-      'SELECT CAST(epoch(ts) AS BIGINT) AS ts, peer_count, mempool_size, difficulty, tip_height FROM network_snapshots ORDER BY ts DESC LIMIT 1',
+      'SELECT UNIX_TIMESTAMP(ts) AS ts, peer_count, mempool_size, difficulty, tip_height FROM network_snapshots ORDER BY ts DESC LIMIT 1',
     );
   const blocksPromise = query<{ height: number; hash: string; difficulty: string }>(
     'SELECT height, hash, difficulty FROM blocks ORDER BY height DESC LIMIT 1',
@@ -93,7 +93,7 @@ networkRouter.get('/', async (req: Request, res: Response) => {
     // historical branch doesn't stomp net_version/rpc_version to 0.
     const cachedObserver = (await NetworkStatsPoller.readCache()) as Partial<NetworkStatsPayload> | null;
     const rows = await query<SnapshotRow>(
-      'SELECT CAST(epoch(ts) AS BIGINT) AS ts, peer_count, mempool_size, difficulty, tip_height FROM network_snapshots WHERE ts <= make_timestamp($at::BIGINT * 1000000) ORDER BY ts DESC LIMIT 1',
+      'SELECT UNIX_TIMESTAMP(ts) AS ts, peer_count, mempool_size, difficulty, tip_height FROM network_snapshots WHERE ts <= FROM_UNIXTIME($at) ORDER BY ts DESC LIMIT 1',
       { at: anchor },
     );
     const snap = rows[0] ?? null;
@@ -197,11 +197,11 @@ networkRouter.get('/history', async (req: Request, res: Response) => {
   // get difficulty + tipHeight sparklines.
   const [snapRows, blockRows] = await Promise.all([
     query<SnapshotRow>(
-      'SELECT CAST(epoch(ts) AS BIGINT) AS ts, peer_count, mempool_size, difficulty, tip_height FROM network_snapshots WHERE ts >= make_timestamp($since::BIGINT * 1000000) AND ts <= make_timestamp($end::BIGINT * 1000000) ORDER BY ts ASC',
+      'SELECT UNIX_TIMESTAMP(ts) AS ts, peer_count, mempool_size, difficulty, tip_height FROM network_snapshots WHERE ts >= FROM_UNIXTIME($since) AND ts <= FROM_UNIXTIME($end) ORDER BY ts ASC',
       { since, end: endAt },
     ),
     query<{ time: number; difficulty: string; height: number }>(
-      'SELECT CAST(epoch(time) AS BIGINT) AS time, difficulty, height FROM blocks WHERE time >= make_timestamp($since::BIGINT * 1000000) AND time <= make_timestamp($end::BIGINT * 1000000) ORDER BY time ASC',
+      'SELECT UNIX_TIMESTAMP(time) AS time, difficulty, height FROM blocks WHERE time >= FROM_UNIXTIME($since) AND time <= FROM_UNIXTIME($end) ORDER BY time ASC',
       { since, end: endAt },
     ),
   ]);
@@ -287,14 +287,14 @@ networkRouter.get('/difficulty', async (req: Request, res: Response) => {
   const rows = await query<Row>(
     `
       SELECT
-        CAST(epoch(CAST(bucket_date AS TIMESTAMP)) AS BIGINT) AS ts,
-        CAST(bucket_date AS VARCHAR)                          AS date,
-        CAST(difficulty_min AS VARCHAR)                       AS dmin,
-        CAST(difficulty_max AS VARCHAR)                       AS dmax,
-        CAST(difficulty_open AS VARCHAR)                      AS dopen,
-        CAST(difficulty_close AS VARCHAR)                     AS dclose,
-        difficulty_avg                                        AS davg,
-        difficulty_count                                      AS samples
+        UNIX_TIMESTAMP(bucket_date)     AS ts,
+        CAST(bucket_date AS CHAR)        AS date,
+        CAST(difficulty_min AS CHAR)    AS dmin,
+        CAST(difficulty_max AS CHAR)    AS dmax,
+        CAST(difficulty_open AS CHAR)   AS dopen,
+        CAST(difficulty_close AS CHAR)  AS dclose,
+        difficulty_avg                  AS davg,
+        difficulty_count                AS samples
       FROM difficulty_daily
       ${where}
       ORDER BY bucket_date ASC
@@ -345,14 +345,14 @@ networkRouter.get('/protocol-entries', async (_req: Request, res: Response) => {
   };
   const rows = await query<Row>(
     `
-      SELECT key, value, status,
+      SELECT \`key\`, \`value\`, status,
              contract_version,
              tx_id,
              previous_hash,
              block_height,
-             CAST(epoch(time) AS BIGINT) AS time
+             UNIX_TIMESTAMP(time) AS time
       FROM protocol_entries
-      ORDER BY key ASC, time DESC, tx_id ASC
+      ORDER BY \`key\` ASC, time DESC, tx_id ASC
     `,
   );
 
@@ -464,13 +464,13 @@ networkRouter.get('/stakers', async (req: Request, res: Response) => {
   const rows = await query<Row>(
     `
       SELECT
-        CAST(epoch(CAST(bucket_date AS TIMESTAMP)) AS BIGINT) AS ts,
-        CAST(bucket_date AS VARCHAR)                          AS date,
-        researcher_stakers                                    AS researchers,
-        investor_stakers                                      AS investors,
-        total_stakers                                         AS total,
-        CAST(mint_sum AS VARCHAR)                             AS mintTotal,
-        pos_blocks                                            AS blocks
+        UNIX_TIMESTAMP(bucket_date)    AS ts,
+        CAST(bucket_date AS CHAR)      AS date,
+        researcher_stakers            AS researchers,
+        investor_stakers              AS investors,
+        total_stakers                 AS total,
+        CAST(mint_sum AS CHAR)        AS mintTotal,
+        pos_blocks                    AS blocks
       FROM stakers_daily
       ${where}
       ORDER BY bucket_date ASC
@@ -505,8 +505,8 @@ networkRouter.get('/bounds', async (_req: Request, res: Response) => {
   }>(
     `
       SELECT
-        CAST(epoch(min(time)) AS BIGINT) AS minTs,
-        CAST(epoch(max(time)) AS BIGINT) AS maxTs,
+        UNIX_TIMESTAMP(min(time)) AS minTs,
+        UNIX_TIMESTAMP(max(time)) AS maxTs,
         min(height) AS minHeight,
         max(height) AS maxHeight
       FROM blocks
@@ -552,8 +552,8 @@ async function buildClientVersions(isYear: boolean, year: number | null): Promis
   const rows = await query<Row>(
     `
       SELECT
-        CAST(epoch(CAST(bucket_date AS TIMESTAMP)) AS BIGINT) AS ts,
-        CAST(bucket_date AS VARCHAR)                          AS date,
+        UNIX_TIMESTAMP(bucket_date)    AS ts,
+        CAST(bucket_date AS CHAR)      AS date,
         raw_version,
         blocks
       FROM client_versions_daily

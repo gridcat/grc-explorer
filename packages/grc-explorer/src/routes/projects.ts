@@ -171,23 +171,24 @@ async function buildSnapshot(): Promise<ProjectSnapshot> {
         -- GROUP BY lower(project_name) binds to the aggregate. Rename
         -- back in the outer SELECT so consumers and LatestEventRow stay
         -- unchanged.
+        -- arg_max(*, block_height) per lower(project_name) → all fields come
+        -- from that group's highest-block_height contract row, which
+        -- ROW_NUMBER (rn=1 ordered by block_height DESC) selects directly.
+        -- at_height = that row's block_height == max(block_height) in-group.
         SELECT
-          canonical_name AS project_name,
-          latest_action,
-          latest_url,
-          at_height,
-          at_time
+          project_name      AS project_name,
+          action            AS latest_action,
+          base_url          AS latest_url,
+          block_height      AS at_height,
+          UNIX_TIMESTAMP(time) AS at_time
         FROM (
           SELECT
-            arg_max(project_name, block_height) AS canonical_name,
-            arg_max(action, block_height)       AS latest_action,
-            arg_max(base_url, block_height)     AS latest_url,
-            max(block_height)                   AS at_height,
-            CAST(epoch(arg_max(time, block_height)) AS BIGINT) AS at_time
+            project_name, action, base_url, block_height, time,
+            ROW_NUMBER() OVER (PARTITION BY lower(project_name) ORDER BY block_height DESC) AS rn
           FROM project_contracts
           WHERE block_height <= $cursor
-          GROUP BY lower(project_name)
-        )
+        ) AS latest
+        WHERE rn = 1
       `,
       { cursor: cursorHeight },
     );
@@ -200,7 +201,7 @@ async function buildSnapshot(): Promise<ProjectSnapshot> {
   if (cursorHeight > 0) {
     try {
       const trow = (await query<{ t: number }>(
-        'SELECT CAST(epoch(time) AS BIGINT) AS t FROM blocks WHERE height = $h LIMIT 1',
+        'SELECT UNIX_TIMESTAMP(time) AS t FROM blocks WHERE height = $h LIMIT 1',
         { h: cursorHeight },
       ))[0];
       if (trow) cursorTime = trow.t;
@@ -380,8 +381,8 @@ async function buildHistory(): Promise<HistoryPoint[]> {
   try {
     events = await query<ProjectEventRow>(`
       SELECT project_name, action, block_height,
-             CAST(CAST(time AS DATE) AS VARCHAR) AS date,
-             CAST(epoch(time) AS BIGINT)         AS ts
+             DATE_FORMAT(time, '%Y-%m-%d') AS date,
+             UNIX_TIMESTAMP(time)          AS ts
       FROM project_contracts
       ORDER BY time ASC, action ASC
     `);
@@ -559,7 +560,7 @@ projectsRouter.get('/:name', async (req: Request, res: Response) => {
       runOrEmpty<ProjectContractRow>(`
         SELECT
           action, base_url, contract_version, tx_id, block_height,
-          CAST(epoch(time) AS BIGINT) AS time
+          UNIX_TIMESTAMP(time) AS time
         FROM project_contracts
         WHERE project_name = $name
         ORDER BY block_height ASC
@@ -569,27 +570,41 @@ projectsRouter.get('/:name', async (req: Request, res: Response) => {
       // resolution is one row per superblock (~daily); a 4000+
       // superblock chart shipped at full fidelity is wasteful for
       // a sparkline.
+      // arg_min(*, superblock_height) per (height DIV 256, height) group →
+      // the rac/average_rac/total_credit of the lowest-superblock_height row
+      // in each group, picked via ROW_NUMBER. (Preserves the original GROUP
+      // BY: because superblock_height is itself in the key, each group holds
+      // a single superblock_height, so this is effectively one row per
+      // superblock_height with an arbitrary pick when name-variants collide.)
       runOrEmpty<SuperblockSampleRow>(`
-        SELECT
-          superblock_height,
-          arg_min(rac, superblock_height)         AS rac,
-          arg_min(average_rac, superblock_height) AS average_rac,
-          arg_min(total_credit, superblock_height) AS total_credit
-        FROM superblock_projects
-        WHERE lower(regexp_replace(project_name, '[ _-]', '', 'g')) = $sbName
-        GROUP BY superblock_height // 256, superblock_height
+        SELECT superblock_height, rac, average_rac, total_credit FROM (
+          SELECT
+            superblock_height, rac, average_rac, total_credit,
+            ROW_NUMBER() OVER (
+              PARTITION BY superblock_height DIV 256, superblock_height
+              ORDER BY superblock_height ASC
+            ) AS rn
+          FROM superblock_projects
+          WHERE lower(REGEXP_REPLACE(project_name, '[ _-]', '')) = $sbName
+        ) AS ranked
+        WHERE rn = 1
         ORDER BY superblock_height ASC
       `, { sbName }, 'superblock_projects'),
       // Loose matching: a poll about "asteroids@home" usually puts
       // the project name in the title verbatim. Imperfect but cheap;
       // the table is small (a few thousand polls over chain history).
+      // LIKE metacharacters in the name are escaped so it matches as a
+      // literal substring (the old DuckDB contains() semantics). The
+      // escape note used to live INSIDE the SQL string as a `//`
+      // comment — MariaDB has no such comment syntax, so every project
+      // page silently lost its poll links to a caught syntax error.
       runOrEmpty<PollMatchRow>(`
-        SELECT poll_id, title, block_height, CAST(epoch(end_time) AS BIGINT) AS end_time
+        SELECT poll_id, title, block_height, UNIX_TIMESTAMP(end_time) AS end_time
         FROM polls
-        WHERE contains(lower(title), $needle)
+        WHERE title LIKE CONCAT('%', $needle, '%')
         ORDER BY block_height ASC
         LIMIT 50
-      `, { needle: name.toLowerCase() }, 'polls'),
+      `, { needle: name.toLowerCase().replace(/[\\%_]/g, '\\$&') }, 'polls'),
     ]);
 
     if (!status && contracts.length === 0 && samples.length === 0) {

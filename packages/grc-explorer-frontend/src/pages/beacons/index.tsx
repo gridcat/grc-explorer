@@ -5,6 +5,7 @@ import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useEffect, useRef, useState } from 'react';
+import { Seo } from '@/components/Seo';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { HashTrim } from '../../components/HashTrim';
 import { Layout } from '../../layouts/Layout';
@@ -121,6 +122,12 @@ export default function BeaconsPage({
   };
 
   return (
+    <>
+      <Seo
+        title="Beacons · Gridcoin Block Explorer"
+        description="Recent Gridcoin research beacons linking researcher CPIDs to their wallet addresses."
+        path="/beacons"
+      />
     <Layout>
       <Stack spacing={2}>
         <Crumbs items={[
@@ -244,6 +251,7 @@ export default function BeaconsPage({
         </Paper>
       </Stack>
     </Layout>
+    </>
   );
 }
 

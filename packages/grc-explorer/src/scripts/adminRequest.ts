@@ -1,10 +1,9 @@
 // Request an in-process admin task from the LIVE explorer and tail it.
 //
-// DuckDB is single-writer: while the explorer is running it holds the
-// database file, so the standalone `npm run wipe` / `boinc:fetch` /
-// rebuildWallets scripts can't open it (lock conflict). Use this instead
-// while the explorer is UP — it enqueues the task on Redis and the
-// in-app admin watcher runs it on the explorer's own connection.
+// Long-running maintenance (wipe / boinc:fetch / rebuild) is best run
+// on the live explorer's own connections rather than as a competing
+// standalone process. Use this while the explorer is UP — it enqueues
+// the task on Redis and the in-app admin watcher runs it in-process.
 // (If the explorer is DOWN, run the standalone scripts directly — they
 // open the unlocked file themselves.)
 //
@@ -41,8 +40,13 @@ Tasks:
                          genesis) or partial rewind to N-1.
   boinc-fetch [--force] [--project NAME]
                          Run the BOINC user-stats import now.
-  rebuild-wallets        Rebuild the Redis wallet projection from
+  rebuild-wallets        Rebuild the address_state projection from
                          address_balance_history.
+  rebuild-clusters       Full address-cluster rebuild (repairs stale
+                         over-merges the incremental path can't undo).
+  reindex-meili          Re-emit the fuzzy-search corpora (superblocks,
+                         polls, beacons, messages) from MariaDB into the
+                         Meili queue. Run after a physical DB restore.
   -h, --help             Show this message.`);
 }
 

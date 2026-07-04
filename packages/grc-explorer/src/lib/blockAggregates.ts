@@ -22,10 +22,10 @@ export async function blockUserActivity(
     `
       SELECT
         block_height,
-        CAST(sum(total_out) AS VARCHAR) AS value_moved,
-        CAST(sum(fee) AS VARCHAR)       AS fee_total
+        CAST(sum(total_out) AS CHAR) AS value_moved,
+        CAST(sum(fee) AS CHAR)       AS fee_total
       FROM transactions
-      WHERE block_height = ANY($heights)
+      WHERE block_height IN ($heights)
         AND NOT is_coinbase AND NOT is_coinstake
       GROUP BY block_height
     `,

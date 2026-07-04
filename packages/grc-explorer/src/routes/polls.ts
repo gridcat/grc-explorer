@@ -64,11 +64,11 @@ pollsRouter.get('/', async (req: Request, res: Response) => {
   // see `offset`.
   const whereParams: Record<string, unknown> = {};
   if (filterActive) {
-    conditions.push('start_time <= make_timestamp($now::BIGINT * 1000000) AND end_time >= make_timestamp($now::BIGINT * 1000000)');
+    conditions.push('start_time <= FROM_UNIXTIME($now) AND end_time >= FROM_UNIXTIME($now)');
     whereParams.now = now;
   }
   if (hidden.length > 0) {
-    conditions.push('NOT (poll_id = ANY($hidden))');
+    conditions.push('poll_id NOT IN ($hidden)');
     whereParams.hidden = hidden;
   }
   const whereSql = conditions.length === 0 ? '' : `WHERE ${conditions.join(' AND ')}`;
@@ -78,10 +78,10 @@ pollsRouter.get('/', async (req: Request, res: Response) => {
       `
         SELECT
           poll_id, title, question, url, poll_type, response_type, weight_type,
-          CAST(epoch(start_time) AS BIGINT) AS start_time,
-          CAST(epoch(end_time)   AS BIGINT) AS end_time,
+          UNIX_TIMESTAMP(start_time) AS start_time,
+          UNIX_TIMESTAMP(end_time)   AS end_time,
           claim_tx, block_height, creator_address, magnitude_weight_factor,
-          CAST(av_w_balance AS VARCHAR) AS av_w_balance,
+          CAST(av_w_balance AS CHAR) AS av_w_balance,
           av_w_magnitude, weights_computed_at_height
         FROM polls ${whereSql}
         ORDER BY end_time DESC, start_time DESC
@@ -106,10 +106,10 @@ pollsRouter.get('/', async (req: Request, res: Response) => {
       }>(
         `
           SELECT poll_id, choice_idx,
-                 CAST(sum(weight) AS VARCHAR) AS option_weight,
-                 CAST(count(*) AS UINTEGER)   AS option_votes
+                 CAST(sum(weight) AS CHAR)  AS option_weight,
+                 CAST(count(*) AS UNSIGNED) AS option_votes
           FROM votes
-          WHERE poll_id = ANY($ids)
+          WHERE poll_id IN ($ids)
           GROUP BY poll_id, choice_idx
         `,
         { ids: pollIds },
@@ -118,7 +118,7 @@ pollsRouter.get('/', async (req: Request, res: Response) => {
         `
           SELECT poll_id, idx, label
           FROM poll_options
-          WHERE poll_id = ANY($ids)
+          WHERE poll_id IN ($ids)
         `,
         { ids: pollIds },
       ),
@@ -188,10 +188,10 @@ pollsRouter.get('/:poll_id', async (req: Request, res: Response) => {
     `
       SELECT
         poll_id, title, question, url, poll_type, response_type, weight_type,
-        CAST(epoch(start_time) AS BIGINT) AS start_time,
-        CAST(epoch(end_time)   AS BIGINT) AS end_time,
+        UNIX_TIMESTAMP(start_time) AS start_time,
+        UNIX_TIMESTAMP(end_time)   AS end_time,
         claim_tx, block_height, creator_address, magnitude_weight_factor,
-        CAST(av_w_balance AS VARCHAR) AS av_w_balance,
+        CAST(av_w_balance AS CHAR) AS av_w_balance,
         av_w_magnitude, weights_computed_at_height
       FROM polls WHERE poll_id = $id LIMIT 1
     `,
@@ -217,8 +217,8 @@ pollsRouter.get('/:poll_id', async (req: Request, res: Response) => {
     }>(
       `
         SELECT poll_id, voter_address, voter_cpid, mining_id, choice_idx,
-               CAST(weight AS VARCHAR)         AS weight,
-               CAST(weight_balance AS VARCHAR) AS weight_balance,
+               CAST(weight AS CHAR)         AS weight,
+               CAST(weight_balance AS CHAR) AS weight_balance,
                weight_magnitude, tx_id, block_height
         FROM votes
         WHERE poll_id = $id
@@ -233,7 +233,7 @@ pollsRouter.get('/:poll_id', async (req: Request, res: Response) => {
   const timeByHeight = new Map<number, number>();
   if (heights.length > 0) {
     const blockRows = await query<{ height: number; time: number }>(
-      'SELECT height, CAST(epoch(time) AS BIGINT) AS time FROM blocks WHERE height = ANY($hs)',
+      'SELECT height, UNIX_TIMESTAMP(time) AS time FROM blocks WHERE height IN ($hs)',
       { hs: heights },
     );
     for (const b of blockRows) {

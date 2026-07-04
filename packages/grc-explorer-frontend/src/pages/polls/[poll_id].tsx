@@ -9,6 +9,7 @@ import Link from 'next/link';
 import {
   useEffect, useMemo, useRef, useState,
 } from 'react';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import { api, notFoundOrRethrow } from '../../lib/api';
 import { formatTime, nowSec } from '../../lib/format';
@@ -240,6 +241,14 @@ export default function PollDetail({
   const avw = parseFloat(avwCombined);
   const castPctOfAvw = avw > 0 ? (cast / avw) * 100 : 0;
 
+  // The aggregator computes weights live for active polls too, so the
+  // note should only appear while weights are genuinely missing: votes
+  // exist but none have been weighted yet (the ≤15-min gap before the
+  // aggregator's next pass) and the poll hasn't been finalised. Once
+  // weights land — for an active or an ended poll — percentages render
+  // and the note clears.
+  const weightsPending = voteTotal > 0 && cast === 0 && !weightsComputed;
+
   const openClaim = (txId: string) => {
     setClaimOpen(true);
     setClaimText('');
@@ -267,8 +276,19 @@ export default function PollDetail({
     }).finally(() => setClaimLoading(false));
   };
 
+  // Poll titles are user-supplied and unbounded; clamp before baking them
+  // into the <title>/description so a pathological poll can't blow out the
+  // SERP snippet (and the tab title).
+  const seoTitle = poll.title.length > 70 ? `${poll.title.slice(0, 69)}…` : poll.title;
+
   return (
-    <Layout>
+    <>
+      <Seo
+        title={`Poll: ${seoTitle} · Gridcoin Block Explorer`}
+        description={`Voting results, weight and options for the Gridcoin poll “${seoTitle}”.`}
+        path={`/polls/${poll.pollId}`}
+      />
+      <Layout>
       <Stack spacing={2}>
         <Crumbs items={[
           { label: 'Polls', href: '/polls' },
@@ -381,9 +401,9 @@ export default function PollDetail({
         <Card variant="outlined">
           <CardContent>
             <Typography variant="h6" sx={{ mb: 2 }}>Voting Distribution</Typography>
-            {!weightsComputed && (
+            {weightsPending && (
               <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontStyle: 'italic' }}>
-                Vote weights are still being computed by the aggregator. Counts are accurate; percentages will fill in shortly after the poll ends.
+                Vote weights are still being computed by the aggregator (it runs every ~15 min). Counts are accurate; weighted percentages will fill in shortly.
               </Typography>
             )}
             <Stack direction="row" spacing={3} useFlexGap sx={{ flexWrap: 'wrap', mb: 2 }}>
@@ -623,7 +643,8 @@ export default function PollDetail({
           )}
         </DialogContent>
       </Dialog>
-    </Layout>
+      </Layout>
+    </>
   );
 }
 

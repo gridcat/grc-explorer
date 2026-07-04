@@ -48,7 +48,7 @@ superblocksRouter.get('/timeline', async (_req: Request, res: Response) => {
       )
       SELECT height, project_count, cpid_count, total_magnitude
       FROM numbered, agg
-      WHERE (rn - 1) % greatest(agg.total // $cap, 1) = 0 OR height = max_h
+      WHERE (rn - 1) % GREATEST(agg.total DIV $cap, 1) = 0 OR height = max_h
       ORDER BY height ASC
     `,
     { cap: TIMELINE_MAX_POINTS },
@@ -110,7 +110,7 @@ superblocksRouter.get('/:height', async (req: Request, res: Response) => {
   const row = sbRows[0];
 
   const blockRows = await query<{ time: number }>(
-    'SELECT CAST(epoch(time) AS BIGINT) AS time FROM blocks WHERE height = $h LIMIT 1',
+    'SELECT UNIX_TIMESTAMP(time) AS time FROM blocks WHERE height = $h LIMIT 1',
     { h: height },
   );
   const blockTime = blockRows[0]?.time ?? null;
@@ -143,8 +143,8 @@ superblocksRouter.get('/:height', async (req: Request, res: Response) => {
       `
         SELECT count(*) AS c FROM beacons
         WHERE block_height <= $h
-          AND timestamp <= make_timestamp($eval::BIGINT * 1000000)
-          AND expiration > make_timestamp($eval::BIGINT * 1000000)
+          AND timestamp <= FROM_UNIXTIME($eval)
+          AND expiration > FROM_UNIXTIME($eval)
           AND status != 'revoked'
           AND (superseded_at_height IS NULL OR superseded_at_height > $h)
       `,

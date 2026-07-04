@@ -105,26 +105,29 @@ export async function buildPrevOutputsLookupMulti(
 
   if (refs.length > 0) {
     // Only query for refs we haven't already covered from the in-batch
-    // index. Match the exact `(tx_id, vout_n)` pairs via a positional
-    // zip of two parallel arrays unnested into a join table — the
-    // DuckDB equivalent of CH's `(tx_id, vout_n) IN Array(Tuple(...))`.
-    // No dedup needed: (tx_id, vout_n) is the PRIMARY KEY (one row per
-    // outpoint via upsert). DuckDB binds params in-process, so there's
-    // no URL-length limit and the whole ref set goes in one query.
+    // index. MariaDB has no unnest to zip two parallel arrays into a
+    // join table, so we fetch every output for the referenced txids in
+    // one `tx_id IN (...)` query, then keep only the exact
+    // `(tx_id, vout_n)` outpoints we asked for. (tx_id, vout_n) is the
+    // PRIMARY KEY (one row per outpoint via upsert), so over-fetching is
+    // just the other vouts of the same tx — harmless, cache is keyed by
+    // the exact pair and only consumed by exact-key lookups.
     const dbRefs = refs.filter((r) => !cache.has(`${r.prev_tx}:${r.prev_vout}`));
     if (dbRefs.length > 0) {
+      const wanted = new Set(dbRefs.map((r) => `${r.prev_tx}:${r.prev_vout}`));
+      const txIds = Array.from(new Set(dbRefs.map((r) => r.prev_tx)));
       type Row = { tx_id: string; vout_n: number; address: string; value: string };
       const rows = await query<Row>(
         `
-          SELECT o.tx_id, o.vout_n, o.address, CAST(o.value AS VARCHAR) AS value
-          FROM tx_outputs AS o
-          JOIN (SELECT unnest($txs) AS tx_id, unnest($vouts) AS vout_n) AS p
-            ON o.tx_id = p.tx_id AND o.vout_n = p.vout_n
+          SELECT tx_id, vout_n, address, CAST(value AS CHAR) AS value
+          FROM tx_outputs
+          WHERE tx_id IN ($txs)
         `,
-        { txs: dbRefs.map((r) => r.prev_tx), vouts: dbRefs.map((r) => r.prev_vout) },
+        { txs: txIds },
       );
       for (const r of rows) {
         const key = `${r.tx_id}:${r.vout_n}`;
+        if (!wanted.has(key)) continue;
         // Empty-string sentinel from the writer means "no address" —
         // surface it as null to keep the parser's existing semantics.
         cache.set(key, { address: r.address === '' ? null : r.address, value: BigInt(r.value) });

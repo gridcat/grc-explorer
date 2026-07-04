@@ -2,9 +2,9 @@ import {
   Box, Card, CardContent, Chip, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography,
 } from '@mui/material';
 import type { GetServerSideProps } from 'next';
-import Head from 'next/head';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import { Crumbs } from '../../components/Crumbs';
 import { HashTrim } from '../../components/HashTrim';
@@ -70,14 +70,11 @@ export default function MandatorySidestakesPage({
 
   return (
     <Layout>
-      <Head>
-        <title>Mandatory sidestakes — Gridcoin Explorer</title>
-        <meta
-          name="description"
-          content="Protocol-driven mandatory sidestakes on the Gridcoin chain — recipients, allocations, lifetime payouts. Activated at block v13."
-        />
-        <link rel="canonical" href="/mandatory-sidestakes" />
-      </Head>
+      <Seo
+        title="Mandatory sidestakes — Gridcoin Explorer"
+        description="Protocol-driven mandatory sidestakes on the Gridcoin chain — recipients, allocations, lifetime payouts. Activated at block v13."
+        path="/mandatory-sidestakes"
+      />
 
       <Stack spacing={3}>
         <Crumbs items={[{ label: 'Mandatory sidestakes' }]} />

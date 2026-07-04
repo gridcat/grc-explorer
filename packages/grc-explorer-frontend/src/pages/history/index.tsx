@@ -3,8 +3,8 @@ import {
 } from '@mui/material';
 import { alpha, useTheme, type Theme } from '@mui/material/styles';
 import type { GetServerSideProps } from 'next';
-import Head from 'next/head';
 import Link from 'next/link';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import { Crumbs } from '../../components/Crumbs';
 import { formatGrcCompact, formatNumber } from '../../lib/format';
@@ -38,18 +38,15 @@ export default function HistoryLanding({ years }: HistoryProps) {
 
   return (
     <Layout>
-      <Head>
-        <title>Gridcoin chain history — every block, every year</title>
-        <meta
-          name="description"
-          content={
-            yearsCovered > 0
-              ? `${yearsCovered} years of Gridcoin chain history (${oldest}–${newest}): ${formatNumber(totalBlocks)} blocks, ${formatNumber(totalTxs)} transactions, ${formatNumber(totalSuperblocks)} superblocks. Browse by year, month, or day.`
-              : 'Browse the full history of the Gridcoin chain — every block since genesis, organised by year and month, with stats and superblock landmarks.'
-          }
-        />
-        <link rel="canonical" href="/history" />
-      </Head>
+      <Seo
+        title="Gridcoin chain history — every block, every year"
+        description={
+          yearsCovered > 0
+            ? `${yearsCovered} years of Gridcoin chain history (${oldest}–${newest}): ${formatNumber(totalBlocks)} blocks, ${formatNumber(totalTxs)} transactions, ${formatNumber(totalSuperblocks)} superblocks. Browse by year, month, or day.`
+            : 'Browse the full history of the Gridcoin chain — every block since genesis, organised by year and month, with stats and superblock landmarks.'
+        }
+        path="/history"
+      />
 
       <Stack spacing={4}>
         <Crumbs items={[{ label: 'History' }]} />

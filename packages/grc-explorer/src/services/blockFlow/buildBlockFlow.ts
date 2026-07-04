@@ -87,7 +87,7 @@ async function buildContractMap(height: number): Promise<Map<string, FlowContrac
     query<{ tx_id: string }>('SELECT tx_id FROM tx_messages WHERE block_height = $h', { h: height }),
     query<{ tx_id: string; project_name: string; action: string }>('SELECT tx_id, project_name, action FROM project_contracts WHERE block_height = $h', { h: height }),
     query<{ tx_id: string }>('SELECT tx_id FROM mrc_requests WHERE block_height = $h', { h: height }),
-    query<{ tx_id: string; key: string }>('SELECT tx_id, key FROM protocol_entries WHERE block_height = $h', { h: height }),
+    query<{ tx_id: string; key: string }>('SELECT tx_id, `key` FROM protocol_entries WHERE block_height = $h', { h: height }),
   ]);
   for (const b of beacons) add(b.tx_id, 'beacon', b.cpid ? `Beacon · CPID ${b.cpid}` : 'Beacon advertisement');
   for (const v of votes) add(v.tx_id, 'vote', 'Poll vote');
@@ -103,13 +103,13 @@ async function buildContractMap(height: number): Promise<Map<string, FlowContrac
 // claimant's known beacon addresses so the categorizer can match the
 // payout vout on rows indexed before the per-MRC fee column existed.
 async function fetchFlowMrcs(height: number): Promise<FlowMrc[]> {
-  const feeCol = (await hasColumns('claim_mrcs', ['fee'])) ? 'CAST(fee AS VARCHAR)' : 'NULL';
+  const feeCol = (await hasColumns('claim_mrcs', ['fee'])) ? 'CAST(fee AS CHAR)' : 'NULL';
   const rows = await query<{
     cpid: string | null; research_subsidy: string | null; magnitude: number | null; fee: string | null;
   }>(
-    `SELECT cpid, CAST(research_subsidy AS VARCHAR) AS research_subsidy, magnitude, ${feeCol} AS fee
+    `SELECT cpid, CAST(research_subsidy AS CHAR) AS research_subsidy, magnitude, ${feeCol} AS fee
      FROM claim_mrcs WHERE block_height = $h
-     ORDER BY CAST(research_subsidy AS UBIGINT) DESC`,
+     ORDER BY CAST(research_subsidy AS UNSIGNED) DESC`,
     { h: height },
   );
   if (rows.length === 0) return [];
@@ -117,7 +117,7 @@ async function fetchFlowMrcs(height: number): Promise<FlowMrc[]> {
   const beaconsByCpid = new Map<string, string[]>();
   if (cpids.length > 0) {
     const beaconRows = await query<{ address: string; cpid: string }>(
-      'SELECT DISTINCT address, cpid FROM beacons WHERE cpid = ANY($c)',
+      'SELECT DISTINCT address, cpid FROM beacons WHERE cpid IN ($c)',
       { c: cpids },
     );
     for (const b of beaconRows) {
@@ -206,11 +206,11 @@ export async function buildBlockFlow(
 
   const [inRows, outRows, mandRows, contractByTx, flowMrcs] = await Promise.all([
     query<{ tx_id: string; address: string | null; value: string | null }>(
-      'SELECT tx_id, address, CAST(value AS VARCHAR) AS value FROM tx_inputs WHERE block_height = $h ORDER BY vin_n ASC',
+      'SELECT tx_id, address, CAST(value AS CHAR) AS value FROM tx_inputs WHERE block_height = $h ORDER BY vin_n ASC',
       { h: height },
     ),
     query<{ tx_id: string; vout_n: number; value: string; address: string; script_type: string }>(
-      'SELECT tx_id, vout_n, CAST(value AS VARCHAR) AS value, address, script_type FROM tx_outputs WHERE block_height = $h ORDER BY vout_n ASC',
+      'SELECT tx_id, vout_n, CAST(value AS CHAR) AS value, address, script_type FROM tx_outputs WHERE block_height = $h ORDER BY vout_n ASC',
       { h: height },
     ),
     // MSS registry state as of this height: an address is "mandatory" if
@@ -218,11 +218,12 @@ export async function buildBlockFlow(
     // when an MSS contract happens to land in this very block.
     query<{ address: string }>(
       `SELECT address FROM (
-         SELECT address, arg_max(status, block_height) AS status
+         SELECT address, status,
+                ROW_NUMBER() OVER (PARTITION BY address ORDER BY block_height DESC) AS rn
          FROM mandatory_sidestakes
          WHERE block_height <= $h
-         GROUP BY address
-       ) WHERE status = 'MANDATORY'`,
+       ) AS t
+       WHERE rn = 1 AND status = 'MANDATORY'`,
       { h: height },
     ),
     buildContractMap(height),
@@ -271,7 +272,7 @@ export async function buildBlockFlow(
   const addrCpid = new Map<string, string>();
   if (addresses.length > 0) {
     const beaconRows = await query<{ address: string; cpid: string }>(
-      'SELECT DISTINCT address, cpid FROM beacons WHERE address = ANY($a)',
+      'SELECT DISTINCT address, cpid FROM beacons WHERE address IN ($a)',
       { a: addresses },
     );
     for (const b of beaconRows) {

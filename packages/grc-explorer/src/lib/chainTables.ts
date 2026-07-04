@@ -14,6 +14,7 @@ export const CHAIN_HEIGHT_TABLES: ReadonlyArray<{ table: string; column: string 
   { table: 'tx_outputs', column: 'block_height' },
   { table: 'tx_inputs', column: 'block_height' },
   { table: 'address_balance_history', column: 'valid_from_height' },
+  { table: 'address_txs', column: 'block_height' },
   { table: 'tx_messages', column: 'block_height' },
   { table: 'claims', column: 'block_height' },
   { table: 'claim_mrcs', column: 'block_height' },

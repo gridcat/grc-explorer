@@ -6,7 +6,9 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import { useTheme } from '@mui/material/styles';
 import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
+import { useRouter } from 'next/router';
 import { useMemo } from 'react';
+import { Seo } from '@/components/Seo';
 import {
   ChartAxes, ChartFrame, ChartFrameProvider, linearScale, niceTicks,
 } from '../../components/charts/SvgChart';
@@ -72,11 +74,21 @@ interface ProjectPageProps {
 }
 
 export default function ProjectPage({ attrs }: ProjectPageProps) {
+  const router = useRouter();
+  const routeName = typeof router.query.name === 'string' ? router.query.name : '';
   if (!attrs) {
     return (
-      <Layout>
-        <Typography>Project not found.</Typography>
-      </Layout>
+      <>
+        <Seo
+          title="Project not found · Gridcoin Block Explorer"
+          description="This BOINC project has no indexed superblock history on Gridcoin."
+          path={`/projects/${routeName}`}
+          noindex
+        />
+        <Layout>
+          <Typography>Project not found.</Typography>
+        </Layout>
+      </>
     );
   }
 
@@ -87,7 +99,13 @@ export default function ProjectPage({ attrs }: ProjectPageProps) {
   const tone = statusTone(attrs.status);
 
   return (
-    <Layout>
+    <>
+      <Seo
+        title={`${attrs.displayName} · Gridcoin Projects · Gridcoin Block Explorer`}
+        description={`RAC, magnitude and superblock history for the ${attrs.name} BOINC project on Gridcoin.`}
+        path={`/projects/${attrs.name}`}
+      />
+      <Layout>
       <Stack spacing={2}>
         <Crumbs
           items={[
@@ -249,7 +267,8 @@ export default function ProjectPage({ attrs }: ProjectPageProps) {
           </Card>
         )}
       </Stack>
-    </Layout>
+      </Layout>
+    </>
   );
 }
 

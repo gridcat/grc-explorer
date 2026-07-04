@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { Layout } from '../layouts/Layout';
 import { api } from '../lib/api';
 import { formatGrcShort, formatNumber } from '../lib/format';
+import { Seo } from '@/components/Seo';
 import { Crumbs } from '../components/Crumbs';
 import { HashTrim } from '../components/HashTrim';
 
@@ -30,6 +31,12 @@ export default function WalletsPage({ initialRows, initialTotal }: WalletsPagePr
   const total = initialTotal;
 
   return (
+    <>
+      <Seo
+        title="Rich list · Gridcoin Block Explorer"
+        description="Top Gridcoin addresses ranked by balance, with share of money supply."
+        path="/wallets"
+      />
     <Layout>
       <Stack spacing={2}>
         <Crumbs items={[{ label: 'Wallets' }]} />
@@ -98,6 +105,7 @@ export default function WalletsPage({ initialRows, initialTotal }: WalletsPagePr
         </Paper>
       </Stack>
     </Layout>
+    </>
   );
 }
 

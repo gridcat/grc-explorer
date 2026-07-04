@@ -8,7 +8,7 @@ import { getBlockTimes, getTipAnchor } from '../lib/indexerTip';
 import { getPagination } from '../lib/pagination';
 import {
   getRichList, getWallet, getWalletCount, WalletState,
-} from '../lib/redis';
+} from '../lib/addressState';
 import { param } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
 import { getMoneySupplyRaw, sharePct } from '../lib/supply';
@@ -107,7 +107,7 @@ async function fetchLinkedWallets(address: string): Promise<LinkedCpidContext> {
         SELECT cpid FROM mrc_requests
         WHERE pay_to_address = $addr
           AND cpid != '' AND block_height IS NOT NULL
-      )
+      ) AS u
     `,
     { addr: address },
   );
@@ -123,23 +123,23 @@ async function fetchLinkedWallets(address: string): Promise<LinkedCpidContext> {
       SELECT
         cpid,
         address,
-        CAST(sum(c) FILTER (WHERE source = 'beacon') AS UINTEGER) AS beacon_count,
-        CAST(sum(c) FILTER (WHERE source = 'staked') AS UINTEGER) AS staked_blocks,
-        CAST(sum(c) FILTER (WHERE source = 'mrc')    AS UINTEGER) AS mrc_payouts,
-        CAST(min(first_h) AS UINTEGER)                AS first_height,
-        CAST(max(last_h) AS UINTEGER)                 AS last_height
+        CAST(SUM(CASE WHEN source = 'beacon' THEN c ELSE 0 END) AS UNSIGNED) AS beacon_count,
+        CAST(SUM(CASE WHEN source = 'staked' THEN c ELSE 0 END) AS UNSIGNED) AS staked_blocks,
+        CAST(SUM(CASE WHEN source = 'mrc'    THEN c ELSE 0 END) AS UNSIGNED) AS mrc_payouts,
+        CAST(min(first_h) AS UNSIGNED)                AS first_height,
+        CAST(max(last_h) AS UNSIGNED)                 AS last_height
       FROM (
         SELECT cpid, address, count(*) AS c, 'beacon' AS source,
                min(block_height) AS first_h, max(block_height) AS last_h
         FROM beacons
-        WHERE cpid = ANY($cpids)
+        WHERE cpid IN ($cpids)
           AND address != '' AND address != $addr
         GROUP BY cpid, address
         UNION ALL
         SELECT staker_cpid AS cpid, miner_address AS address, count(*) AS c, 'staked' AS source,
                min(height) AS first_h, max(height) AS last_h
         FROM blocks
-        WHERE staker_cpid = ANY($cpids)
+        WHERE staker_cpid IN ($cpids)
           AND miner_address IS NOT NULL AND miner_address != ''
           AND miner_address != $addr
         GROUP BY staker_cpid, miner_address
@@ -147,12 +147,12 @@ async function fetchLinkedWallets(address: string): Promise<LinkedCpidContext> {
         SELECT cpid, pay_to_address AS address, count(*) AS c, 'mrc' AS source,
                min(block_height) AS first_h, max(block_height) AS last_h
         FROM mrc_requests
-        WHERE cpid = ANY($cpids)
+        WHERE cpid IN ($cpids)
           AND pay_to_address IS NOT NULL AND pay_to_address != ''
           AND pay_to_address != $addr
           AND block_height IS NOT NULL
         GROUP BY cpid, pay_to_address
-      )
+      ) AS s
       GROUP BY cpid, address
       ORDER BY beacon_count DESC, staked_blocks DESC, mrc_payouts DESC, last_height DESC
       LIMIT 100
@@ -174,7 +174,7 @@ async function fetchLinkedWallets(address: string): Promise<LinkedCpidContext> {
 }
 
 // Presenter expects the legacy snake_case shape produced by the old
-// MySQL `addresses` row. Map our Redis WalletState onto that shape.
+// MySQL `addresses` row. Map our WalletState onto that shape.
 // `firstSeenTime` / `lastSeenTime` are looked up from `blocks` by
 // the detail handler — pass null when not relevant (rich list, stubs).
 function presentWallet(
@@ -215,8 +215,8 @@ async function fetchSeenTimes(
   };
 }
 
-// Rich list. Backed entirely by Redis: ZREVRANGE wallets:by_balance
-// for the page slice + N×HGETALL for the row details. Sub-millisecond.
+// Rich list. Backed by address_state: a backward scan of the balance
+// index for the page slice + the page's row lookups.
 addressesRouter.get('/', async (req: Request, res: Response) => {
   const { offset, limit } = getPagination(req);
   const [wallets, total] = await Promise.all([
@@ -233,11 +233,17 @@ addressesRouter.get('/', async (req: Request, res: Response) => {
   if (addrs.length > 0) {
     try {
       const r = await query<{ address: string; latest_cpid: string }>(
+        // arg_max(cpid, block_height) per address → latest beacon's cpid,
+        // via ROW_NUMBER picking the highest-block_height row per address.
         `
-          SELECT address, arg_max(cpid, block_height) AS latest_cpid
-          FROM beacons
-          WHERE address = ANY($addrs) AND cpid != ''
-          GROUP BY address
+          SELECT address, cpid AS latest_cpid
+          FROM (
+            SELECT address, cpid,
+                   ROW_NUMBER() OVER (PARTITION BY address ORDER BY block_height DESC) AS rn
+            FROM beacons
+            WHERE address IN ($addrs) AND cpid != ''
+          ) AS r
+          WHERE rn = 1
         `,
         { addrs },
       );
@@ -276,9 +282,9 @@ addressesRouter.get('/:address', async (req: Request, res: Response) => {
     }>(
       `
         SELECT
-          CAST(sum(delta) AS VARCHAR)    AS bal,
-          CAST(sum(received) AS VARCHAR) AS total_received,
-          CAST(sum(sent) AS VARCHAR)     AS total_sent,
+          CAST(sum(delta) AS CHAR)    AS bal,
+          CAST(sum(received) AS CHAR) AS total_received,
+          CAST(sum(sent) AS CHAR)     AS total_sent,
           sum(tx_count_delta)            AS tx_count,
           max(valid_from_height)         AS last_seen
         FROM address_balance_history
@@ -308,7 +314,7 @@ addressesRouter.get('/:address', async (req: Request, res: Response) => {
     return;
   }
 
-  // Live path: HGETALL the wallet projection.
+  // Live path: point lookup on the address_state projection.
   const wallet = await getWallet(address);
   if (!wallet) {
     // Beacon-only addresses are real but may never have transacted —
@@ -361,7 +367,7 @@ addressesRouter.get('/:address', async (req: Request, res: Response) => {
   const [pendingRows, linkedContext, seenTimes, supplyRaw] = await Promise.all([
     query<{ pending: string | null }>(
       `
-        SELECT CAST(sum(o.value) AS VARCHAR) AS pending
+        SELECT CAST(sum(o.value) AS CHAR) AS pending
         FROM tx_outputs AS o
         WHERE o.address = $addr
           AND o.tx_id IN (
@@ -400,46 +406,39 @@ addressesRouter.get('/:address/transactions', async (req: Request, res: Response
   const cap = atHeight !== null && at !== undefined
     ? 'AND block_height <= $h'
     : '';
-  // Paginate movements first, then JOIN transactions for time on the
-  // page-sized result — pushes LIMIT/OFFSET past the union+group and
-  // avoids a follow-up `tx_id IN (...)` round trip just to fetch times.
-  // tx_outputs/tx_inputs are keyed by their PKs (one row per logical
-  // (tx_id, vout_n/vin_n) via upsert), so no dedup is needed; the time
-  // join is bounded to the page's tx_ids (the `m` CTE) so it stays a
-  // point lookup against transactions (PK tx_id) rather than a full scan.
-  const sql = `
-    WITH m AS (
-      SELECT tx_id, max(block_height) AS height, sum(delta) AS delta_sum
-      FROM (
-        SELECT tx_id, block_height, CAST(value AS BIGINT) AS delta
-        FROM tx_outputs
-        WHERE address = $addr ${cap}
-        UNION ALL
-        SELECT tx_id, block_height, -CAST(coalesce(value, 0) AS BIGINT) AS delta
-        FROM tx_inputs
-        WHERE address = $addr ${cap}
-      ) AS movements
-      GROUP BY tx_id
-      ORDER BY height DESC, tx_id
-      LIMIT ${Number(limit)} OFFSET ${Number(offset)}
-    )
-    SELECT m.tx_id AS tx_id, m.height AS height, CAST(epoch(t.time) AS BIGINT) AS ts, m.delta_sum AS delta_sum
-    FROM m
-    LEFT JOIN (
-      SELECT tx_id, time
-      FROM transactions
-      WHERE tx_id IN (SELECT tx_id FROM m)
-    ) AS t USING (tx_id)
-    ORDER BY m.height DESC, m.tx_id
-  `;
+  // Page straight off the address_txs projection (one row per
+  // (address, tx) with the net delta, maintained at write time) — a
+  // clustered-PK range read of `limit` entries instead of the old
+  // UNION + GROUP BY over the address's entire tx_outputs/tx_inputs
+  // history, which cost O(history) per page view (~0.6 s warm for a
+  // 50k-movement staker). Times come from a second bounded PK lookup
+  // on transactions. Tie-break within a block is tx_id DESC so the
+  // ordering is exactly the PK read backwards.
   const params: Record<string, unknown> = { addr: address };
   if (atHeight !== null && at !== undefined) params.h = atHeight;
   const rows = await query<{
-    tx_id: string; height: number; ts: number; delta_sum: string;
-  }>(sql, params);
+    tx_id: string; height: number; delta_sum: string;
+  }>(
+    `
+      SELECT tx_id, block_height AS height, CAST(delta AS CHAR) AS delta_sum
+      FROM address_txs
+      WHERE address = $addr ${cap}
+      ORDER BY block_height DESC, tx_id DESC
+      LIMIT ${Number(limit)} OFFSET ${Number(offset)}
+    `,
+    params,
+  );
 
   const timesByTx = new Map<string, number>();
-  for (const r of rows) timesByTx.set(r.tx_id, r.ts);
+  if (rows.length > 0) {
+    const timeRows = await query<{ tx_id: string; ts: number | string | null }>(
+      'SELECT tx_id, UNIX_TIMESTAMP(time) AS ts FROM transactions WHERE tx_id IN ($ids)',
+      { ids: rows.map((r) => r.tx_id) },
+    );
+    for (const t of timeRows) {
+      if (t.ts !== null) timesByTx.set(t.tx_id, Number(t.ts));
+    }
+  }
 
   const body = {
     data: rows.map((r) => ({
@@ -466,7 +465,7 @@ addressesRouter.get('/:address/utxos', async (req: Request, res: Response) => {
   // The spent lookup is bounded to the tx_inputs rows whose prev_tx is
   // one of THIS address's output txs (`prev_tx IN (SELECT tx_id ...)`),
   // served by idx_tx_inputs_prevout (prev_tx, prev_vout); the address
-  // CTE is an indexed range scan on tx_outputs (idx_tx_outputs_address).
+  // CTE is a covering range scan on tx_outputs (idx_tx_outputs_addr_val).
   //
   // Time-machine mode: outputs created at-or-before H (applied in the
   // CTE) whose spending input doesn't exist yet OR landed after H (i.e.
@@ -491,17 +490,21 @@ addressesRouter.get('/:address/utxos', async (req: Request, res: Response) => {
         FROM tx_outputs
         WHERE address = $addr ${outHeightFilter}
       )
-      SELECT o.tx_id AS tx_id, o.vout_n AS vout_n, CAST(o.value AS VARCHAR) AS value,
+      SELECT o.tx_id AS tx_id, o.vout_n AS vout_n, CAST(o.value AS CHAR) AS value,
              o.address AS address, o.script_type AS script_type, o.script_hex AS script_hex
       FROM addr_outs AS o
       LEFT JOIN (
-        -- DISTINCT ON collapses the rare phantom multi-spend (Halford-era
-        -- coinstakes re-claiming one UTXO) to one spend row per outpoint,
-        -- replicating CH's ANY LEFT JOIN + LIMIT 1 BY (prev_tx, prev_vout).
-        SELECT DISTINCT ON (prev_tx, prev_vout) prev_tx, prev_vout, tx_id, block_height
-        FROM tx_inputs
-        WHERE prev_tx IN (SELECT tx_id FROM addr_outs)
-        ORDER BY prev_tx, prev_vout, block_height
+        -- ROW_NUMBER replaces DuckDB DISTINCT ON: collapse the rare phantom
+        -- multi-spend (Halford-era coinstakes re-claiming one UTXO) to one
+        -- spend row per outpoint (lowest block_height, matching the original
+        -- ORDER BY prev_tx, prev_vout, block_height first-row pick).
+        SELECT prev_tx, prev_vout, tx_id, block_height FROM (
+          SELECT prev_tx, prev_vout, tx_id, block_height,
+                 ROW_NUMBER() OVER (PARTITION BY prev_tx, prev_vout ORDER BY block_height) AS rn
+          FROM tx_inputs
+          WHERE prev_tx IN (SELECT tx_id FROM addr_outs)
+        ) AS ranked
+        WHERE rn = 1
       ) AS s ON s.prev_tx = o.tx_id AND s.prev_vout = o.vout_n
       WHERE ${spentWhere}
       ORDER BY o.tx_id, o.vout_n
@@ -546,8 +549,8 @@ addressesRouter.get('/:address/balance-history', async (req: Request, res: Respo
     `
       SELECT
         valid_from_height AS height,
-        CAST(epoch(valid_from_time) AS BIGINT) AS ts,
-        CAST(running_balance AS VARCHAR) AS balance
+        UNIX_TIMESTAMP(valid_from_time) AS ts,
+        CAST(running_balance AS CHAR) AS balance
       FROM (
         SELECT
           valid_from_height,
@@ -558,9 +561,9 @@ addressesRouter.get('/:address/balance-history', async (req: Request, res: Respo
           ) AS running_balance
         FROM address_balance_history
         WHERE address = $addr
-      )
-      WHERE valid_from_time >= make_timestamp($from::BIGINT * 1000000)
-        AND valid_from_time <= make_timestamp($to::BIGINT * 1000000)
+      ) AS bh
+      WHERE valid_from_time >= FROM_UNIXTIME($from)
+        AND valid_from_time <= FROM_UNIXTIME($to)
       ORDER BY valid_from_height ASC
     `,
     { addr: address, from: fromTs, to: toTs },

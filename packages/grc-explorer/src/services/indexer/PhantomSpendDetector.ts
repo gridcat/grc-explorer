@@ -1,18 +1,22 @@
 import { chunked } from '../../lib/chunked';
-import { redis } from '../../lib/redis';
+import { query } from '../../lib/db';
 import { ParsedBlock } from './ContractParser';
 
-// `<prev_tx>:<prev_vout>` membership set tracking every UTXO that has
-// been spent. SADD returns 1 the first time a member is added, 0 if
-// it was already present — the natural "first-spender-wins" primitive
-// we need to detect Halford-era kernel-reuse coinstakes.
+// Phantom-spend (Halford-era kernel-reuse coinstake) detection,
+// backed by tx_inputs itself instead of the old Redis `utxo:spent`
+// membership set. That set had grown to ~11M members (~1.2 GB of
+// Redis) mirroring data the DB already holds: an outpoint is spent
+// iff a non-phantom tx_inputs row references it, and
+// idx_tx_inputs_prevout makes that a point lookup. Dropping the
+// mirror also removes its whole maintenance surface — reorg SREM
+// release, partial-wipe reseed, cold-start rebuild — because deleting
+// the abandoned tx_inputs rows IS the release.
 //
-// Persisted in the prefixed Redis namespace so a full wipe (which
-// SCAN-deletes everything under `<prefix>:*`) clears it alongside CH.
-// A partial-height wipe should rebuild this set from the surviving
-// tx_inputs, otherwise the next forward replay would mark every
-// already-spent UTXO as a phantom. See wipeExplorer.ts.
-const SPENT_UTXO_KEY = 'utxo:spent';
+// First-spender-wins ordering: earlier blocks are already in the DB
+// when a batch is checked (BlockWriter applies batches in ascending
+// height order and markPhantomSpends runs before the batch's own
+// inserts), and within the batch we walk inputs in chain order with a
+// local first-claim set.
 
 /**
  * Identify phantom spends across a batch and cancel their debits in
@@ -21,9 +25,7 @@ const SPENT_UTXO_KEY = 'utxo:spent';
  * Must be called with parsedList in strict ascending block-height
  * order — the first vin (in chain order: block, then tx index, then
  * vin_n) to reference a UTXO is the canonical spender; every later
- * reference is a phantom. The pipelined Redis SADD preserves this
- * ordering across batches and indexer restarts because SADD is
- * deterministic on per-key existence.
+ * reference is a phantom.
  *
  * Side effects on the input:
  *  - `txInput.isPhantomSpend = true` for every re-claim.
@@ -44,6 +46,8 @@ export async function markPhantomSpends(parsedList: ParsedBlock[]): Promise<void
     blockIdx: number;
     inputIdx: number;
     key: string;
+    txId: string;
+    vinN: number;
     address: string | null;
     value: bigint;
   };
@@ -58,6 +62,8 @@ export async function markPhantomSpends(parsedList: ParsedBlock[]): Promise<void
         blockIdx: bi,
         inputIdx: ii,
         key: `${inp.prevTx}:${inp.prevVout}`,
+        txId: inp.txId,
+        vinN: inp.vinN,
         address: inp.address,
         value: inp.value ?? 0n,
       });
@@ -65,22 +71,43 @@ export async function markPhantomSpends(parsedList: ParsedBlock[]): Promise<void
   }
   if (items.length === 0) return;
 
-  const pipe = redis.pipeline();
-  for (const it of items) pipe.sadd(SPENT_UTXO_KEY, it.key);
-  const results = await runPipeline(pipe);
-  if (!results) return;
+  // One indexed lookup for every referenced outpoint's existing
+  // canonical spender. Keyed by prev_tx (idx_tx_inputs_prevout leading
+  // column) — a prev_tx has at most a handful of spent outputs, so the
+  // result set stays proportional to the batch. Self-rows (same
+  // (tx_id, vin_n) as the input being checked) are the crash-replay
+  // case — the row this very input wrote before the cursor advanced —
+  // and must not phantom their own re-apply.
+  const claimedBy = new Map<string, { txId: string; vinN: number }>();
+  const prevTxs = Array.from(new Set(items.map((it) => it.key.slice(0, it.key.lastIndexOf(':')))));
+  for (const slice of chunked(prevTxs, 5_000)) {
+    // eslint-disable-next-line no-await-in-loop
+    const rows = await query<{
+      prev_tx: string; prev_vout: number; tx_id: string; vin_n: number;
+    }>(
+      `
+        SELECT prev_tx, prev_vout, tx_id, vin_n
+        FROM tx_inputs
+        WHERE prev_tx IN ($txs) AND is_phantom_spend = false
+      `,
+      { txs: [...slice] },
+    );
+    for (const r of rows) {
+      claimedBy.set(`${r.prev_tx}:${r.prev_vout}`, { txId: r.tx_id, vinN: Number(r.vin_n) });
+    }
+  }
 
-  for (let i = 0; i < items.length; i += 1) {
-    const tuple = results[i];
-    if (!tuple) continue;
-    const [err, val] = tuple;
-    if (err) continue;
-    // SADD returns the number of newly added members; 1 = first-spender,
-    // 0 = phantom re-claim.
-    const wasAdded = Number(val) === 1;
-    if (wasAdded) continue;
+  const claimedInBatch = new Set<string>();
+  for (const it of items) {
+    const existing = claimedBy.get(it.key);
+    const claimedByOther = existing !== undefined
+      && !(existing.txId === it.txId && existing.vinN === it.vinN);
+    const isPhantom = claimedByOther || claimedInBatch.has(it.key);
+    if (!isPhantom) {
+      claimedInBatch.add(it.key);
+      continue;
+    }
 
-    const it = items[i];
     parsedList[it.blockIdx].txInputs[it.inputIdx].isPhantomSpend = true;
 
     // Cancel the debit that ContractParser already booked into
@@ -96,35 +123,3 @@ export async function markPhantomSpends(parsedList: ParsedBlock[]): Promise<void
     }
   }
 }
-
-/**
- * Reorg-time inverse: when a range of blocks is being rolled back,
- * the UTXOs they spent must be released so the new chain's forward
- * replay sees them as first-spends again. Called from
- * ChainReorgHandler before the cursor is moved back.
- *
- * SREM the abandoned (prev_tx, prev_vout) pairs in pipelined chunks;
- * non-members are a no-op so script-only inputs and inputs that were
- * themselves phantoms (and so were never SADD'd as canonical spenders)
- * cost only the round trip.
- */
-export async function releaseSpentUtxos(keys: Iterable<string>): Promise<void> {
-  const all = Array.from(keys);
-  if (all.length === 0) return;
-  for (const slice of chunked(all, 1000)) {
-    const pipe = redis.pipeline();
-    for (const k of slice) pipe.srem(SPENT_UTXO_KEY, k);
-    // eslint-disable-next-line no-await-in-loop
-    await runPipeline(pipe);
-  }
-}
-
-// Drain a Redis pipeline and surface the per-command results.
-type PipelineLike = ReturnType<typeof redis.pipeline>;
-type ExecResult = Awaited<ReturnType<PipelineLike['exec']>>;
-async function runPipeline(pipe: PipelineLike): Promise<ExecResult> {
-  const run = pipe.exec.bind(pipe);
-  return run();
-}
-
-export const SPENT_UTXO_REDIS_KEY = SPENT_UTXO_KEY;

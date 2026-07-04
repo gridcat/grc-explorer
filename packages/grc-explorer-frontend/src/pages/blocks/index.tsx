@@ -8,6 +8,7 @@ import { useSSE } from '../../hooks/useSSE';
 import { useCpidNames } from '../../hooks/useCpidNames';
 import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
+import { Seo } from '@/components/Seo';
 import { BlockTable, BlockRowData } from '../../components/BlockTable';
 import { Crumbs } from '../../components/Crumbs';
 import { fetchYearList, type YearListItem } from '../../routes/blocks/archive/fetch';
@@ -122,6 +123,12 @@ export default function BlocksList({ initialRows, years }: BlocksListProps) {
   })), [rows, names]);
 
   return (
+    <>
+      <Seo
+        title="Latest blocks · Gridcoin Block Explorer"
+        description="Live feed of newly staked Gridcoin blocks — height, time, size, transactions and staker."
+        path="/blocks"
+      />
     <Layout>
       <Stack spacing={2}>
         <Crumbs items={[{ label: 'Blocks' }]} />
@@ -137,6 +144,7 @@ export default function BlocksList({ initialRows, years }: BlocksListProps) {
         </Paper>
       </Stack>
     </Layout>
+    </>
   );
 }
 

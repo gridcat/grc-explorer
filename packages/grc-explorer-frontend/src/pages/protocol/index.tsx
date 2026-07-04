@@ -3,8 +3,8 @@ import {
   TableHead, TableRow, Typography,
 } from '@mui/material';
 import type { GetServerSideProps } from 'next';
-import Head from 'next/head';
 import Link from 'next/link';
+import { Seo } from '@/components/Seo';
 import { Crumbs } from '../../components/Crumbs';
 import { NextMuiLink } from '../../components/NextMuiLink';
 import { Layout } from '../../layouts/Layout';
@@ -25,9 +25,9 @@ interface ProtocolPageProps {
   forks: Fork[];
 }
 
-const PAGE_TITLE = IS_TESTNET
-  ? '[testnet] Gridcoin consensus forks — chain version history & activation heights'
-  : 'Gridcoin consensus forks — chain version history & activation heights';
+// Base title without the `[testnet]` prefix — the shared <Seo> applies
+// that prefix on testnet builds, so baking it in here would double it.
+const PAGE_TITLE = 'Gridcoin consensus forks — chain version history & activation heights';
 
 const PAGE_DESCRIPTION = 'Reference table of every Gridcoin consensus fork: '
   + 'mainnet activation height, block time, and what each version-bump '
@@ -36,11 +36,10 @@ const PAGE_DESCRIPTION = 'Reference table of every Gridcoin consensus fork: '
   + 'that fixed the 2014–2015 difficulty pathologies.';
 
 // Structured data so search crawlers index every fork as a defined term
-// rather than just one opaque article. Rendered as inline script
-// children (raw-text element — React passes JSON through unescaped) so
-// the page ships valid JSON-LD without resorting to other risky APIs.
-function buildJsonLd(forks: Fork[]): string {
-  return JSON.stringify({
+// rather than just one opaque article. Passed to <Seo> via its `jsonLd`
+// prop, which serialises it into an application/ld+json script tag.
+function buildJsonLd(forks: Fork[]): Record<string, unknown> {
+  return {
     '@context': 'https://schema.org',
     '@type': 'Article',
     headline: PAGE_TITLE,
@@ -55,7 +54,7 @@ function buildJsonLd(forks: Fork[]): string {
         description: f.summary,
       })),
     },
-  });
+  };
 }
 
 function categoryChip(category: 'consensus' | 'patch') {
@@ -73,19 +72,12 @@ export default function ProtocolPage({ forks }: ProtocolPageProps) {
 
   return (
     <Layout showTimeMachine={false}>
-      <Head>
-        <title>{PAGE_TITLE}</title>
-        <meta name="description" content={PAGE_DESCRIPTION} />
-        <link rel="canonical" href="/protocol" />
-        <script
-          type="application/ld+json"
-          // React treats <script> children as raw text content (no
-          // HTML-escaping for the JSON-safe characters in our payload),
-          // so this produces valid JSON-LD in the SSR'd page source.
-        >
-          {buildJsonLd(sorted)}
-        </script>
-      </Head>
+      <Seo
+        title={PAGE_TITLE}
+        description={PAGE_DESCRIPTION}
+        path="/protocol"
+        jsonLd={buildJsonLd(sorted)}
+      />
       <Container maxWidth="lg" sx={{ flexGrow: 1, py: 2 }}>
         <Stack spacing={3}>
           <Crumbs items={[{ label: 'Protocol' }]} />

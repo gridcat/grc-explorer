@@ -177,7 +177,7 @@ export class MempoolWatcher {
     const rows = await query<Row>(
       `
         SELECT tx_id, vout_n, value FROM tx_outputs
-        WHERE tx_id = ANY($txIds) AND vout_n = ANY($vouts)
+        WHERE tx_id IN ($txIds) AND vout_n IN ($vouts)
       `,
       { txIds, vouts },
     );
@@ -263,10 +263,10 @@ export class MempoolWatcher {
       await run(
         confirmed
           ? `UPDATE mempool_txs
-             SET confirmed_at = make_timestamp($ts::BIGINT * 1000000), evicted_at = NULL
+             SET confirmed_at = FROM_UNIXTIME($ts), evicted_at = NULL
              WHERE tx_id = $tx`
           : `UPDATE mempool_txs
-             SET evicted_at = make_timestamp($ts::BIGINT * 1000000), confirmed_at = NULL
+             SET evicted_at = FROM_UNIXTIME($ts), confirmed_at = NULL
              WHERE tx_id = $tx`,
         { ts, tx: txId },
       );

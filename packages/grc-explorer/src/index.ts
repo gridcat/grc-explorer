@@ -1,12 +1,11 @@
 import './lib/bigintJson';
 import { config } from './config';
-import { closeDb, rebuildSecondaryIndexes } from './lib/db';
+import { closeDb, initDb } from './lib/db';
+import { migrateToLatest } from './lib/migrate';
 import { waitForRpc } from './lib/gridcoin';
 import { log } from './lib/log';
 import {
-  clearIndexRebuildNeeded,
   closeRedis,
-  isIndexRebuildNeeded,
 } from './lib/redis';
 import { schedule } from './lib/schedule';
 import { installSignalHandlers, onShutdown } from './lib/shutdown';
@@ -32,28 +31,9 @@ import { adminWatcherTick } from './services/admin/adminWatcher';
 import { EventsService } from './services/sse/EventsService';
 import { startApi } from './api';
 
-// If a prior run died on a fatal DuckDB index corruption it set this flag
-// before exiting. The dangling ART-index entries are persisted on disk, so
-// resuming the indexer now would just re-fatal on the next range delete.
-// Rebuild every non-unique secondary index (DROP + CREATE rebuilds it clean
-// from the table rows) before any tick runs, then clear the flag. We rebuild
-// all of them, not just the chain-height tables, so a fatal originating in
-// any indexed table (e.g. the network_snapshots prune) is healed too — it's
-// a one-time cost paid only after an actual corruption event. No-op on a
-// healthy boot. Indexer-role only — the api role never writes, so it can't
-// fatal.
-async function repairIndexesIfNeeded(): Promise<void> {
-  if (!(await isIndexRebuildNeeded())) return;
-  log.warn('Index-rebuild flag set by a prior fatal DB error; rebuilding secondary indexes before resuming');
-  const rebuilt = await rebuildSecondaryIndexes();
-  await clearIndexRebuildNeeded();
-  log.info(`Rebuilt ${rebuilt.length} secondary index(es): ${rebuilt.join(', ') || '(none)'}`);
-}
-
 async function bootIndexer(): Promise<void> {
   log.info(`Booting indexer (network=${config.NETWORK})`);
   await waitForRpc();
-  await repairIndexesIfNeeded();
 
   // Mirror every locally emitted event onto Redis pub/sub so api
   // replicas can fan it out to their SSE clients. Skip in role=all —
@@ -112,10 +92,10 @@ async function bootIndexer(): Promise<void> {
   const boinc = new BoincStatsImportJob();
   schedule(60 * 60_000, () => boinc.tick(), 'BoincStatsImport');
 
-  // Common-input-ownership address clustering. Ticks hourly but the
-  // job self-gates on a Redis last-run (~12h), so almost every tick
-  // is an instant no-op; the gate persists across restarts so a
-  // hot-reload never re-triggers the heavy full rebuild.
+  // Common-input-ownership address clustering. Incremental: each
+  // hourly tick merges only the co-spend groups above the persisted
+  // watermark (seconds of work); the heavy full rebuild runs only on
+  // an empty table or via `npm run admin -- rebuild-clusters`.
   const cluster = new AddressClusterJob();
   schedule(60 * 60_000, () => cluster.tick(), 'AddressCluster');
 
@@ -162,12 +142,20 @@ async function main(): Promise<void> {
   }
 
   // Graceful shutdown: catch SIGTERM/SIGINT, drain in-flight ticks, then
-  // tear down in dependency order — DuckDB first (CHECKPOINT flushes the
-  // WAL so the next open is clean), Redis last. Registered before booting
-  // so a signal during startup is still handled.
+  // tear down in dependency order — DB pools first, Redis last. Registered
+  // before booting so a signal during startup is still handled.
   installSignalHandlers();
   onShutdown(closeDb);
   onShutdown(closeRedis);
+
+  // Bring up MariaDB: warm the reader/writer pools, then (writer roles
+  // only) apply any pending migrations. The Kysely migrator serialises via
+  // kysely_migration_lock, so a racing prestart/CLI run is a safe no-op;
+  // the read-only api role never migrates.
+  await initDb();
+  if (config.ROLE === 'indexer' || config.ROLE === 'all') {
+    await migrateToLatest();
+  }
 
   if (config.ROLE === 'api' || config.ROLE === 'all') {
     await bootApi();

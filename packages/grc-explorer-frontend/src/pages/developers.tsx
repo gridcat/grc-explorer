@@ -1,6 +1,7 @@
 import {
   Box, Container, Grid, Typography,
 } from '@mui/material';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../layouts/Layout';
 import { Contents } from '../routes/developers/Contents';
 import {
@@ -34,6 +35,12 @@ import {
  */
 export default function DevelopersPage() {
   return (
+    <>
+      <Seo
+        title="Developer API · Gridcoin Block Explorer"
+        description="JSON:API reference for querying Gridcoin blocks, transactions, addresses, superblocks and polls."
+        path="/developers"
+      />
     <Layout showTimeMachine={false}>
       <Container maxWidth="xl" sx={{ flexGrow: 1 }}>
         <Grid container spacing={3}>
@@ -75,5 +82,6 @@ export default function DevelopersPage() {
         </Grid>
       </Container>
     </Layout>
+    </>
   );
 }

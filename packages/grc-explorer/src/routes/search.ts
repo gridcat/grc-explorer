@@ -5,7 +5,7 @@ import { query } from '../lib/db';
 import { halford2grc } from '../lib/halford';
 import { isHiddenPoll } from '../lib/hiddenPolls';
 import { meili, meiliIndexId, MeiliIndexName } from '../lib/meili';
-import { getWallet, searchWalletsByPrefix } from '../lib/redis';
+import { getWallet, searchWalletsByPrefix } from '../lib/addressState';
 import { withMeta } from '../lib/responseMeta';
 import { SEARCH_QUERY } from '../lib/validators';
 import { validate } from '../middleware/validate';
@@ -176,9 +176,8 @@ searchRouter.get('/', validate({ query: searchQuerySchema }), async (req: Reques
   }
 
   // Address prefix lookup. Addresses are NOT in Meili (per-balance churn
-  // would punish the index, and Redis already has the rich-list ZSET).
-  // ZSCAN `wallets:by_balance` for prefix matches and HGETALL the matched
-  // wallet rows for the surfaced metadata.
+  // would punish the index). LIKE 'prefix%' range scan on address_state's
+  // PK for matches, then point lookups for the surfaced metadata.
   if (indices.includes(ADDRESS_BUCKET) && q.length >= 3) {
     try {
       const matches = await searchWalletsByPrefix(q, limit);
@@ -207,8 +206,10 @@ searchRouter.get('/', validate({ query: searchQuerySchema }), async (req: Reques
   // `/cpids/resolve`, which stays exact-match because it drives the
   // `/cpids/<name>` redirect and a redirect needs a single definitive
   // target. Served from `project_users`, NOT Meili (the `cpid_names`
-  // index was retired). `contains(lower(...))` rather than LIKE so a
-  // user-typed `%`/`_` can't smuggle in wildcards.
+  // index was retired). A LIKE '%…%' substring match with the user's
+  // `%`/`_`/`\` escaped (the default LIKE escape char) so they can't
+  // smuggle in wildcards — the literal-substring semantics the old
+  // DuckDB `contains(lower(...))` gave us. Collation is case-insensitive.
   if (indices.includes(NAMES_BUCKET) && q.length >= 2) {
     try {
       // One researcher (cpid) has a row per project, so collapse to one
@@ -216,16 +217,20 @@ searchRouter.get('/', validate({ query: searchQuerySchema }), async (req: Reques
       // attestation represents the researcher, ranked by that credit.
       const rows = await query<{ cpid: string; name: string; project_name: string }>(
         `
-          SELECT cpid,
-                 arg_max(name, total_credit)         AS name,
-                 arg_max(project_name, total_credit) AS project_name
-          FROM project_users
-          WHERE contains(lower(name), lower($name))
-          GROUP BY cpid
-          ORDER BY max(total_credit) DESC
+          SELECT cpid, name, project_name
+          FROM (
+            SELECT cpid, name, project_name, total_credit,
+                   ROW_NUMBER() OVER (PARTITION BY cpid ORDER BY total_credit DESC) AS rn
+            FROM project_users
+            WHERE name LIKE CONCAT('%', $name, '%')
+          ) ranked
+          WHERE rn = 1
+          ORDER BY total_credit DESC
           LIMIT ${limit}
         `,
-        { name: q },
+        // Escape LIKE metacharacters in the user input so the match stays
+        // a literal substring (default LIKE escape char is backslash).
+        { name: q.replace(/[\\%_]/g, '\\$&') },
       );
       results.push({
         index: NAMES_BUCKET,

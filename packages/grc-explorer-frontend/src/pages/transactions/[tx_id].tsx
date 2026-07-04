@@ -9,6 +9,7 @@ import { useRouter } from 'next/router';
 import {
   useEffect, useMemo, useRef, useState,
 } from 'react';
+import { Seo } from '@/components/Seo';
 import { JsonTree } from '../../components/JsonTree';
 import { Layout } from '../../layouts/Layout';
 import { api, notFoundOrRethrow } from '../../lib/api';
@@ -173,7 +174,13 @@ export default function TxDetail({
     ];
 
   return (
-    <Layout>
+    <>
+      <Seo
+        title={`Transaction ${tx.txId.slice(0, 16)}… · Gridcoin Block Explorer`}
+        description={`Gridcoin transaction ${tx.txId}: inputs, outputs, value moved, fees and confirmations.`}
+        path={`/transactions/${tx.txId}`}
+      />
+      <Layout>
       <Stack spacing={2}>
         <Crumbs items={crumbItems} />
         <Typography variant="h5" sx={{ fontWeight: 700, fontFamily: 'monospace', wordBreak: 'break-all' }}>
@@ -367,7 +374,8 @@ export default function TxDetail({
 
         <RawTransactionSection raw={raw} loading={rawLoading} error={rawError} />
       </Stack>
-    </Layout>
+      </Layout>
+    </>
   );
 }
 

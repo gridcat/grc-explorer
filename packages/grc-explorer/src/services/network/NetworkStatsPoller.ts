@@ -122,11 +122,11 @@ export class NetworkStatsPoller {
     if (peerCount !== undefined && mempoolCount !== undefined && chain) {
       try {
         // Append-only: network_snapshots has no PK, so a plain INSERT.
-        // ts is unix-seconds → make_timestamp; difficulty is DOUBLE.
+        // ts is unix-seconds → FROM_UNIXTIME; difficulty is DOUBLE.
         await run(
           `
             INSERT INTO network_snapshots (ts, peer_count, mempool_size, difficulty, tip_height)
-            VALUES (make_timestamp($ts::BIGINT * 1000000), $peer_count, $mempool_size, $difficulty, $tip_height)
+            VALUES (FROM_UNIXTIME($ts), $peer_count, $mempool_size, $difficulty, $tip_height)
           `,
           {
             ts,

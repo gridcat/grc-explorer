@@ -52,7 +52,7 @@ statusRouter.get('/', async (_req: Request, res: Response) => {
   // /api/blocks/:height/mempool-snapshot view starts being useful.
   const [tipRows, mempoolSnapshotsFromHeight] = await Promise.all([
     query<{ height: number; hash: string; time: number }>(
-      'SELECT height, hash, CAST(epoch(time) AS UINTEGER) AS time FROM blocks ORDER BY height DESC LIMIT 1',
+      'SELECT height, hash, UNIX_TIMESTAMP(time) AS time FROM blocks ORDER BY height DESC LIMIT 1',
     ),
     getMempoolSnapshotsFromHeight(),
   ]);

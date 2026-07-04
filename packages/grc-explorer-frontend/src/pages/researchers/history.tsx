@@ -4,12 +4,12 @@ import {
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import { useTheme } from '@mui/material/styles';
 import type { GetServerSideProps } from 'next';
-import Head from 'next/head';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import {
   useCallback, useEffect, useMemo, useRef, useState,
 } from 'react';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import {
   ChartAxes, ChartFrame, ChartFrameProvider, ChartTooltip, linearScale, niceTicks,
@@ -101,22 +101,17 @@ export default function ResearchersHistory({ points }: ResearchersHistoryProps) 
 
   return (
     <Layout>
-      <Head>
-        <title>
-          {selectedYear !== null
-            ? `Gridcoin top researchers in ${selectedYear} — magnitude over the year`
-            : 'Gridcoin top researchers history — magnitude leaderboard since genesis'}
-        </title>
-        <meta
-          name="description"
-          content={
-            allTime
-              ? `Gridcoin researcher magnitude history across ${allTime.superblocks.toLocaleString()} superblocks. Pick a year to see the top-20 researchers' magnitude trajectories with per-line tooltips.`
-              : 'Whole-chain Gridcoin researcher leaderboard history with per-year breakdown.'
-          }
-        />
-        <link rel="canonical" href="/researchers/history" />
-      </Head>
+      <Seo
+        title={selectedYear !== null
+          ? `Gridcoin top researchers in ${selectedYear} — magnitude over the year`
+          : 'Gridcoin top researchers history — magnitude leaderboard since genesis'}
+        description={
+          allTime
+            ? `Gridcoin researcher magnitude history across ${allTime.superblocks.toLocaleString()} superblocks. Pick a year to see the top-20 researchers' magnitude trajectories with per-line tooltips.`
+            : 'Whole-chain Gridcoin researcher leaderboard history with per-year breakdown.'
+        }
+        path="/researchers/history"
+      />
 
       <Stack spacing={3}>
         <Crumbs

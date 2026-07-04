@@ -3,10 +3,10 @@ import {
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import type { GetServerSideProps } from 'next';
-import Head from 'next/head';
 import {
   useCallback, useMemo, useRef, useState,
 } from 'react';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import {
   ChartAxes, ChartFrame, ChartFrameProvider, ChartLegend, ChartTooltip, linearScale, niceTicks,
@@ -77,18 +77,15 @@ export default function WalletVersions({ versions, points: rawPoints }: Versions
 
   return (
     <Layout>
-      <Head>
-        <title>Gridcoin wallet versions over time — staking-client adoption</title>
-        <meta
-          name="description"
-          content={
-            summary
-              ? `Share of Gridcoin PoS blocks by the wallet client version that produced them, ${summary.firstDate} to ${summary.lastDate}. The ${summary.versionCount} highest-footprint releases across the chain's history; latest dominant version ${summary.topVersion} at ${formatPct(summary.topShare)}.`
-              : 'Gridcoin staking-client version adoption over time, by share of PoS blocks produced, across the whole chain.'
-          }
-        />
-        <link rel="canonical" href="/wallets/versions" />
-      </Head>
+      <Seo
+        title="Gridcoin wallet versions over time — staking-client adoption"
+        description={
+          summary
+            ? `Share of Gridcoin PoS blocks by the wallet client version that produced them, ${summary.firstDate} to ${summary.lastDate}. The ${summary.versionCount} highest-footprint releases across the chain's history; latest dominant version ${summary.topVersion} at ${formatPct(summary.topShare)}.`
+            : 'Gridcoin staking-client version adoption over time, by share of PoS blocks produced, across the whole chain.'
+        }
+        path="/wallets/versions"
+      />
 
       <Stack spacing={3}>
         <Crumbs items={[WALLETS_CRUMB, { label: 'Versions' }]} trailing={<CopyLinkButton />} />

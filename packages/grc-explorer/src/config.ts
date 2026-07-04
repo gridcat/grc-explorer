@@ -6,15 +6,17 @@ export type Network = 'mainnet' | 'testnet';
 export type Role = 'api' | 'indexer' | 'all';
 
 interface Config {
-  // Embedded DuckDB — source of truth for chain data. DUCKDB_PATH is
-  // the on-disk database file
-  // (one per network); the process opens it read-write as the sole
-  // writer. THREADS / MEMORY_LIMIT cap DuckDB's per-query resource use
-  // so a heavy time-machine scan can't saturate the shared host — the
-  // good-neighbour trade behind the DuckDB switch.
-  DUCKDB_PATH: string;
-  DUCKDB_THREADS: number;
-  DUCKDB_MEMORY_LIMIT: string;
+  // MariaDB — source of truth for chain data (see lib/db.ts). A single
+  // mysql://user:pass@host:3306/db URL plus reader/writer pool sizes kept
+  // deliberately small for the 1–2 GB prod slice.
+  DATABASE_URL: string;
+  DB_POOL_WRITE: number;
+  DB_POOL_READ: number;
+  // Cloudflare cache purge on reorg. Optional — when both are set, a chain
+  // reorg purges the edge cache so stale tip-ward pages don't survive the
+  // rollback. Unset → no-op (e.g. dev / no CDN in front).
+  CF_API_TOKEN?: string;
+  CF_ZONE_ID?: string;
   // Which Gridcoin network this stack indexes. Carried in API responses
   // (`meta.network`) and exported to the frontend via NEXT_PUBLIC_NETWORK
   // so the UI can flip palette and refuse cross-network rendering.
@@ -162,9 +164,11 @@ nconf
   .argv()
   .env({
     whitelist: [
-      'DUCKDB_PATH',
-      'DUCKDB_THREADS',
-      'DUCKDB_MEMORY_LIMIT',
+      'DATABASE_URL',
+      'DB_POOL_WRITE',
+      'DB_POOL_READ',
+      'CF_API_TOKEN',
+      'CF_ZONE_ID',
       'NETWORK',
       'ROLE',
       'GRC_RPC_USER',
@@ -214,12 +218,22 @@ nconf
   .defaults({
     NETWORK: 'testnet',
     ROLE: 'all',
-    // DuckDB good-neighbour caps. Small on purpose: this DB shares a box
-    // with the wallet daemon + the rest of the family, so a heavy
-    // time-machine scan parallelises across at most 2 threads and 2 GiB
-    // rather than grabbing every core. Bump on a dedicated host.
-    DUCKDB_THREADS: 2,
-    DUCKDB_MEMORY_LIMIT: '2GB',
+    // Dedicated explorer MariaDB (its own instance in the explorer compose,
+    // not the shared family grc_mysql — origin-IP isolation). Pools stay
+    // small: on the 1–2 GB prod slice the box can't afford a wide pool, and
+    // the reader/writer split bounds each side independently.
+    //
+    // DB_POOL_WRITE=1 — a SINGLE writer connection, matching DuckDB's old
+    // single-writer model. The write path fans ~20 per-table inserts out
+    // via Promise.all and the backfiller pipelines batches concurrently; on
+    // a multi-connection writer pool those become concurrent InnoDB
+    // transactions that lock the same tables' secondary-index gaps in
+    // different orders and deadlock (errno 1213). One writer connection
+    // serialises all of it — the fetch side still parallelises, which is
+    // where backfill throughput actually comes from.
+    DATABASE_URL: 'mysql://admin:IamAdmin@mysql:3306/grc_explorer',
+    DB_POOL_WRITE: 1,
+    DB_POOL_READ: 6,
     REDIS_HOST: 'redis',
     REDIS_PORT: 6379,
     REDIS_PREFIX: 'grc-explorer:testnet',
@@ -322,7 +336,7 @@ nconf
   });
 
 checkConfig([
-  'DUCKDB_PATH',
+  'DATABASE_URL',
   'NETWORK',
   'GRC_RPC_HOST',
   'GRC_RPC_PORT',

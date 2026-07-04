@@ -19,19 +19,17 @@ LABEL description="Production environment for grc-explorer backend service"
 WORKDIR /usr/src/app
 
 # Create the runtime user up front so app artifacts can be COPYed with
-# correct ownership directly. node_modules stays root-owned (installed
-# by the RUN below) — the runtime user only needs to READ it, and a
-# recursive `chown -R` over @duckdb/node-api's native binaries would
-# copy-up hundreds of MB into a fresh layer: slow build, fat image.
-# Pinned uid/gid (not auto-assigned) so the bind-mounted DuckDB data dir
-# can be chowned to a stable, predictable owner on the host.
+# correct ownership directly. node_modules stays root-owned (installed by
+# the RUN below) — the runtime user only needs to READ it, and a recursive
+# `chown -R` over native deps (mysql2) would copy-up megabytes into a fresh
+# layer: slow build, fat image. Pinned uid/gid (not auto-assigned) for a
+# stable, predictable owner.
 RUN addgroup --system --gid 1001 appgroup \
     && adduser --system --uid 1001 --ingroup appgroup appuser
 
 COPY package*.json ./
 RUN npm ci --only=production
 COPY --from=builder --chown=appuser:appgroup /usr/src/app/dist ./dist
-COPY --from=builder --chown=appuser:appgroup /usr/src/app/duckdb ./duckdb
 
 USER appuser
 
@@ -43,7 +41,8 @@ HEALTHCHECK --interval=30s --timeout=3s \
 ENV NODE_ENV=production
 
 # `npm start` automatically fires the `prestart` hook which runs
-# `node duckdb/migrate.mjs` — the DuckDB migrations are idempotent, so
-# re-run on every container start is safe and ensures fresh deploys
-# never serve traffic against an out-of-date schema.
+# `node dist/cli/migrate.js` — the Kysely migrator is idempotent (and
+# serialises via kysely_migration_lock), so re-running on every container
+# start is safe and ensures fresh deploys never serve traffic against an
+# out-of-date schema.
 CMD ["npm", "start"]

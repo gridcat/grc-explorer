@@ -78,10 +78,10 @@ async function buildMetricBuckets(
       `
         SELECT
           bucket_ts,
-          CAST(block_count AS UINTEGER) AS block_count,
-          CAST(tx_count AS UINTEGER)    AS tx_count,
-          CAST(mint_total AS VARCHAR)   AS mint_total,
-          CAST(bytes_total AS UINTEGER) AS bytes_total
+          CAST(block_count AS UNSIGNED) AS block_count,
+          CAST(tx_count AS UNSIGNED)    AS tx_count,
+          CAST(mint_total AS CHAR)      AS mint_total,
+          CAST(bytes_total AS UNSIGNED) AS bytes_total
         FROM ${table}
         WHERE bucket_ts >= $since AND bucket_ts <= $end
         ORDER BY bucket_ts ASC
@@ -91,15 +91,15 @@ async function buildMetricBuckets(
     query<DerivedRow>(
       `
         SELECT
-          CAST((CAST(epoch(b.time) AS BIGINT) // $step) * $step AS UINTEGER)        AS bucket_ts,
-          CAST(coalesce(sum(c.research_subsidy), 0) AS VARCHAR)                     AS research_subsidy_total,
-          CAST(coalesce(sum(c.block_subsidy), 0) AS VARCHAR)                        AS block_subsidy_total,
-          CAST(count(*) FILTER (WHERE b.staker_cpid IS NOT NULL AND b.staker_cpid != '') AS UINTEGER) AS researcher_blocks,
-          CAST(count(*) FILTER (WHERE b.staker_cpid IS NULL OR b.staker_cpid = '') AS UINTEGER)       AS investor_blocks
+          CAST((UNIX_TIMESTAMP(b.time) DIV $step) * $step AS UNSIGNED)             AS bucket_ts,
+          CAST(coalesce(sum(c.research_subsidy), 0) AS CHAR)                       AS research_subsidy_total,
+          CAST(coalesce(sum(c.block_subsidy), 0) AS CHAR)                          AS block_subsidy_total,
+          CAST(SUM(CASE WHEN b.staker_cpid IS NOT NULL AND b.staker_cpid != '' THEN 1 ELSE 0 END) AS UNSIGNED) AS researcher_blocks,
+          CAST(SUM(CASE WHEN b.staker_cpid IS NULL OR b.staker_cpid = '' THEN 1 ELSE 0 END) AS UNSIGNED)       AS investor_blocks
         FROM blocks AS b
         LEFT JOIN claims AS c ON c.block_height = b.height
-        WHERE b.time >= make_timestamp($since::BIGINT * 1000000)
-          AND b.time <= make_timestamp($end::BIGINT * 1000000)
+        WHERE b.time >= FROM_UNIXTIME($since)
+          AND b.time <= FROM_UNIXTIME($end)
         GROUP BY bucket_ts
         ORDER BY bucket_ts ASC
       `,
@@ -110,13 +110,13 @@ async function buildMetricBuckets(
       // via claims — including total_out would double-count subsidies).
       `
         SELECT
-          CAST((CAST(epoch(time) AS BIGINT) // $step) * $step AS UINTEGER) AS bucket_ts,
-          CAST(coalesce(sum(total_out), 0) AS VARCHAR) AS value_moved,
-          CAST(coalesce(sum(fee), 0) AS VARCHAR)       AS fee_total
+          CAST((UNIX_TIMESTAMP(time) DIV $step) * $step AS UNSIGNED) AS bucket_ts,
+          CAST(coalesce(sum(total_out), 0) AS CHAR) AS value_moved,
+          CAST(coalesce(sum(fee), 0) AS CHAR)       AS fee_total
         FROM transactions
         WHERE NOT is_coinbase AND NOT is_coinstake
-          AND time >= make_timestamp($since::BIGINT * 1000000)
-          AND time <= make_timestamp($end::BIGINT * 1000000)
+          AND time >= FROM_UNIXTIME($since)
+          AND time <= FROM_UNIXTIME($end)
         GROUP BY bucket_ts
         ORDER BY bucket_ts ASC
       `,
@@ -281,35 +281,29 @@ interface ResearchersHistoryRow {
 }
 
 async function buildResearchersHistory(): Promise<ResearchersHistoryPoint[]> {
-  // One pass over superblock_magnitudes — `arrayReverseSort + arraySlice + arraySum`
-  // gives top-10 magnitude per superblock without a window function or
-  // self-join. Block time comes from blocks via a final LEFT JOIN on
-  // height (cheap; one row per superblock).
+  // Reads the superblock_researcher_stats rollup (maintained by
+  // RollupMaintainer, seeded in migration 0008) — ~3k rows joined to
+  // blocks by PK. The previous inline aggregation windowed over ALL of
+  // superblock_magnitudes (3.6M rows) per cold rebuild, which evicted
+  // most of a small buffer pool every TTL.
+  //
+  // INNER JOIN on the blocks PK: a superblock only appears once its
+  // block row is committed. During backfill the stats row for the
+  // newest superblock can land just before the block row (blocks are
+  // written last), so a LEFT JOIN would emit a NULL time — which
+  // became epoch 0 / 1970-01-01 and dragged the chart's x-axis origin
+  // back to 1970. INNER JOIN drops that transient row instead.
   const rows = await query<ResearchersHistoryRow>(
     `
       SELECT
-        m.height AS height,
-        CAST(epoch(b.time) AS BIGINT) AS time,
+        m.superblock_height AS height,
+        UNIX_TIMESTAMP(b.time) AS time,
         m.active AS active,
         m.total_magnitude AS total_magnitude,
         m.top10_magnitude AS top10_magnitude
-      FROM (
-        SELECT
-          superblock_height AS height,
-          count(*) FILTER (WHERE magnitude > 0) AS active,
-          sum(magnitude) AS total_magnitude,
-          list_sum(list_slice(list_sort(array_agg(magnitude) FILTER (WHERE magnitude > 0), 'DESC'), 1, 10)) AS top10_magnitude
-        FROM superblock_magnitudes
-        GROUP BY superblock_height
-      ) m
-      -- INNER JOIN on the blocks PK: a superblock only appears once its
-      -- block row is committed. During backfill the magnitudes for the
-      -- newest superblock can land just before the block row (blocks are
-      -- written last), so a LEFT JOIN would emit a NULL time — which
-      -- became epoch 0 / 1970-01-01 and dragged the chart's x-axis origin
-      -- back to 1970. INNER JOIN drops that transient row instead.
-      JOIN blocks AS b ON b.height = m.height
-      ORDER BY m.height ASC
+      FROM superblock_researcher_stats AS m
+      JOIN blocks AS b ON b.height = m.superblock_height
+      ORDER BY m.superblock_height ASC
     `,
   );
   return rows.map((r) => {
@@ -510,20 +504,22 @@ metricsRouter.get('/mandatory-sidestakes', async (_req: Request, res: Response) 
   }>(
     `
       WITH active AS (
+        -- arg_max(status, block_height) per address → status of the row with
+        -- the highest block_height, via ROW_NUMBER()=1.
         SELECT address
         FROM (
-          SELECT address, arg_max(status, block_height) AS status
+          SELECT address, status,
+            ROW_NUMBER() OVER (PARTITION BY address ORDER BY block_height DESC) AS rn
           FROM mandatory_sidestakes
-          GROUP BY address
-        )
-        WHERE status = 'MANDATORY'
+        ) latest
+        WHERE rn = 1 AND status = 'MANDATORY'
       )
       SELECT
-        CAST(coalesce(sum(amount) FILTER (WHERE time >= make_timestamp($since::BIGINT * 1000000)), 0) AS VARCHAR) AS amount_24h,
-        CAST(count(*) FILTER (WHERE time >= make_timestamp($since::BIGINT * 1000000)) AS UINTEGER)                AS count_24h,
-        CAST(coalesce(sum(amount), 0) AS VARCHAR)                                                                 AS amount_all,
-        CAST(count(*) AS UINTEGER)                                                                                AS count_all,
-        CAST((SELECT count(*) FROM active) AS UINTEGER)                                                           AS active_recipients
+        CAST(coalesce(SUM(CASE WHEN time >= FROM_UNIXTIME($since) THEN amount ELSE 0 END), 0) AS CHAR) AS amount_24h,
+        CAST(SUM(CASE WHEN time >= FROM_UNIXTIME($since) THEN 1 ELSE 0 END) AS UNSIGNED)               AS count_24h,
+        CAST(coalesce(sum(amount), 0) AS CHAR)                                                         AS amount_all,
+        CAST(count(*) AS UNSIGNED)                                                                     AS count_all,
+        CAST((SELECT count(*) FROM active) AS UNSIGNED)                                                AS active_recipients
       FROM coinstake_sidestakes
     `,
     { since: since24h },
@@ -567,13 +563,13 @@ metricsRouter.get('/research-split', async (req: Request, res: Response) => {
     }>(
       `
         SELECT
-          CAST(coalesce(sum(c.research_subsidy), 0) AS VARCHAR) AS research_subsidy,
-          CAST(coalesce(sum(c.block_subsidy), 0) AS VARCHAR)    AS block_subsidy,
-          CAST(count(*) FILTER (WHERE b.staker_cpid IS NOT NULL AND b.staker_cpid != '') AS UINTEGER) AS researcher_blocks,
-          CAST(count(*) FILTER (WHERE b.staker_cpid IS NULL OR b.staker_cpid = '') AS UINTEGER)       AS investor_blocks
+          CAST(coalesce(sum(c.research_subsidy), 0) AS CHAR) AS research_subsidy,
+          CAST(coalesce(sum(c.block_subsidy), 0) AS CHAR)    AS block_subsidy,
+          CAST(SUM(CASE WHEN b.staker_cpid IS NOT NULL AND b.staker_cpid != '' THEN 1 ELSE 0 END) AS UNSIGNED) AS researcher_blocks,
+          CAST(SUM(CASE WHEN b.staker_cpid IS NULL OR b.staker_cpid = '' THEN 1 ELSE 0 END) AS UNSIGNED)       AS investor_blocks
         FROM blocks AS b
         LEFT JOIN claims AS c ON c.block_height = b.height
-        WHERE b.time >= make_timestamp($since::BIGINT * 1000000) AND b.time <= make_timestamp($end::BIGINT * 1000000)
+        WHERE b.time >= FROM_UNIXTIME($since) AND b.time <= FROM_UNIXTIME($end)
       `,
       { since, end: at },
     ))[0] ?? {
@@ -609,9 +605,9 @@ metricsRouter.get('/beacon-flux', async (req: Request, res: Response) => {
     const row = (await query<{ active: number; new_: number; expired_: number }>(
       `
         SELECT
-          CAST(count(*) FILTER (WHERE timestamp <= make_timestamp($end::BIGINT * 1000000) AND expiration > make_timestamp($end::BIGINT * 1000000) AND status != 'revoked') AS UINTEGER) AS active,
-          CAST(count(*) FILTER (WHERE timestamp >= make_timestamp($since::BIGINT * 1000000) AND timestamp <= make_timestamp($end::BIGINT * 1000000) AND status != 'revoked') AS UINTEGER) AS new_,
-          CAST(count(*) FILTER (WHERE expiration >= make_timestamp($since::BIGINT * 1000000) AND expiration < make_timestamp($end::BIGINT * 1000000)) AS UINTEGER) AS expired_
+          CAST(SUM(CASE WHEN timestamp <= FROM_UNIXTIME($end) AND expiration > FROM_UNIXTIME($end) AND status != 'revoked' THEN 1 ELSE 0 END) AS UNSIGNED) AS active,
+          CAST(SUM(CASE WHEN timestamp >= FROM_UNIXTIME($since) AND timestamp <= FROM_UNIXTIME($end) AND status != 'revoked' THEN 1 ELSE 0 END) AS UNSIGNED) AS new_,
+          CAST(SUM(CASE WHEN expiration >= FROM_UNIXTIME($since) AND expiration < FROM_UNIXTIME($end) THEN 1 ELSE 0 END) AS UNSIGNED) AS expired_
         FROM beacons
       `,
       { since, end: evalAt },
@@ -645,12 +641,12 @@ metricsRouter.get('/wealth-distribution', async (req: Request, res: Response) =>
     }>(
       `
         SELECT
-          CAST(epoch(bucket_ts) AS BIGINT) AS bucket_ts,
-          CAST(total_supply AS VARCHAR)    AS total_supply,
+          UNIX_TIMESTAMP(bucket_ts) AS bucket_ts,
+          CAST(total_supply AS CHAR) AS total_supply,
           addresses_with_balance, gini, top1pct_share, top10pct_share, top100_share,
           active_24h, new_24h, hodler_30d, hodler_180d
         FROM wealth_snapshots
-        WHERE bucket_ts <= make_timestamp($at::BIGINT * 1000000)
+        WHERE bucket_ts <= FROM_UNIXTIME($at)
         ORDER BY bucket_ts DESC LIMIT 1
       `,
       { at },
@@ -695,11 +691,11 @@ metricsRouter.get('/wealth-distribution/series', async (req: Request, res: Respo
     }>(
       `
         SELECT
-          CAST(epoch(bucket_ts) AS BIGINT) AS bucket_ts,
-          CAST(total_supply AS VARCHAR)    AS total_supply,
+          UNIX_TIMESTAMP(bucket_ts) AS bucket_ts,
+          CAST(total_supply AS CHAR) AS total_supply,
           addresses_with_balance, gini, top1pct_share, top10pct_share, top100_share
         FROM wealth_snapshots
-        WHERE bucket_ts >= make_timestamp($from::BIGINT * 1000000) AND bucket_ts <= make_timestamp($to::BIGINT * 1000000)
+        WHERE bucket_ts >= FROM_UNIXTIME($from) AND bucket_ts <= FROM_UNIXTIME($to)
         ORDER BY bucket_ts ASC
       `,
       { from: fromTs, to: toTs },
@@ -790,9 +786,9 @@ async function buildFeePercentiles(
     `
       SELECT
         bucket_ts,
-        CAST(CAST(p50 AS BIGINT) AS VARCHAR) AS p50,
-        CAST(CAST(p95 AS BIGINT) AS VARCHAR) AS p95,
-        CAST(CAST(p99 AS BIGINT) AS VARCHAR) AS p99,
+        CAST(CAST(p50 AS SIGNED) AS CHAR) AS p50,
+        CAST(CAST(p95 AS SIGNED) AS CHAR) AS p95,
+        CAST(CAST(p99 AS SIGNED) AS CHAR) AS p99,
         tx_count
       FROM fee_quantiles_1h
       WHERE bucket_ts >= $since AND bucket_ts <= $end AND tx_count > 0
@@ -857,13 +853,13 @@ async function buildBeaconSurvival(): Promise<JsonApiResource> {
   }>(
     `
       SELECT
-        strftime(date_trunc('month', timestamp), '%Y-%m')        AS cohort,
-        CAST(count(*) AS UINTEGER)                               AS advertised,
-        CAST(count(*) FILTER (WHERE status != 'revoked') AS UINTEGER)              AS confirmed,
-        CAST(count(*) FILTER (WHERE superseded_at_height IS NOT NULL) AS UINTEGER) AS renewed,
-        CAST(count(*) FILTER (WHERE expiration <= make_timestamp($now::BIGINT * 1000000)) AS UINTEGER) AS expired_
+        DATE_FORMAT(timestamp, '%Y-%m')                         AS cohort,
+        CAST(count(*) AS UNSIGNED)                               AS advertised,
+        CAST(SUM(CASE WHEN status != 'revoked' THEN 1 ELSE 0 END) AS UNSIGNED)              AS confirmed,
+        CAST(SUM(CASE WHEN superseded_at_height IS NOT NULL THEN 1 ELSE 0 END) AS UNSIGNED) AS renewed,
+        CAST(SUM(CASE WHEN expiration <= FROM_UNIXTIME($now) THEN 1 ELSE 0 END) AS UNSIGNED) AS expired_
       FROM beacons
-      WHERE timestamp >= make_timestamp($since::BIGINT * 1000000)
+      WHERE timestamp >= FROM_UNIXTIME($since)
       GROUP BY cohort
       ORDER BY cohort ASC
     `,
@@ -908,12 +904,12 @@ async function buildCohortRetention(
   // CPIDs first observed staking in this cohort window.
   const cohortRows = await query<{ cpid: string; first_ts: number }>(
     `
-      SELECT staker_cpid AS cpid, CAST(epoch(min(time)) AS BIGINT) AS first_ts
+      SELECT staker_cpid AS cpid, UNIX_TIMESTAMP(min(time)) AS first_ts
       FROM blocks
       WHERE staker_cpid IS NOT NULL AND staker_cpid != ''
       GROUP BY staker_cpid
-      HAVING min(time) >= make_timestamp($start::BIGINT * 1000000)
-         AND min(time) <  make_timestamp($end::BIGINT * 1000000)
+      HAVING min(time) >= FROM_UNIXTIME($start)
+         AND min(time) <  FROM_UNIXTIME($end)
     `,
     { start: cohortStart, end: cohortEnd },
   );
@@ -933,12 +929,12 @@ async function buildCohortRetention(
   const monthlyRows = await query<{ bucket_ts: number | string; active: number | string }>(
     `
       SELECT
-        CAST(epoch(date_trunc('month', time)) AS BIGINT) AS bucket_ts,
-        CAST(count(DISTINCT staker_cpid) AS UINTEGER)    AS active
+        UNIX_TIMESTAMP(DATE_FORMAT(time, '%Y-%m-01')) AS bucket_ts,
+        CAST(count(DISTINCT staker_cpid) AS UNSIGNED) AS active
       FROM blocks
-      WHERE staker_cpid = ANY($cpids)
-        AND time >= make_timestamp($start::BIGINT * 1000000)
-        AND time <  make_timestamp($end::BIGINT * 1000000)
+      WHERE staker_cpid IN ($cpids)
+        AND time >= FROM_UNIXTIME($start)
+        AND time <  FROM_UNIXTIME($end)
       GROUP BY bucket_ts
       ORDER BY bucket_ts ASC
     `,
@@ -1005,7 +1001,7 @@ metricsRouter.get('/active-stakers', async (req: Request, res: Response) => {
       `
         SELECT count(DISTINCT staker_cpid) AS c
         FROM blocks
-        WHERE time >= make_timestamp($since::BIGINT * 1000000) AND time <= make_timestamp($end::BIGINT * 1000000)
+        WHERE time >= FROM_UNIXTIME($since) AND time <= FROM_UNIXTIME($end)
           AND staker_cpid IS NOT NULL AND staker_cpid != ''
       `,
       { since, end: at },
@@ -1013,10 +1009,10 @@ metricsRouter.get('/active-stakers', async (req: Request, res: Response) => {
     query<{ bucket_ts: number; count: number }>(
       `
         SELECT
-          CAST((CAST(epoch(time) AS BIGINT) // 3600) * 3600 AS UINTEGER) AS bucket_ts,
-          CAST(count(DISTINCT staker_cpid) AS UINTEGER)                  AS count
+          CAST((UNIX_TIMESTAMP(time) DIV 3600) * 3600 AS UNSIGNED) AS bucket_ts,
+          CAST(count(DISTINCT staker_cpid) AS UNSIGNED)            AS count
         FROM blocks
-        WHERE time >= make_timestamp($since::BIGINT * 1000000) AND time <= make_timestamp($end::BIGINT * 1000000)
+        WHERE time >= FROM_UNIXTIME($since) AND time <= FROM_UNIXTIME($end)
           AND staker_cpid IS NOT NULL AND staker_cpid != ''
         GROUP BY bucket_ts
         ORDER BY bucket_ts ASC
@@ -1051,7 +1047,7 @@ async function buildStakerMix(
   // Latest block at-or-before the anchor.
   const tipRows = at !== undefined
     ? await query<{ height: number }>(
-      'SELECT height FROM blocks WHERE time <= make_timestamp($at::BIGINT * 1000000) ORDER BY height DESC LIMIT 1',
+      'SELECT height FROM blocks WHERE time <= FROM_UNIXTIME($at) ORDER BY height DESC LIMIT 1',
       { at },
     )
     : await query<{ height: number }>('SELECT height FROM blocks ORDER BY height DESC LIMIT 1');
@@ -1069,8 +1065,8 @@ async function buildStakerMix(
   const row = (await query<{ researcher: number; total: number }>(
     `
       SELECT
-        CAST(count(*) FILTER (WHERE staker_cpid IS NOT NULL AND staker_cpid != '') AS UINTEGER) AS researcher,
-        CAST(count(*) AS UINTEGER)                                                              AS total
+        CAST(SUM(CASE WHEN staker_cpid IS NOT NULL AND staker_cpid != '' THEN 1 ELSE 0 END) AS UNSIGNED) AS researcher,
+        CAST(count(*) AS UNSIGNED)                                                                        AS total
       FROM blocks
       WHERE height >= $min AND height <= $max
     `,

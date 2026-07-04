@@ -21,9 +21,9 @@
 //                               height >= N across all chain tables (the
 //                               aggregate rollups are views, so they
 //                               recompute on read), prunes Meili docs for
-//                               those heights, rewinds the Redis wallet
-//                               projection by replaying address_balance_history
-//                               from the surviving rows, drops the meili:queue
+//                               those heights, rebuilds the address_state
+//                               projection from the surviving
+//                               address_balance_history rows, drops the meili:queue
 //                               stream, and resets the cursor to N-1 so the
 //                               HistoricalBackfiller picks up at exactly N.
 //
@@ -54,7 +54,7 @@ import {
   clearWipeLock, closeRedis, getCursor, redis, redisPrefix,
   setCursor, setWipeLock,
 } from '../lib/redis';
-import { rebuildWallets } from './rebuildWallets';
+import { rebuildAddressState } from './rebuildAddressState';
 
 // Chain-derived Meili indexes — always wiped on a full reset.
 // `addresses`, `cpid_names`, `blocks`, `transactions` and `claims`
@@ -93,8 +93,9 @@ const MEILI_HEIGHT_INDEXES: Array<{ name: MeiliIndexName; idSql: (h: number) => 
 // live (first_seen, fee bid, eviction, MRC pending lifecycle) and can
 // never be reconstructed from chain alone — losing them is permanent.
 // BOINC name-mirror tables are preserved because re-fetching takes ~24h.
-// `_migrations` is always preserved so the next boot doesn't replay
-// every DDL. The preserved set is computed per-invocation from the
+// The Kysely migration ledger is always preserved so the next boot
+// doesn't replay every DDL. The preserved set is computed per-invocation
+// from the
 // opt-in flags: --include-mempool / --include-boinc move those tables
 // back into the wipe (still DELETE FROM, not DROP — see wipeDatabaseFull).
 interface FullWipeOpts {
@@ -103,7 +104,9 @@ interface FullWipeOpts {
 }
 
 function preservedTables(opts: FullWipeOpts): Set<string> {
-  const set = new Set(['_migrations']);
+  // Kysely's migration bookkeeping tables — never wipe these or the boot
+  // migrator would re-run every migration on a populated schema.
+  const set = new Set(['kysely_migration', 'kysely_migration_lock']);
   if (!opts.includeMempool) {
     set.add('mempool_txs');
     set.add('mempool_snapshots');
@@ -117,16 +120,16 @@ function preservedTables(opts: FullWipeOpts): Set<string> {
 
 async function wipeDatabaseFull(opts: FullWipeOpts): Promise<void> {
   const preserved = preservedTables(opts);
-  // Empty every base table except the preserved set. The schema (and
-  // the `_migrations` ledger) stays, so the next indexer boot skips the
-  // migration runner and walks the chain from genesis. The rollups are
-  // views, so they need no wipe — they recompute from the now-empty
-  // base tables. (No DROP DATABASE: DuckDB is a single file; emptying
-  // the tables is the equivalent and keeps the carve-outs simple.)
+  // Empty every base table except the preserved set. The schema (and the
+  // Kysely migration ledger) stays, so the next indexer boot's migrator is
+  // a no-op and the indexer walks the chain from genesis. Rollup tables
+  // are emptied too — RollupMaintainer rebuilds them as the backfill
+  // re-crosses each bucket. (No DROP DATABASE: emptying the tables keeps
+  // the carve-outs simple.)
   console.log(`→ DB: emptying every chain-derived table (preserving ${[...preserved].join(', ')})`);
   const tables = await query<{ name: string }>(
     `SELECT table_name AS name FROM information_schema.tables
-     WHERE table_schema = 'main' AND table_type = 'BASE TABLE'`,
+     WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'`,
   );
   let cleared = 0;
   let skippedPreserved = 0;
@@ -259,63 +262,22 @@ async function wipeDatabaseFromHeight(fromHeight: number): Promise<void> {
   // read, so there is nothing to rebuild after the deletes above.
 }
 
-// Re-populate utxo:spent from surviving (height < N) non-phantom
-// tx_inputs after a partial wipe. The forward replay covers >= N on
-// its own; this ensures that a new-chain block at H >= N re-spending
-// a UTXO that was canonically spent at H' < N is still detected as
-// a phantom rather than being silently re-debited.
-async function reseedUtxoSpent(fromHeight: number): Promise<void> {
-  if (fromHeight === 0) {
-    console.log('  utxo:spent: skip reseed (full chain replays from genesis)');
-    return;
-  }
-  console.log(`  utxo:spent: reseeding from tx_inputs WHERE block_height < ${fromHeight} AND is_phantom_spend = false`);
-  const rows = await query<{ prev_tx: string; prev_vout: number }>(
-    `SELECT prev_tx, prev_vout
-       FROM tx_inputs
-      WHERE block_height < ${fromHeight}
-        AND prev_tx IS NOT NULL
-        AND is_phantom_spend = false`,
-  );
-  if (rows.length === 0) {
-    console.log('  utxo:spent: nothing to reseed');
-    return;
-  }
-  const CHUNK = 5000;
-  let seeded = 0;
-  for (let i = 0; i < rows.length; i += CHUNK) {
-    const slice = rows.slice(i, i + CHUNK);
-    const pipe = redis.pipeline();
-    for (const r of slice) pipe.sadd('utxo:spent', `${r.prev_tx}:${r.prev_vout}`);
-    const flush = pipe.exec.bind(pipe);
-    // eslint-disable-next-line no-await-in-loop
-    await flush();
-    seeded += slice.length;
-  }
-  console.log(`  utxo:spent: ${seeded} member(s) re-seeded`);
-}
-
 async function rewindRedisToHeight(fromHeight: number): Promise<void> {
-  console.log('→ Redis: rebuilding wallet projection from address_balance_history…');
-  // The wallet HSETs are running totals; we can't decrement back
+  console.log('→ rebuilding address_state projection from address_balance_history…');
+  // address_state rows are running totals; we can't decrement back
   // surgically without replaying the deltas in reverse for every
-  // affected address. Faster + simpler: clear all wallet keys + ZSETs
-  // and replay the surviving deltas (rows with valid_from_height < N).
-  // Same primitive `rebuildWallets` already exposes for the cold-start
-  // path; the trimmed CH event log is exactly what we need.
-  const replayed = await rebuildWallets();
-  console.log(`  replayed ${replayed} delta rows`);
+  // affected address. Faster + simpler: truncate the projection and
+  // re-aggregate the surviving deltas (rows with valid_from_height < N)
+  // in one INSERT…SELECT — the same primitive the cold-start path uses.
+  const replayed = await rebuildAddressState();
+  console.log(`  projected ${replayed} addresses`);
 
-  // Same problem on the spent-UTXO membership set: every member
-  // contributed by an abandoned block at height >= N must be released
-  // so the next forward replay can claim the UTXO as first-spender
-  // again. Simplest correct approach mirrors the wallet rebuild:
-  // wipe the SET and let the forward replay re-populate it. The
-  // surviving (< N) tx_inputs that aren't phantom-flagged stay
-  // sound because no later block has a chance to phantom them.
+  // Spent-UTXO state needs no rewind step: phantom detection reads
+  // tx_inputs directly, and the wiped rows (>= N) are gone, so the
+  // forward replay's re-spends resolve against the surviving (< N)
+  // canonical spends automatically. (Retire any leftover Redis set
+  // from the pre-DB-detection era.)
   await redis.del('utxo:spent');
-  console.log('  utxo:spent: cleared (forward replay will re-seed)');
-  await reseedUtxoSpent(fromHeight);
 
   // Drop the meili:queue stream — pending envelopes for the deleted
   // height range would re-fire into Meili after the wipe lock clears,
@@ -534,7 +496,7 @@ async function main(): Promise<void> {
   } else {
     console.log(`Partial wipe (from height ${args.fromHeight}) for network=${config.NETWORK}`);
   }
-  console.log(`  DuckDB:      ${config.DUCKDB_PATH}`);
+  console.log(`  MariaDB:     ${config.DATABASE_URL}`);
   console.log(`  Redis:       ${config.REDIS_HOST}:${config.REDIS_PORT} prefix=${redisPrefix}`);
   console.log(`  Meili:       ${config.MEILI_HOST} prefix=${config.MEILI_INDEX_PREFIX}_*`);
   console.log('');

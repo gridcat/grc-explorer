@@ -39,10 +39,13 @@ export async function resolveCpidNames(
     try {
       const rows = await query<{ cpid: string; display_name: string }>(
         `
-          SELECT cpid, arg_max(name, total_credit) AS display_name
-          FROM project_users
-          WHERE cpid = ANY($cpids) AND name != ''
-          GROUP BY cpid
+          SELECT cpid, display_name FROM (
+            SELECT cpid, name AS display_name,
+                   ROW_NUMBER() OVER (PARTITION BY cpid ORDER BY total_credit DESC) AS rn
+            FROM project_users
+            WHERE cpid IN ($cpids) AND name != ''
+          ) AS t
+          WHERE rn = 1
         `,
         { cpids: chunk },
       );

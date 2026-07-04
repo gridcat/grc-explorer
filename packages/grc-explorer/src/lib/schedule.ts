@@ -1,10 +1,8 @@
-import { isFatalDbError } from './db';
 import { log } from './log';
-import { isWipeInProgress, setIndexRebuildNeeded } from './redis';
+import { isWipeInProgress } from './redis';
 import {
   isShuttingDown,
   registerStop,
-  requestShutdown,
   trackInflight,
 } from './shutdown';
 
@@ -49,23 +47,12 @@ export function schedule(
     running = true;
     try {
       // Wrap in a tracked promise so a graceful shutdown waits for the
-      // tick to finish before closing DuckDB out from under it.
+      // tick to finish before closing the DB out from under it.
       await trackInflight(Promise.resolve().then(fn));
     } catch (err) {
-      if (isFatalDbError(err)) {
-        // DuckDB has invalidated the whole database — every subsequent
-        // query throws the same fatal, so looping is pointless. Flag the
-        // on-disk secondary indexes for a boot-time rebuild, then exit
-        // non-zero so the orchestrator restarts us with a clean handle.
-        log.error(`schedule(${label ?? 'anonymous'}) hit a fatal DB error; flagging index rebuild and shutting down`, err);
-        try {
-          await setIndexRebuildNeeded();
-        } catch (flagErr) {
-          log.warn('failed to set index-rebuild flag before shutdown', flagErr);
-        }
-        void requestShutdown(`fatal-db:${label ?? 'anonymous'}`, 1);
-        return;
-      }
+      // A tick error is transient on MariaDB (no whole-database
+      // invalidation as DuckDB had) — log and let the next interval
+      // retry. The DuckDB fatal-exit + boot index-rebuild path is gone.
       log.error(`schedule(${label ?? 'anonymous'}) tick threw`, err);
     } finally {
       running = false;

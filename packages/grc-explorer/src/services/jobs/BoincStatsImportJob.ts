@@ -179,12 +179,12 @@ export class BoincStatsImportJob {
         SELECT project_name, latest_action, latest_url FROM (
           SELECT
             project_name,
-            arg_max(action, block_height)   AS latest_action,
-            arg_max(base_url, block_height) AS latest_url
+            action   AS latest_action,
+            base_url AS latest_url,
+            ROW_NUMBER() OVER (PARTITION BY project_name ORDER BY block_height DESC) AS rn
           FROM project_contracts
-          GROUP BY project_name
-        )
-        WHERE latest_action = 'add'
+        ) AS t
+        WHERE rn = 1 AND latest_action = 'add'
       `,
     );
     return rows
@@ -204,8 +204,8 @@ export class BoincStatsImportJob {
       `
         SELECT
           project_name,
-          CAST(last_success_at AS VARCHAR)   AS last_success_at,
-          CAST(last_attempted_at AS VARCHAR) AS last_attempted_at,
+          CAST(last_success_at AS CHAR)   AS last_success_at,
+          CAST(last_attempted_at AS CHAR) AS last_attempted_at,
           last_status
         FROM project_user_imports
       `,
@@ -337,7 +337,7 @@ export class BoincStatsImportJob {
     if (lastSuccessSec === null) {
       const rows = await query<{ last_success_at: string }>(
         `
-          SELECT CAST(last_success_at AS VARCHAR) AS last_success_at
+          SELECT CAST(last_success_at AS CHAR) AS last_success_at
           FROM project_user_imports
           WHERE project_name = $n LIMIT 1
         `,

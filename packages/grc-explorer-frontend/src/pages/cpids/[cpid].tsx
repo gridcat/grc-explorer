@@ -13,6 +13,7 @@ import {
 } from 'recharts';
 import { useRechartsXZoom } from '../../components/charts/useRechartsXZoom';
 import { ZoomResetButton } from '../../components/charts/useXZoom';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import { Stat } from '../../components/Stat';
 import { api, notFoundOrRethrow } from '../../lib/api';
@@ -156,7 +157,13 @@ export default function CpidDetail({
   if (!summary) return <Layout><Typography>Loading…</Typography></Layout>;
 
   return (
-    <Layout>
+    <>
+      <Seo
+        title={`Researcher ${summary.displayName ?? summary.cpid} · Gridcoin Block Explorer`}
+        description={`Research rewards, magnitude, projects and beacon history for Gridcoin CPID ${summary.cpid}.`}
+        path={`/cpids/${summary.cpid}`}
+      />
+      <Layout>
       <Stack spacing={2}>
         <Crumbs
           items={[
@@ -535,7 +542,8 @@ export default function CpidDetail({
           )}
         </Box>
       </Stack>
-    </Layout>
+      </Layout>
+    </>
   );
 }
 

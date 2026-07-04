@@ -4,12 +4,12 @@ import {
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import { useTheme } from '@mui/material/styles';
 import type { GetServerSideProps } from 'next';
-import Head from 'next/head';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import {
   useCallback, useMemo, useRef, useState,
 } from 'react';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import {
   ChartAxes, ChartFrame, ChartFrameProvider, linearScale, niceTicks,
@@ -120,22 +120,17 @@ export default function ProjectHistory({ points }: ProjectHistoryProps) {
 
   return (
     <Layout>
-      <Head>
-        <title>
-          {selectedYear !== null
-            ? `Gridcoin BOINC project lifecycle in ${selectedYear} — adds, de-listings, active count`
-            : 'Gridcoin BOINC project lifecycle — every whitelist add and de-listing since genesis'}
-        </title>
-        <meta
-          name="description"
-          content={
-            allTime
-              ? `Gridcoin's whitelisted BOINC project count across ${allTime.days.toLocaleString()} days, with ${allTime.totalDelistings} cumulative de-listings — peak ${allTime.peakActive} active, currently ${allTime.currentActive}.`
-              : 'Whole-chain Gridcoin BOINC project lifecycle history with per-year breakdown.'
-          }
-        />
-        <link rel="canonical" href="/projects/history" />
-      </Head>
+      <Seo
+        title={selectedYear !== null
+          ? `Gridcoin BOINC project lifecycle in ${selectedYear} — adds, de-listings, active count`
+          : 'Gridcoin BOINC project lifecycle — every whitelist add and de-listing since genesis'}
+        description={
+          allTime
+            ? `Gridcoin's whitelisted BOINC project count across ${allTime.days.toLocaleString()} days, with ${allTime.totalDelistings} cumulative de-listings — peak ${allTime.peakActive} active, currently ${allTime.currentActive}.`
+            : 'Whole-chain Gridcoin BOINC project lifecycle history with per-year breakdown.'
+        }
+        path="/projects/history"
+      />
 
       <Stack spacing={3}>
         <Crumbs

@@ -131,7 +131,7 @@ async function buildCpidLeaderboard(
   if (currentHeight === null) return { data: [] };
   if (compareAt === undefined && compareDays !== null) {
     const r = await query<{ time: number }>(
-      'SELECT CAST(epoch(time) AS INTEGER) AS time FROM blocks WHERE height = $h',
+      'SELECT UNIX_TIMESTAMP(time) AS time FROM blocks WHERE height = $h',
       { h: currentHeight },
     );
     const t = r[0]?.time;
@@ -222,8 +222,8 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
     }>(
       `
         SELECT block_height, organization,
-               CAST(block_subsidy AS VARCHAR)    AS block_subsidy,
-               CAST(research_subsidy AS VARCHAR) AS research_subsidy,
+               CAST(block_subsidy AS CHAR)    AS block_subsidy,
+               CAST(research_subsidy AS CHAR) AS research_subsidy,
                magnitude, is_mrc
         FROM claims
         WHERE cpid = $cpid ${cap}
@@ -245,8 +245,8 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
     }>(
       `
         SELECT cpid, address, status, tx_id, block_height,
-               CAST(epoch(timestamp) AS INTEGER)  AS timestamp,
-               CAST(epoch(expiration) AS INTEGER) AS expiration,
+               UNIX_TIMESTAMP(timestamp)  AS timestamp,
+               UNIX_TIMESTAMP(expiration) AS expiration,
                superseded_at_height
         FROM beacons
         WHERE cpid = $cpid ${cap}
@@ -266,11 +266,11 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
       `
         SELECT
           m.tx_id                              AS tx_id,
-          CAST(m.research_subsidy AS VARCHAR)  AS research_subsidy,
-          CAST(m.fee_offered AS VARCHAR)       AS fee_offered,
-          CAST(epoch(m.first_seen) AS INTEGER)  AS first_seen,
+          CAST(m.research_subsidy AS CHAR)     AS research_subsidy,
+          CAST(m.fee_offered AS CHAR)          AS fee_offered,
+          UNIX_TIMESTAMP(m.first_seen)          AS first_seen,
           m.block_height                        AS block_height,
-          CAST(epoch(m.block_time) AS INTEGER)  AS block_time,
+          UNIX_TIMESTAMP(m.block_time)          AS block_time,
           (mt.evicted_at IS NOT NULL)          AS is_evicted
         FROM mrc_requests AS m
         LEFT JOIN mempool_txs AS mt ON mt.tx_id = m.tx_id
@@ -314,11 +314,11 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
       `
         SELECT
           address,
-          CAST(sum(c) FILTER (WHERE source = 'beacon') AS UINTEGER) AS beacon_count,
-          CAST(sum(c) FILTER (WHERE source = 'staked') AS UINTEGER) AS staked_blocks,
-          CAST(sum(c) FILTER (WHERE source = 'mrc')    AS UINTEGER) AS mrc_payouts,
-          CAST(min(first_h) AS UINTEGER)                            AS first_height,
-          CAST(max(last_h) AS UINTEGER)                             AS last_height
+          CAST(SUM(CASE WHEN source = 'beacon' THEN c ELSE 0 END) AS UNSIGNED) AS beacon_count,
+          CAST(SUM(CASE WHEN source = 'staked' THEN c ELSE 0 END) AS UNSIGNED) AS staked_blocks,
+          CAST(SUM(CASE WHEN source = 'mrc'    THEN c ELSE 0 END) AS UNSIGNED) AS mrc_payouts,
+          CAST(min(first_h) AS UNSIGNED)                            AS first_height,
+          CAST(max(last_h) AS UNSIGNED)                             AS last_height
         FROM (
           SELECT address, count(*) AS c, 'beacon' AS source,
                  min(block_height) AS first_h, max(block_height) AS last_h
@@ -340,7 +340,7 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
             AND pay_to_address IS NOT NULL AND pay_to_address != ''
             AND block_height IS NOT NULL ${cap}
           GROUP BY pay_to_address
-        )
+        ) AS s
         GROUP BY address
         ORDER BY beacon_count DESC, staked_blocks DESC, mrc_payouts DESC, last_height DESC
         LIMIT 50
@@ -365,7 +365,7 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
     wantRank
       ? query<{ higher: number | string }>(
         `
-          SELECT CAST(count(*) AS UINTEGER) AS higher
+          SELECT CAST(count(*) AS UNSIGNED) AS higher
           FROM superblock_magnitudes
           WHERE superblock_height = $sb AND magnitude > $mag
         `,
@@ -375,9 +375,9 @@ cpidsRouter.get('/:cpid', async (req: Request, res: Response) => {
     claimHeights.length > 0
       ? query<{ height: number; time: number }>(
         `
-          SELECT height, CAST(epoch(time) AS BIGINT) AS time
+          SELECT height, UNIX_TIMESTAMP(time) AS time
           FROM blocks
-          WHERE height = ANY($hs)
+          WHERE height IN ($hs)
         `,
         { hs: claimHeights },
       )
@@ -496,7 +496,7 @@ cpidsRouter.get('/:cpid/blocks', async (req: Request, res: Response) => {
       height: number; hash: string; time: number; is_superblock: boolean;
     }>(
       `
-        SELECT height, hash, CAST(epoch(time) AS BIGINT) AS time, is_superblock
+        SELECT height, hash, UNIX_TIMESTAMP(time) AS time, is_superblock
         FROM blocks
         WHERE staker_cpid = $cpid ${cap}
         ORDER BY height DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}
@@ -518,10 +518,10 @@ cpidsRouter.get('/:cpid/blocks', async (req: Request, res: Response) => {
     }>(
       `
         SELECT block_height,
-               CAST(research_subsidy AS VARCHAR) AS research_subsidy,
-               CAST(block_subsidy AS VARCHAR)    AS block_subsidy,
+               CAST(research_subsidy AS CHAR) AS research_subsidy,
+               CAST(block_subsidy AS CHAR)    AS block_subsidy,
                magnitude
-        FROM claims WHERE block_height = ANY($heights)
+        FROM claims WHERE block_height IN ($heights)
       `,
       { heights },
     );

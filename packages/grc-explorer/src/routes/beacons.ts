@@ -110,7 +110,7 @@ beaconsRouter.get('/', async (req: Request, res: Response) => {
     conditions.push("status = 'revoked'");
   } else if (statusFilter === 'active') {
     conditions.push("status != 'revoked'");
-    conditions.push('expiration > make_timestamp($evalAt::BIGINT * 1000000)');
+    conditions.push('expiration > FROM_UNIXTIME($evalAt)');
     params.evalAt = evalAt;
     if (atHeight !== null) {
       conditions.push('(superseded_at_height IS NULL OR superseded_at_height > $atHeight)');
@@ -119,7 +119,7 @@ beaconsRouter.get('/', async (req: Request, res: Response) => {
     }
   } else if (statusFilter === 'expired') {
     conditions.push("status != 'revoked'");
-    conditions.push('expiration <= make_timestamp($evalAt::BIGINT * 1000000)');
+    conditions.push('expiration <= FROM_UNIXTIME($evalAt)');
     params.evalAt = evalAt;
   } else if (statusFilter === 'superseded') {
     conditions.push("status != 'revoked'");
@@ -133,14 +133,19 @@ beaconsRouter.get('/', async (req: Request, res: Response) => {
   const hasAuth = await hasAuthMethodColumn();
   const authSelect = hasAuth ? ', auth_method' : '';
 
-  const [rawRows, countRows] = await Promise.all([
-    query<BeaconRow>(
+  // Two-phase page fetch: resolve the page's PKs with a query covered
+  // by idx_beacons_height_tx (backward prefix scan matches the ORDER
+  // BY — 25 entries, no sort, no cold full-table read), then fetch the
+  // full rows by PK and restore the order in JS. A single uncovered
+  // ORDER BY query won't use the index (the planner prices a row
+  // lookup per index ENTRY, ignoring the LIMIT — same story as the
+  // rich list). Status filters reference non-indexed columns, so
+  // phase 1 degrades to the previous scan shape for them; the
+  // unfiltered default page is the one that must stay cheap.
+  const [pageKeys, countRows] = await Promise.all([
+    query<{ cpid: string; block_height: number; tx_id: string }>(
       `
-        SELECT cpid, address, status, tx_id, block_height,
-               CAST(epoch(timestamp) AS BIGINT)  AS timestamp,
-               CAST(epoch(expiration) AS BIGINT) AS expiration,
-               superseded_at_height
-               ${authSelect}
+        SELECT cpid, block_height, tx_id
         FROM beacons
         ${whereSql}
         ORDER BY block_height DESC, tx_id DESC
@@ -153,6 +158,32 @@ beaconsRouter.get('/', async (req: Request, res: Response) => {
       params,
     ),
   ]);
+  let rawRows: BeaconRow[] = [];
+  if (pageKeys.length > 0) {
+    const order = new Map<string, number>();
+    const values: unknown[] = [];
+    const tuples: string[] = [];
+    pageKeys.forEach((k, i) => {
+      order.set(`${k.cpid}:${k.block_height}:${k.tx_id}`, i);
+      const base = values.length;
+      values.push(k.cpid, k.block_height, k.tx_id);
+      tuples.push(`($${base + 1}, $${base + 2}, $${base + 3})`);
+    });
+    rawRows = await query<BeaconRow>(
+      `
+        SELECT cpid, address, status, tx_id, block_height,
+               UNIX_TIMESTAMP(timestamp)  AS timestamp,
+               UNIX_TIMESTAMP(expiration) AS expiration,
+               superseded_at_height
+               ${authSelect}
+        FROM beacons
+        WHERE (cpid, block_height, tx_id) IN (${tuples.join(', ')})
+      `,
+      values,
+    );
+    rawRows.sort((a, b) => (order.get(`${a.cpid}:${a.block_height}:${a.tx_id}`) ?? 0)
+      - (order.get(`${b.cpid}:${b.block_height}:${b.tx_id}`) ?? 0));
+  }
   const rows = rawRows.map(presentBeacon);
   const total = Number(countRows[0]?.c ?? 0);
   const v11Timestamp = await getV11BlockTimestamp();
@@ -184,8 +215,8 @@ beaconsRouter.get('/:cpid', async (req: Request, res: Response) => {
   const rows = (await query<BeaconRow>(
     `
       SELECT cpid, address, status, tx_id, block_height,
-             CAST(epoch(timestamp) AS BIGINT)  AS timestamp,
-             CAST(epoch(expiration) AS BIGINT) AS expiration,
+             UNIX_TIMESTAMP(timestamp)  AS timestamp,
+             UNIX_TIMESTAMP(expiration) AS expiration,
              superseded_at_height
              ${authSelect}
       FROM beacons

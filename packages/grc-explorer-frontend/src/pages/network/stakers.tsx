@@ -4,11 +4,11 @@ import {
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import { useTheme } from '@mui/material/styles';
 import type { GetServerSideProps } from 'next';
-import Head from 'next/head';
 import { useRouter } from 'next/router';
 import {
   useCallback, useMemo, useRef, useState,
 } from 'react';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import {
   ChartAxes, ChartFrame, ChartFrameProvider, ChartTooltip, linearScale, niceTicks,
@@ -148,25 +148,20 @@ export default function StakersHistory({ points: rawPoints }: StakersHistoryProp
 
   return (
     <Layout>
-      <Head>
-        <title>
-          {selectedYear !== null
-            ? `Gridcoin active stakers in ${selectedYear} — researchers vs investors`
-            : 'Gridcoin active stakers — every day since the PoS transition'}
-        </title>
-        <meta
-          name="description"
-          content={
-            allTime
-              ? `Daily Gridcoin active-staker count from ${allTime.firstDate} to ${allTime.lastDate}: ${allTime.days.toLocaleString()} days, all-time peak ${formatCount(allTime.peak)}, current ${formatCount(allTime.latest)}. Researcher (CPID-bearing) vs investor (no CPID) decomposition with per-year breakdown.`
-              : 'Whole-chain Gridcoin active-staker history with per-year breakdown. Researcher vs investor decomposition sampled from every PoS block since genesis.'
-          }
-        />
-        {/* Always canonicalise to the bare path so ?year=… variants
-            don't split crawl rank — the year detail is a slice of the
-            same data, not a separate document. */}
-        <link rel="canonical" href="/network/stakers" />
-      </Head>
+      {/* Always canonicalise to the bare path so ?year=… variants
+          don't split crawl rank — the year detail is a slice of the
+          same data, not a separate document. */}
+      <Seo
+        title={selectedYear !== null
+          ? `Gridcoin active stakers in ${selectedYear} — researchers vs investors`
+          : 'Gridcoin active stakers — every day since the PoS transition'}
+        description={
+          allTime
+            ? `Daily Gridcoin active-staker count from ${allTime.firstDate} to ${allTime.lastDate}: ${allTime.days.toLocaleString()} days, all-time peak ${formatCount(allTime.peak)}, current ${formatCount(allTime.latest)}. Researcher (CPID-bearing) vs investor (no CPID) decomposition with per-year breakdown.`
+            : 'Whole-chain Gridcoin active-staker history with per-year breakdown. Researcher vs investor decomposition sampled from every PoS block since genesis.'
+        }
+        path="/network/stakers"
+      />
 
       <Stack spacing={3}>
         <Crumbs

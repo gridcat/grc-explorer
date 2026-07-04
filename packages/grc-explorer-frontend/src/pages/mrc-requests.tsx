@@ -16,6 +16,7 @@ import {
 } from 'recharts';
 import { useRechartsXZoom } from '../components/charts/useRechartsXZoom';
 import { ZoomResetButton } from '../components/charts/useXZoom';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../layouts/Layout';
 import { api } from '../lib/api';
 import {
@@ -272,6 +273,12 @@ export default function MrcDashboard({
   }, []);
 
   return (
+    <>
+      <Seo
+        title="MRC requests · Gridcoin Block Explorer"
+        description="Manual Rewards Claim (MRC) requests on the Gridcoin network, with magnitude and reward."
+        path="/mrc-requests"
+      />
     <Layout>
       <Stack spacing={3}>
         <Crumbs
@@ -581,6 +588,7 @@ export default function MrcDashboard({
         </Paper>
       </Stack>
     </Layout>
+    </>
   );
 }
 

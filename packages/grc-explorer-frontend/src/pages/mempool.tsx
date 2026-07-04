@@ -4,6 +4,7 @@ import {
 import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
+import { Seo } from '@/components/Seo';
 import { LiveTxFeed } from '../components/LiveTxFeed';
 import { MempoolFeeMarket } from '../components/MempoolFeeMarket';
 import { Layout } from '../layouts/Layout';
@@ -81,6 +82,12 @@ export default function MempoolPage({ initialRows }: MempoolPageProps) {
   });
 
   return (
+    <>
+      <Seo
+        title="Mempool · Gridcoin Block Explorer"
+        description="Unconfirmed Gridcoin transactions currently waiting in the mempool."
+        path="/mempool"
+      />
     <Layout>
       <Stack spacing={3}>
         <Crumbs items={[{ label: 'Mempool' }]} />
@@ -143,6 +150,7 @@ export default function MempoolPage({ initialRows }: MempoolPageProps) {
         </Paper>
       </Stack>
     </Layout>
+    </>
   );
 }
 

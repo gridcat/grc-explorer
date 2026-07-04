@@ -5,6 +5,7 @@ import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useEffect, useRef, useState } from 'react';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import { Crumbs } from '../../components/Crumbs';
 import { api } from '../../lib/api';
@@ -82,6 +83,12 @@ export default function PollsList({
   const now = nowSec();
 
   return (
+    <>
+      <Seo
+        title="Polls · Gridcoin Block Explorer"
+        description="Gridcoin governance polls with voting weight, options and results."
+        path="/polls"
+      />
     <Layout>
       <Stack spacing={2}>
         <Crumbs items={[{ label: 'Polls' }]} />
@@ -174,6 +181,7 @@ export default function PollsList({
         </Paper>
       </Stack>
     </Layout>
+    </>
   );
 }
 

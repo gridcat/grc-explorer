@@ -4,8 +4,10 @@ import {
 import { sleep } from '../../lib/async';
 import { clearWipeLock, setWipeLock } from '../../lib/redis';
 import { log } from '../../lib/log';
-import { rebuildWallets } from '../../scripts/rebuildWallets';
+import { rebuildAddressState } from '../../scripts/rebuildAddressState';
+import { reindexMeili } from '../../scripts/reindexMeili';
 import { runWipe } from '../../scripts/wipeExplorer';
+import { AddressClusterJob } from '../jobs/AddressClusterJob';
 import { BoincStatsImportJob } from '../jobs/BoincStatsImportJob';
 
 // In-process executor for admin tasks (see lib/adminTask). The explorer
@@ -22,12 +24,19 @@ async function dispatch(req: AdminRequest): Promise<string> {
   switch (req.kind) {
     case 'wipe': {
       const o = req.opts as { fromHeight?: number | null; includeMempool?: boolean; includeBoinc?: boolean };
+      // Re-validate here, not just in the CLI requester: the request
+      // arrives over the Redis bus, and fromHeight flows into SQL
+      // builders — don't trust the transport.
+      const fromHeight = o.fromHeight == null ? null : Number(o.fromHeight);
+      if (fromHeight !== null && (!Number.isInteger(fromHeight) || fromHeight < 0)) {
+        throw new Error(`wipe: invalid fromHeight ${String(o.fromHeight)}`);
+      }
       await runWipe({
-        fromHeight: o.fromHeight ?? null,
+        fromHeight,
         includeMempool: Boolean(o.includeMempool),
         includeBoinc: Boolean(o.includeBoinc),
       });
-      return o.fromHeight != null ? `wiped from height ${o.fromHeight}` : 'full wipe complete';
+      return fromHeight != null ? `wiped from height ${fromHeight}` : 'full wipe complete';
     }
     case 'boinc-fetch': {
       const o = req.opts as { force?: boolean; project?: string | null };
@@ -35,8 +44,16 @@ async function dispatch(req: AdminRequest): Promise<string> {
       return 'boinc user-stats import complete';
     }
     case 'rebuild-wallets': {
-      const n = await rebuildWallets();
-      return `rebuilt wallet projection (${n} delta rows)`;
+      const n = await rebuildAddressState();
+      return `rebuilt address_state projection (${n} addresses)`;
+    }
+    case 'rebuild-clusters': {
+      const n = await new AddressClusterJob().fullRebuild();
+      return `rebuilt address clusters (${n} clustered addresses)`;
+    }
+    case 'reindex-meili': {
+      const n = await reindexMeili();
+      return `queued ${n} Meili envelope(s) for reindex`;
     }
     default: {
       // claimAdminTask already rejected unknown kinds; this is a

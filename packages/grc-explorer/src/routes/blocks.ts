@@ -73,7 +73,7 @@ blocksRouter.get('/', async (req: Request, res: Response) => {
   // The list bounds claims to the page's heights (claims is keyed by
   // block_height); the count and the page-tail subquery share this
   // unaliased time predicate (no `b.` alias inside them).
-  const countTimeFilter = useAt ? 'WHERE time <= make_timestamp($at::BIGINT * 1000000)' : '';
+  const countTimeFilter = useAt ? 'WHERE time <= FROM_UNIXTIME($at)' : '';
   const params = useAt ? { at } : {};
 
   const [rawRows, totalRows] = await Promise.all([
@@ -104,7 +104,7 @@ blocksRouter.get('/', async (req: Request, res: Response) => {
     // still prunes via idx_blocks_time. Empty/clamped result → NULL,
     // handled JS-side.
     query<{ c: string | number }>(
-      `SELECT CAST(max(height) - min(height) + 1 AS BIGINT) AS c FROM blocks ${countTimeFilter}`,
+      `SELECT CAST(max(height) - min(height) + 1 AS SIGNED) AS c FROM blocks ${countTimeFilter}`,
       params,
     ),
   ]);
@@ -210,7 +210,7 @@ blocksRouter.get('/:height', async (req: Request, res: Response) => {
         SELECT cpid, mining_id, client_version, research_subsidy, magnitude, pay_to_address
         FROM claim_mrcs
         WHERE block_height = $h
-        ORDER BY CAST(research_subsidy AS UBIGINT) DESC
+        ORDER BY CAST(research_subsidy AS UNSIGNED) DESC
       `,
       { h: height },
     ),
@@ -356,20 +356,23 @@ blocksRouter.get('/:height/sidestakes', async (req: Request, res: Response) => {
   }>(
     `
       WITH registry AS (
-        SELECT address,
-               arg_max(status, block_height)         AS status,
-               arg_max(allocation_pct, block_height) AS allocation_pct,
-               arg_max(description, block_height)    AS description
-        FROM mandatory_sidestakes
-        WHERE block_height <= $h
-        GROUP BY address
+        -- last row per address (max block_height <= H); arg_max ->
+        -- ROW_NUMBER()=1 over block_height DESC.
+        SELECT address, status, allocation_pct, description
+        FROM (
+          SELECT address, status, allocation_pct, description,
+                 ROW_NUMBER() OVER (PARTITION BY address ORDER BY block_height DESC) AS rn
+          FROM mandatory_sidestakes
+          WHERE block_height <= $h
+        ) ranked
+        WHERE rn = 1
       )
       SELECT
         cs.address                              AS address,
         cs.vout_idx                             AS vout_idx,
         cs.tx_id                                AS tx_id,
-        CAST(cs.amount AS VARCHAR)              AS amount,
-        CAST(epoch(cs.time) AS BIGINT)          AS time,
+        CAST(cs.amount AS CHAR)                 AS amount,
+        UNIX_TIMESTAMP(cs.time)                 AS time,
         coalesce(r.allocation_pct, 0.0)         AS allocation_pct,
         coalesce(r.description, '')             AS description,
         coalesce(r.status, '')                  AS status
@@ -416,11 +419,11 @@ blocksRouter.get('/:height/mempool-snapshot', async (req: Request, res: Response
     `
       SELECT
         block_hash,
-        CAST(epoch(block_time) AS BIGINT)   AS block_time,
-        CAST(epoch(captured_at) AS BIGINT)  AS captured_at,
+        UNIX_TIMESTAMP(block_time)    AS block_time,
+        UNIX_TIMESTAMP(captured_at)   AS captured_at,
         tx_id,
-        CAST(epoch(first_seen) AS BIGINT)   AS first_seen,
-        CAST(fee_estimate AS VARCHAR)       AS fee_estimate,
+        UNIX_TIMESTAMP(first_seen)    AS first_seen,
+        CAST(fee_estimate AS CHAR)    AS fee_estimate,
         size, vin_count, vout_count, was_included
       FROM mempool_snapshots
       WHERE block_height = $h

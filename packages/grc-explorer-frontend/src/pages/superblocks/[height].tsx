@@ -5,6 +5,7 @@ import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useEffect, useRef, useState } from 'react';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import { api, notFoundOrRethrow } from '../../lib/api';
 import { formatCompact, formatNumber, formatTime } from '../../lib/format';
@@ -70,7 +71,13 @@ export default function SuperblockDetail({
   if (!sb) return <Layout><Typography>Loading…</Typography></Layout>;
 
   return (
-    <Layout>
+    <>
+      <Seo
+        title={`Superblock #${formatNumber(sb.height)} · Gridcoin Block Explorer`}
+        description={`Project magnitudes, totals and details for the Gridcoin superblock at height ${sb.height}.`}
+        path={`/superblocks/${sb.height}`}
+      />
+      <Layout>
       <Stack spacing={2}>
         <Crumbs items={[
           RESEARCHERS_CRUMB,
@@ -213,7 +220,8 @@ export default function SuperblockDetail({
         </Paper>
         </Box>
       </Stack>
-    </Layout>
+      </Layout>
+    </>
   );
 }
 

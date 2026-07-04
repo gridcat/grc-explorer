@@ -89,9 +89,18 @@ transactionsRouter.get('/:tx_id/raw', async (req: Request, res: Response) => {
         getRawTransaction: (id: string, verbose: boolean) => Promise<unknown>;
       }).getRawTransaction(txId, true);
     }
-    const hex = await (liveRpc as unknown as {
-      getRawTransaction: (id: string, verbose: boolean) => Promise<string>;
-    }).getRawTransaction(txId, false);
+    // The verbose payload already embeds the wire `hex`, so the common
+    // (confirmed-tx) path needs a single RPC round trip. getrawtransaction
+    // is ~5s/call on this daemon; the extra hex-only call pushed the
+    // uncached response past the frontend's 15s axios timeout, so the first
+    // view always failed and only the Redis-cached retry succeeded. Fall
+    // back to a dedicated hex fetch only when the decoded tree lacks it.
+    let hex = (decoded as { hex?: string } | null)?.hex;
+    if (typeof hex !== 'string') {
+      hex = await (liveRpc as unknown as {
+        getRawTransaction: (id: string, verbose: boolean) => Promise<string>;
+      }).getRawTransaction(txId, false);
+    }
     rewriteAsmFields(decoded);
     const attributes = { hex, decoded };
     await redis.set(cacheKey, JSON.stringify(attributes), 'EX', RAW_TX_CACHE_TTL_S);
@@ -288,12 +297,12 @@ async function loadMrcRow(txId: string): Promise<MrcRowOut | null> {
         cpid,
         client_version,
         organization,
-        CAST(research_subsidy AS VARCHAR) AS research_subsidy,
-        CAST(fee_offered AS VARCHAR)      AS fee_offered,
+        CAST(research_subsidy AS CHAR) AS research_subsidy,
+        CAST(fee_offered AS CHAR)      AS fee_offered,
         magnitude, magnitude_unit, last_block_hash, signature, pay_to_address,
-        CAST(epoch(first_seen) AS BIGINT) AS first_seen,
+        UNIX_TIMESTAMP(first_seen) AS first_seen,
         block_height,
-        CAST(epoch(block_time) AS BIGINT) AS block_time
+        UNIX_TIMESTAMP(block_time) AS block_time
       FROM mrc_requests
       WHERE tx_id = $tx LIMIT 1
     `,
@@ -354,11 +363,11 @@ async function loadMempoolTx(txId: string): Promise<unknown | null> {
   const rows = await query<MempoolRow>(
     `
       SELECT tx_id,
-             CAST(epoch(first_seen) AS BIGINT) AS first_seen,
-             CAST(fee_estimate AS VARCHAR)     AS fee_estimate,
+             UNIX_TIMESTAMP(first_seen) AS first_seen,
+             CAST(fee_estimate AS CHAR)     AS fee_estimate,
              size, vin_count, vout_count, raw_json,
-             CAST(epoch(confirmed_at) AS BIGINT) AS confirmed_at,
-             CAST(epoch(evicted_at) AS BIGINT)   AS evicted_at
+             UNIX_TIMESTAMP(confirmed_at) AS confirmed_at,
+             UNIX_TIMESTAMP(evicted_at)   AS evicted_at
       FROM mempool_txs
       WHERE tx_id = $tx LIMIT 1
     `,
@@ -506,7 +515,7 @@ async function resolvePrevOutAttrs(
     `
       SELECT tx_id, vout_n, address, value
       FROM tx_outputs
-      WHERE tx_id = ANY($txIds) AND vout_n = ANY($vouts)
+      WHERE tx_id IN ($txIds) AND vout_n IN ($vouts)
     `,
     { txIds, vouts },
   );

@@ -1,6 +1,6 @@
 import { getClustersForAddresses } from './cluster';
 import { halford2grc } from './halford';
-import { getWalletBalances } from './redis';
+import { getWalletBalances } from './addressState';
 import { sharePct } from './supply';
 
 export interface Combined {

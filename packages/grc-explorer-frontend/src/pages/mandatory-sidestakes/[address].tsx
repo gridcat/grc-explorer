@@ -2,8 +2,8 @@ import {
   Box, Card, CardContent, Chip, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography,
 } from '@mui/material';
 import type { GetServerSideProps } from 'next';
-import Head from 'next/head';
 import Link from 'next/link';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import { Crumbs } from '../../components/Crumbs';
 import { HashTrim } from '../../components/HashTrim';
@@ -61,13 +61,11 @@ export default function RecipientDetailPage({ initial }: PageProps) {
 
   return (
     <Layout>
-      <Head>
-        <title>{`${initial.address} — mandatory sidestake recipient`}</title>
-        <meta
-          name="description"
-          content={`Mandatory sidestake registry + payout history for ${initial.address}. Current allocation ${initial.currentAllocationPct.toFixed(2)}%.`}
-        />
-      </Head>
+      <Seo
+        title={`${initial.address} — mandatory sidestake recipient`}
+        description={`Mandatory sidestake registry + payout history for ${initial.address}. Current allocation ${initial.currentAllocationPct.toFixed(2)}%.`}
+        path={`/mandatory-sidestakes/${initial.address}`}
+      />
 
       <Stack spacing={3}>
         <Crumbs items={[

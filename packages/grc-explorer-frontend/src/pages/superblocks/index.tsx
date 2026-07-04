@@ -16,6 +16,7 @@ import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
 import { formatCompact, formatNumber } from '../../lib/format';
 import { pushPaginationQuery, readPageFromQuery, readPageSizeFromQuery } from '../../lib/pagination';
+import { Seo } from '@/components/Seo';
 import { ChartLegend } from '../../components/charts/SvgChart';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { CopyLinkButton } from '../../components/CopyLinkButton';
@@ -119,6 +120,12 @@ export default function SuperblocksList({
   };
 
   return (
+    <>
+      <Seo
+        title="Superblocks · Gridcoin Block Explorer"
+        description="Recent Gridcoin superblocks and the researcher magnitudes they record."
+        path="/superblocks"
+      />
     <Layout>
       <Stack spacing={2}>
         <Crumbs
@@ -286,6 +293,7 @@ export default function SuperblocksList({
         </Paper>
       </Stack>
     </Layout>
+    </>
   );
 }
 

@@ -3,14 +3,13 @@ import {
   TableHead, TableRow, Typography,
 } from '@mui/material';
 import type { GetServerSideProps } from 'next';
-import Head from 'next/head';
 import Link from 'next/link';
+import { Seo } from '@/components/Seo';
 import { Crumbs } from '../../components/Crumbs';
 import { HashTrim } from '../../components/HashTrim';
 import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
 import { formatNumber, formatTime } from '../../lib/format';
-import { IS_TESTNET } from '../../lib/network';
 
 interface RegistryEvent {
   value: string;
@@ -34,9 +33,9 @@ interface ProtocolRegistryPageProps {
   keys: RegistryKey[];
 }
 
-const PAGE_TITLE = IS_TESTNET
-  ? '[testnet] Gridcoin protocol registry — on-chain parameter history'
-  : 'Gridcoin protocol registry — on-chain parameter history';
+// Base title without the `[testnet]` prefix — the shared <Seo> applies
+// that prefix on testnet builds, so baking it in here would double it.
+const PAGE_TITLE = 'Gridcoin protocol registry — on-chain parameter history';
 
 const PAGE_DESCRIPTION = 'Time-travel viewer for the Gridcoin on-chain '
   + 'protocol-parameter registry. Every ADD and DELETE event for every '
@@ -47,11 +46,11 @@ const PAGE_DESCRIPTION = 'Time-travel viewer for the Gridcoin on-chain '
 export default function ProtocolRegistryPage({ keys }: ProtocolRegistryPageProps) {
   return (
     <Layout showTimeMachine={false}>
-      <Head>
-        <title>{PAGE_TITLE}</title>
-        <meta name="description" content={PAGE_DESCRIPTION} />
-        <link rel="canonical" href="/protocol/registry" />
-      </Head>
+      <Seo
+        title={PAGE_TITLE}
+        description={PAGE_DESCRIPTION}
+        path="/protocol/registry"
+      />
       <Container maxWidth="lg" sx={{ flexGrow: 1, py: 2 }}>
         <Stack spacing={3}>
           <Crumbs items={[

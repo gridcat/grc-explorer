@@ -13,7 +13,7 @@ import { redis } from './redis';
 // Keys are auto-prefixed by lib/redis's keyPrefix, so both the requester
 // and the in-app watcher resolve the same namespaced key.
 
-export const ADMIN_KINDS = ['wipe', 'boinc-fetch', 'rebuild-wallets'] as const;
+export const ADMIN_KINDS = ['wipe', 'boinc-fetch', 'rebuild-wallets', 'rebuild-clusters', 'reindex-meili'] as const;
 export type AdminKind = (typeof ADMIN_KINDS)[number];
 
 export interface AdminRequest {

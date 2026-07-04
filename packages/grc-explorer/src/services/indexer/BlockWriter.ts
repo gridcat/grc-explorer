@@ -4,11 +4,11 @@ import { halford2grc } from '../../lib/halford';
 import { log } from '../../lib/log';
 import { enqueueMeiliBatch, MeiliEnvelope } from '../../lib/meili';
 import { normalizeProjectName } from '../../lib/projectName';
-import {
-  applyWalletDeltasBatch, getCursor, setCursor, WalletDelta,
-} from '../../lib/redis';
+import { applyAddressStateDeltas, WalletDelta } from '../../lib/addressState';
+import { getCursor, setCursor } from '../../lib/redis';
 import { ParsedBlock } from './ContractParser';
 import { markPhantomSpends } from './PhantomSpendDetector';
+import { refreshRollups } from '../jobs/RollupMaintainer';
 
 // Chain tables are insert-only per primary key: every row is derived from
 // a block and is never mutated in place (spent_in_* is resolved at read
@@ -58,7 +58,7 @@ export async function applyBlock(parsed: ParsedBlock, options: ApplyBlockOptions
 export async function applyBlocks(parsedList: ParsedBlock[], options: ApplyBlockOptions = {}): Promise<void> {
   if (parsedList.length === 0) return;
 
-  // markPhantomSpends mutates parsedList in place (a pipelined SADD scan
+  // markPhantomSpends mutates parsedList in place (an indexed tx_inputs scan
   // over Halford-era kernel reuses); it must complete before the per-
   // table writes — insertTxInputs and insertAddressBalanceHistory consume
   // the phantom-spend annotations.
@@ -81,6 +81,7 @@ export async function applyBlocks(parsedList: ParsedBlock[], options: ApplyBlock
   await Promise.all([
     insertTxOutputs(parsedList),
     insertTxInputs(parsedList),
+    insertAddressTxs(parsedList),
     insertTransactions(parsedList),
     insertAddressBalanceHistory(parsedList),
     insertClaims(parsedList),
@@ -203,6 +204,44 @@ async function insertTxInputs(parsedList: ParsedBlock[]): Promise<void> {
   }))), { pk: ['tx_id', 'vin_n'] });
 }
 
+async function insertAddressTxs(parsedList: ParsedBlock[]): Promise<void> {
+  // Per-(address, tx) net movement projection backing the address
+  // page's transactions list (migration 0009) — O(page) reads instead
+  // of re-aggregating the address's whole history per view. Runs
+  // after markPhantomSpends: phantom re-claims are excluded, matching
+  // address_balance_history's debit semantics. A (address, tx)
+  // aggregate is complete within its block, so INSERT IGNORE makes
+  // replays no-ops and reorgs roll back by height (chainTables).
+  const rows: Record<string, unknown>[] = [];
+  for (const p of parsedList) {
+    const perTx = new Map<string, { height: number; delta: bigint }>();
+    for (const o of p.txOutputs) {
+      if (!o.address) continue;
+      const key = `${o.address} ${o.txId}`;
+      const cur = perTx.get(key);
+      if (cur) cur.delta += o.value;
+      else perTx.set(key, { height: p.block.height, delta: o.value });
+    }
+    for (const i of p.txInputs) {
+      if (!i.address || i.value === null || i.isPhantomSpend) continue;
+      const key = `${i.address} ${i.txId}`;
+      const cur = perTx.get(key);
+      if (cur) cur.delta -= i.value;
+      else perTx.set(key, { height: p.block.height, delta: -i.value });
+    }
+    for (const [key, v] of perTx) {
+      const sep = key.indexOf(' ');
+      rows.push({
+        address: key.slice(0, sep),
+        block_height: v.height,
+        tx_id: key.slice(sep + 1),
+        delta: v.delta,
+      });
+    }
+  }
+  await insertChain('address_txs', rows, { pk: ['address', 'block_height', 'tx_id'] });
+}
+
 async function insertAddressBalanceHistory(parsedList: ParsedBlock[]): Promise<void> {
   // Pure event-log writes. Each (address, height-where-balance-changed)
   // becomes one row carrying just the per-block delta + the
@@ -229,13 +268,13 @@ async function insertAddressBalanceHistory(parsedList: ParsedBlock[]): Promise<v
     pk: ['address', 'valid_from_height'], tsCols: ['valid_from_time'],
   });
 
-  // Redis projection — single pipelined round trip for the whole
-  // batch instead of per-address awaits. The per-address variant was
-  // doing ~2 RTTs per (address, block) pair; once chain density picks
-  // up that dominated batch latency. applyWalletDeltasBatch collapses
-  // the same-address-in-multiple-blocks case via per-address sums and
-  // ships every command in one pipeline. Best-effort: if Redis
-  // hiccups, the next `rebuildWallets` from DuckDB heals it.
+  // Current-state projection — one additive multi-row upsert into
+  // address_state for the whole batch (per-address sums collapse the
+  // same-address-in-multiple-blocks case). Re-applied heights are
+  // filtered against last_seen_block inside applyAddressStateDeltas,
+  // so a batch replay stays consistent with the INSERT IGNORE
+  // event-log no-op above; a failure here is healed by
+  // scripts/rebuildAddressState or, after a reorg, repairAddressState.
   const walletDeltas: WalletDelta[] = [];
   for (const p of parsedList) {
     for (const [addr, delta] of p.addressDeltas) {
@@ -249,11 +288,13 @@ async function insertAddressBalanceHistory(parsedList: ParsedBlock[]): Promise<v
       });
     }
   }
-  try {
-    await applyWalletDeltasBatch(walletDeltas);
-  } catch (err) {
-    log.warn(`applyWalletDeltasBatch failed (${walletDeltas.length} deltas)`, err);
-  }
+  // Propagate failures: unlike the old best-effort Redis pipeline, the
+  // projection lives in the same MariaDB as everything else, and the
+  // batch is idempotent under re-apply (INSERT IGNORE + the last_seen
+  // filter). Failing the batch here keeps the cursor from advancing
+  // past deltas the projection never absorbed — swallowing the error
+  // would silently detach address_state until a manual rebuild.
+  await applyAddressStateDeltas(walletDeltas);
 }
 
 async function insertClaims(parsedList: ParsedBlock[]): Promise<void> {
@@ -400,7 +441,7 @@ async function insertVotes(parsedList: ParsedBlock[]): Promise<void> {
       `
         SELECT poll_id, lower(title) AS title_lower
         FROM polls
-        WHERE lower(title) = ANY($titles)
+        WHERE lower(title) IN ($titles)
       `,
       { titles: dbKeys },
     );
@@ -419,7 +460,7 @@ async function insertVotes(parsedList: ParsedBlock[]): Promise<void> {
       `
         SELECT poll_id, idx, label
         FROM poll_options
-        WHERE poll_id = ANY($pids)
+        WHERE poll_id IN ($pids)
       `,
       { pids: needOptionsFor },
     );
@@ -506,8 +547,8 @@ async function reconcileMempool(parsedList: ParsedBlock[]): Promise<void> {
   await Promise.all(Array.from(idsByTime.entries()).map(([time, ids]) => run(
     `
       UPDATE mempool_txs
-      SET confirmed_at = make_timestamp($t::BIGINT * 1000000), evicted_at = NULL
-      WHERE tx_id = ANY($ids) AND confirmed_at IS NULL
+      SET confirmed_at = FROM_UNIXTIME($t), evicted_at = NULL
+      WHERE tx_id IN ($ids) AND confirmed_at IS NULL
     `,
     { t: time, ids },
   )));
@@ -526,7 +567,7 @@ async function mempoolFirstSeenWatermark(): Promise<number | null> {
   const now = Date.now();
   if (watermarkCache && now < watermarkCache.expiresAt) return watermarkCache.value;
   const rows = await query<{ w: number | string | null }>(
-    'SELECT CAST(epoch(min(first_seen)) AS BIGINT) AS w FROM mempool_txs',
+    'SELECT CAST(UNIX_TIMESTAMP(min(first_seen)) AS SIGNED) AS w FROM mempool_txs',
   );
   const w = rows[0]?.w != null ? Number(rows[0].w) : null;
   const value = w != null && w > 0 ? w : null;
@@ -560,32 +601,34 @@ async function captureMempoolSnapshots(parsedList: ParsedBlock[]): Promise<void>
   await Promise.all(parsedList.map(({ block, transactions }) => run(
     `
       INSERT INTO mempool_snapshots
+        (block_height, block_hash, block_time, captured_at, tx_id,
+         first_seen, fee_estimate, size, vin_count, vout_count, was_included)
       SELECT
-        $height                                       AS block_height,
-        $hash                                         AS block_hash,
-        make_timestamp($time::BIGINT * 1000000)       AS block_time,
-        now()                                         AS captured_at,
+        $height                          AS block_height,
+        $hash                            AS block_hash,
+        FROM_UNIXTIME($time)             AS block_time,
+        NOW()                            AS captured_at,
         tx_id,
         first_seen,
         fee_estimate,
         size,
         vin_count,
         vout_count,
-        (tx_id = ANY($block_tx_ids))                  AS was_included
+        (tx_id IN ($block_tx_ids))       AS was_included
       FROM mempool_txs
-      WHERE first_seen <= make_timestamp($time::BIGINT * 1000000)
-        AND (confirmed_at IS NULL OR confirmed_at >= make_timestamp($time::BIGINT * 1000000))
-        AND (evicted_at   IS NULL OR evicted_at   >= make_timestamp($time::BIGINT * 1000000))
-      ON CONFLICT (block_height, tx_id) DO UPDATE SET
-        block_hash = excluded.block_hash,
-        block_time = excluded.block_time,
-        captured_at = excluded.captured_at,
-        first_seen = excluded.first_seen,
-        fee_estimate = excluded.fee_estimate,
-        size = excluded.size,
-        vin_count = excluded.vin_count,
-        vout_count = excluded.vout_count,
-        was_included = excluded.was_included
+      WHERE first_seen <= FROM_UNIXTIME($time)
+        AND (confirmed_at IS NULL OR confirmed_at >= FROM_UNIXTIME($time))
+        AND (evicted_at   IS NULL OR evicted_at   >= FROM_UNIXTIME($time))
+      ON DUPLICATE KEY UPDATE
+        block_hash = VALUES(block_hash),
+        block_time = VALUES(block_time),
+        captured_at = VALUES(captured_at),
+        first_seen = VALUES(first_seen),
+        fee_estimate = VALUES(fee_estimate),
+        size = VALUES(size),
+        vin_count = VALUES(vin_count),
+        vout_count = VALUES(vout_count),
+        was_included = VALUES(was_included)
     `,
     {
       height: block.height,
@@ -699,6 +742,19 @@ async function insertMrcRequests(parsedList: ParsedBlock[]): Promise<void> {
 }
 
 async function runPostCommit(parsedList: ParsedBlock[], options: ApplyBlockOptions): Promise<void> {
+  // Rollup maintenance runs ALWAYS (backfill + live) — the materialised
+  // rollup tables (migration 0002) are built during backfill and kept
+  // current at the tip. Recompute the trailing window from the batch's
+  // earliest block time; reorg re-applies pass through here too, so the
+  // affected recent buckets self-correct on the next forward batch.
+  if (parsedList.length > 0) {
+    try {
+      await refreshRollups(parsedList[0].block.time);
+    } catch (err) {
+      log.warn('post-commit rollup refresh failed', err);
+    }
+  }
+
   // SSE fanouts are cheap and in-memory. Skipped in backfill to keep
   // the dashboard from drowning in historical events.
   if (options.emitLiveEvents !== false) {
@@ -921,7 +977,7 @@ async function emitMetricsTicks(parsedList: ParsedBlock[]): Promise<void> {
         `
           SELECT bucket_ts, tx_count, block_count
           FROM ${g.networkMv}
-          WHERE bucket_ts = ANY($buckets)
+          WHERE bucket_ts IN ($buckets)
         `,
         { buckets: g.aligned },
       ),
@@ -929,7 +985,7 @@ async function emitMetricsTicks(parsedList: ParsedBlock[]): Promise<void> {
         `
           SELECT bucket_ts, research_subsidy_total, block_subsidy_total
           FROM ${g.claimsMv}
-          WHERE bucket_ts = ANY($buckets)
+          WHERE bucket_ts IN ($buckets)
         `,
         { buckets: g.aligned },
       ),
@@ -940,7 +996,7 @@ async function emitMetricsTicks(parsedList: ParsedBlock[]): Promise<void> {
         `
           SELECT bucket_ts, value_moved, fee_total
           FROM ${g.txMv}
-          WHERE bucket_ts = ANY($buckets)
+          WHERE bucket_ts IN ($buckets)
         `,
         { buckets: g.aligned },
       ),
@@ -1031,8 +1087,15 @@ function buildMeiliEnvelopes(parsed: ParsedBlock): MeiliEnvelope[] {
       index: 'beacons',
       action: 'upsert',
       doc: {
-        id: `${beacon.cpid}:${beacon.txId}`,
+        // Meili document ids allow only [a-zA-Z0-9_-]; cpid and txId are
+        // hex, so an underscore join is legal. A colon (the old
+        // separator) made Meili reject every beacon doc with
+        // invalid_document_id — beacon fuzzy-search silently indexed
+        // nothing. reindexMeili uses the same `_` join.
+        id: `${beacon.cpid}_${beacon.txId}`,
         cpid: beacon.cpid,
+        // Rendered as the search-result subtitle (`cpid · address`).
+        address: beacon.address,
         status: beacon.status,
         block_height: beacon.blockHeight,
         timestamp: beacon.timestamp,

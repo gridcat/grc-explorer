@@ -199,9 +199,9 @@ export async function resolveChainForks(): Promise<ResolvedFork[]> {
   }
   const rows = await query<{ height: number; ts: number }>(
     `
-      SELECT height, CAST(epoch(time) AS UINTEGER) AS ts
+      SELECT height, UNIX_TIMESTAMP(time) AS ts
       FROM blocks
-      WHERE height = ANY($heights)
+      WHERE height IN ($heights)
     `,
     { heights },
   );

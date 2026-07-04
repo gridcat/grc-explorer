@@ -4,11 +4,11 @@ import {
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import { useTheme } from '@mui/material/styles';
 import type { GetServerSideProps } from 'next';
-import Head from 'next/head';
 import { useRouter } from 'next/router';
 import {
   useCallback, useMemo, useRef, useState,
 } from 'react';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import {
   ChartAxes, ChartFrame, ChartFrameProvider, ChartTooltip, linearScale, niceTicks,
@@ -204,25 +204,20 @@ export default function DifficultyHistory({ points, forks }: DifficultyHistoryPr
 
   return (
     <Layout>
-      <Head>
-        <title>
-          {selectedYear !== null
-            ? `Gridcoin difficulty in ${selectedYear} — daily min, max, average`
-            : 'Gridcoin difficulty history — every day since genesis'}
-        </title>
-        <meta
-          name="description"
-          content={
-            allTime
-              ? `Daily Gridcoin network difficulty from ${allTime.firstDate} to ${allTime.lastDate}: ${allTime.days.toLocaleString()} days, peak ${formatDifficulty(allTime.max)}, current ${formatDifficulty(allTime.latest)}. Whole-chain log-scale chart and per-year detail.`
-              : 'Whole-chain Gridcoin network difficulty history with per-year breakdown. Daily min, max, and average sampled from every block since genesis.'
-          }
-        />
-        {/* Always canonicalise to the bare path so ?year=… variants
-            don't split crawl rank — the year detail is a slice of the
-            same data, not a separate document. */}
-        <link rel="canonical" href="/network/difficulty" />
-      </Head>
+      {/* Always canonicalise to the bare path so ?year=… variants
+          don't split crawl rank — the year detail is a slice of the
+          same data, not a separate document. */}
+      <Seo
+        title={selectedYear !== null
+          ? `Gridcoin difficulty in ${selectedYear} — daily min, max, average`
+          : 'Gridcoin difficulty history — every day since genesis'}
+        description={
+          allTime
+            ? `Daily Gridcoin network difficulty from ${allTime.firstDate} to ${allTime.lastDate}: ${allTime.days.toLocaleString()} days, peak ${formatDifficulty(allTime.max)}, current ${formatDifficulty(allTime.latest)}. Whole-chain log-scale chart and per-year detail.`
+            : 'Whole-chain Gridcoin network difficulty history with per-year breakdown. Daily min, max, and average sampled from every block since genesis.'
+        }
+        path="/network/difficulty"
+      />
 
       <Stack spacing={3}>
         <Crumbs

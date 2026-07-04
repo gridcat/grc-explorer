@@ -51,15 +51,18 @@ mandatorySidestakesRouter.get('/', async (_req: Request, res: Response) => {
   const rows = await query<ActiveRegistryRow>(
     `
       WITH latest AS (
-        SELECT address,
-               arg_max(status, block_height)         AS status,
-               arg_max(allocation_pct, block_height) AS allocation_pct,
-               arg_max(description, block_height)    AS description,
-               arg_max(tx_id, block_height)          AS tx_id,
-               max(block_height)                     AS last_height,
-               arg_max(CAST(epoch(time) AS BIGINT), block_height) AS time
-        FROM mandatory_sidestakes
-        GROUP BY address
+        -- arg_max(col, block_height) per address = the latest row's
+        -- columns; ROW_NUMBER picks that row (block_height DESC).
+        SELECT address, status, allocation_pct, description, tx_id,
+               block_height            AS last_height,
+               UNIX_TIMESTAMP(time)    AS time
+        FROM (
+          SELECT address, status, allocation_pct, description, tx_id,
+                 block_height, time,
+                 ROW_NUMBER() OVER (PARTITION BY address ORDER BY block_height DESC) AS rn
+          FROM mandatory_sidestakes
+        ) ranked
+        WHERE rn = 1
       )
       SELECT
         l.address                                  AS address,
@@ -68,7 +71,7 @@ mandatorySidestakesRouter.get('/', async (_req: Request, res: Response) => {
         l.tx_id                                    AS tx_id,
         l.last_height                              AS block_height,
         l.time                                     AS time,
-        CAST(coalesce(p.total_paid, 0) AS VARCHAR) AS total_paid,
+        CAST(coalesce(p.total_paid, 0) AS CHAR)    AS total_paid,
         coalesce(p.payout_count, 0)                AS payout_count
       FROM latest l
       LEFT JOIN (
@@ -116,7 +119,7 @@ mandatorySidestakesRouter.get('/:address', async (req: Request, res: Response) =
     }>(
       `
         SELECT address, action, status, allocation_pct, description,
-               tx_id, block_height, CAST(epoch(time) AS BIGINT) AS time
+               tx_id, block_height, UNIX_TIMESTAMP(time) AS time
         FROM mandatory_sidestakes
         WHERE address = $addr
         ORDER BY block_height
@@ -129,8 +132,8 @@ mandatorySidestakesRouter.get('/:address', async (req: Request, res: Response) =
     }>(
       `
         SELECT block_height, vout_idx, tx_id,
-               CAST(amount AS VARCHAR)      AS amount,
-               CAST(epoch(time) AS BIGINT)  AS time
+               CAST(amount AS CHAR)      AS amount,
+               UNIX_TIMESTAMP(time)      AS time
         FROM coinstake_sidestakes
         WHERE address = $addr
         ORDER BY block_height DESC, vout_idx
@@ -140,8 +143,8 @@ mandatorySidestakesRouter.get('/:address', async (req: Request, res: Response) =
     ),
     query<{ total: string; payout_count: number | string }>(
       `
-        SELECT CAST(coalesce(sum(amount), 0) AS VARCHAR) AS total,
-               count(*)                                  AS payout_count
+        SELECT CAST(coalesce(sum(amount), 0) AS CHAR) AS total,
+               count(*)                               AS payout_count
         FROM coinstake_sidestakes
         WHERE address = $addr
       `,

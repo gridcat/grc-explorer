@@ -25,6 +25,7 @@ import { TxsPerBlockChart, Point as TxsPerBlockPoint } from '../components/TxsPe
 import {
   WealthDistributionChart, CurrentSnapshot as WealthSnapshot, SeriesPoint as WealthSeriesPoint,
 } from '../components/WealthDistributionChart';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../layouts/Layout';
 import { api } from '../lib/api';
 import { IS_TESTNET } from '../lib/network';
@@ -68,6 +69,12 @@ export default function Home({
   initialBeaconSurvival, initialCohorts, initialCpidNames,
 }: HomeProps) {
   return (
+    <>
+      <Seo
+        title="Gridcoin Block Explorer"
+        description="Explore the Gridcoin blockchain: blocks, transactions, addresses, researchers, superblocks and governance polls in real time."
+        path="/"
+      />
     <Layout showSearch>
       <GradientLine />
 
@@ -208,6 +215,7 @@ export default function Home({
         </LazyOnVisible>
       </Stack>
     </Layout>
+    </>
   );
 }
 

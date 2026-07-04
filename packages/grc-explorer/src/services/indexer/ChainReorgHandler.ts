@@ -1,11 +1,12 @@
 import { config } from '../../config';
+import { repairAddressState } from '../../lib/addressState';
 import { deleteChainRowsAtOrAboveHeight } from '../../lib/chainTables';
+import { purgeReorgCache } from '../../lib/cfPurge';
 import { query } from '../../lib/db';
 import { events } from '../../lib/emitter';
 import { liveRpc } from '../../lib/gridcoin';
 import { log } from '../../lib/log';
 import { getCursor, setCursor } from '../../lib/redis';
-import { releaseSpentUtxos } from './PhantomSpendDetector';
 
 interface CursorPosition {
   height: number;
@@ -45,18 +46,33 @@ export class ChainReorgHandler {
     const abandoned = await this.collectAbandonedHashes(fork.height + 1, cursor.height);
     log.warn(`Reorg detected — moving cursor back ${depth} blocks to fork ${fork.height}/${fork.hash}`);
 
-    // Release abandoned UTXO claims from the spent-UTXO set before
-    // the forward replay re-walks the new chain. Without this, every
-    // re-spend in the new chain would look like a phantom and lose
-    // its address_balance_history debit. The forward replay's SADD
-    // re-populates the set with whichever UTXOs the new chain spends.
-    await this.releaseAbandonedUtxos(fork.height + 1, cursor.height);
+    // (Spent-UTXO release is implicit now: phantom detection reads
+    // tx_inputs directly, and deleteChainRowsAtOrAboveHeight below
+    // removes the abandoned spends, so the new chain's re-spends are
+    // first-spends again without a separate release step.)
+
+    // Capture which addresses the abandoned range touched BEFORE the
+    // rows vanish — the exact set whose address_state running totals
+    // absorbed abandoned deltas. Served by idx_abh_height; bounded by
+    // MAX_REORG_DEPTH blocks' worth of activity.
+    const dirtyAddresses = await this.collectAffectedAddresses(fork.height + 1);
 
     // Delete the abandoned chain rows (fork+1 .. cursor) so the forward
     // replay re-inserts into a clean gap. Must happen before the cursor
     // moves: chain writes are DO NOTHING, so a height that still has its
     // abandoned row would be skipped instead of replaced.
     await deleteChainRowsAtOrAboveHeight(fork.height + 1);
+
+    // Exact projection repair: recompute the touched addresses from the
+    // surviving event log (delete-then-reinsert inside). The forward
+    // replay then re-applies the new chain's deltas additively on top.
+    await repairAddressState(dirtyAddresses);
+
+    // Evict the edge cache for the rolled-back range so Cloudflare doesn't
+    // keep serving the abandoned chain. Best-effort + no-op when CF isn't
+    // configured; never blocks the reorg (the rollup tables self-correct
+    // on the forward replay's next refreshRollups pass).
+    await purgeReorgCache(fork.height + 1);
 
     // Move cursor; TipFollower's next tick re-applies fork+1 onward into
     // the cleared range.
@@ -116,27 +132,16 @@ export class ChainReorgHandler {
     return null;
   }
 
-  private async releaseAbandonedUtxos(from: number, to: number): Promise<void> {
-    if (to < from) return;
-    // We only need to release UTXOs that the abandoned chain marked
-    // as first-spent. Phantom re-claims in the abandoned range don't
-    // own their SET entry — its canonical spender lives in some
-    // earlier (still-live) block — so SREM is restricted to
-    // non-phantom rows. `is_phantom_spend` defaults to false on
-    // pre-migration rows, which is the correct interpretation for
-    // pre-existing data.
-    const rows = await query<{ prev_tx: string; prev_vout: number }>(
+  private async collectAffectedAddresses(from: number): Promise<string[]> {
+    const rows = await query<{ address: string }>(
       `
-        SELECT prev_tx, prev_vout
-        FROM tx_inputs
-        WHERE block_height >= $from
-          AND block_height <= $to
-          AND prev_tx IS NOT NULL
-          AND is_phantom_spend = false
+        SELECT DISTINCT address
+        FROM address_balance_history
+        WHERE valid_from_height >= $from AND address != ''
       `,
-      { from, to },
+      { from },
     );
-    await releaseSpentUtxos(rows.map((r) => `${r.prev_tx}:${r.prev_vout}`));
+    return rows.map((r) => r.address);
   }
 
   private async collectAbandonedHashes(from: number, to: number): Promise<string[]> {

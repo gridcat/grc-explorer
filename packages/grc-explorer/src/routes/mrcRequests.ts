@@ -64,16 +64,16 @@ const SELECT_MRC = `
     m.cpid                               AS cpid,
     m.client_version                     AS client_version,
     m.organization                       AS organization,
-    CAST(m.research_subsidy AS VARCHAR)  AS research_subsidy,
-    CAST(m.fee_offered AS VARCHAR)       AS fee_offered,
+    CAST(m.research_subsidy AS CHAR)     AS research_subsidy,
+    CAST(m.fee_offered AS CHAR)          AS fee_offered,
     m.magnitude                          AS magnitude,
     m.magnitude_unit                     AS magnitude_unit,
     m.last_block_hash                    AS last_block_hash,
     m.pay_to_address                     AS pay_to_address,
-    CAST(epoch(m.first_seen) AS BIGINT)  AS first_seen,
+    UNIX_TIMESTAMP(m.first_seen)         AS first_seen,
     m.block_height                       AS block_height,
-    CAST(epoch(m.block_time) AS BIGINT)  AS block_time,
-    CAST(epoch(mt.evicted_at) AS BIGINT) AS evicted_at
+    UNIX_TIMESTAMP(m.block_time)         AS block_time,
+    UNIX_TIMESTAMP(mt.evicted_at)        AS evicted_at
   FROM mrc_requests AS m
   LEFT JOIN mempool_txs AS mt ON mt.tx_id = m.tx_id
 `;
@@ -101,9 +101,10 @@ function parseSort(raw: unknown): { sql: string; field: SortField; dir: 'ASC' | 
   }
   // `block_height` is nullable (pending / evicted rows). Force NULLs
   // to the trailing position regardless of dir so confirmed rows
-  // always sort first.
-  const nullsClause = field === 'block_height' ? ' NULLS LAST' : '';
-  return { sql: `${column} ${dir}${nullsClause}`, field, dir };
+  // always sort first. MariaDB has no NULLS LAST, so lead the sort
+  // with `<col> IS NULL` (0 = non-null first, 1 = null last).
+  const nullsLeader = field === 'block_height' ? `${column} IS NULL, ` : '';
+  return { sql: `${nullsLeader}${column} ${dir}`, field, dir };
 }
 
 // GET /mrc-requests
@@ -178,12 +179,12 @@ mrcRequestsRouter.get('/summary', async (_req: Request, res: Response) => {
     }>(
       `
         SELECT
-          CAST(count(*) FILTER (WHERE block_height IS NOT NULL) AS UINTEGER)                          AS confirmed_count,
-          CAST(coalesce(sum(research_subsidy) FILTER (WHERE block_height IS NOT NULL), 0) AS VARCHAR)  AS confirmed_research_total,
-          CAST(coalesce(sum(fee_offered) FILTER (WHERE block_height IS NOT NULL), 0) AS VARCHAR)       AS confirmed_fee_total,
-          CAST(count(*) FILTER (WHERE first_seen >= make_timestamp($since::BIGINT * 1000000)) AS UINTEGER)                         AS recent_count,
-          CAST(coalesce(sum(research_subsidy) FILTER (WHERE first_seen >= make_timestamp($since::BIGINT * 1000000)), 0) AS VARCHAR) AS recent_research_total,
-          CAST(count(DISTINCT cpid) FILTER (WHERE block_height IS NOT NULL) AS UINTEGER)               AS distinct_cpids
+          CAST(SUM(CASE WHEN block_height IS NOT NULL THEN 1 ELSE 0 END) AS UNSIGNED)                          AS confirmed_count,
+          CAST(coalesce(SUM(CASE WHEN block_height IS NOT NULL THEN research_subsidy ELSE 0 END), 0) AS CHAR)  AS confirmed_research_total,
+          CAST(coalesce(SUM(CASE WHEN block_height IS NOT NULL THEN fee_offered ELSE 0 END), 0) AS CHAR)       AS confirmed_fee_total,
+          CAST(SUM(CASE WHEN first_seen >= FROM_UNIXTIME($since) THEN 1 ELSE 0 END) AS UNSIGNED)                         AS recent_count,
+          CAST(coalesce(SUM(CASE WHEN first_seen >= FROM_UNIXTIME($since) THEN research_subsidy ELSE 0 END), 0) AS CHAR) AS recent_research_total,
+          CAST(count(DISTINCT CASE WHEN block_height IS NOT NULL THEN cpid END) AS UNSIGNED)               AS distinct_cpids
         FROM mrc_requests
       `,
       { since: since24h },
@@ -191,8 +192,8 @@ mrcRequestsRouter.get('/summary', async (_req: Request, res: Response) => {
     query<{ pending: number; evicted: number }>(
       `
         SELECT
-          CAST(count(*) FILTER (WHERE m.block_height IS NULL AND mt.evicted_at IS NULL) AS UINTEGER)     AS pending,
-          CAST(count(*) FILTER (WHERE m.block_height IS NULL AND mt.evicted_at IS NOT NULL) AS UINTEGER) AS evicted
+          CAST(SUM(CASE WHEN m.block_height IS NULL AND mt.evicted_at IS NULL THEN 1 ELSE 0 END) AS UNSIGNED)     AS pending,
+          CAST(SUM(CASE WHEN m.block_height IS NULL AND mt.evicted_at IS NOT NULL THEN 1 ELSE 0 END) AS UNSIGNED) AS evicted
         FROM mrc_requests AS m
         LEFT JOIN mempool_txs AS mt ON mt.tx_id = m.tx_id
       `,
@@ -241,14 +242,14 @@ mrcRequestsRouter.get('/timeline', async (req: Request, res: Response) => {
   }>(
     `
       SELECT
-        CAST(epoch(date_trunc('day', block_time)) AS BIGINT) AS bucket_ts,
-        CAST(count(*) AS UINTEGER)                           AS count,
-        CAST(coalesce(sum(research_subsidy), 0) AS VARCHAR)  AS research_total,
-        CAST(coalesce(sum(fee_offered), 0) AS VARCHAR)       AS fee_total,
-        CAST(count(DISTINCT cpid) AS UINTEGER)               AS distinct_cpids
+        UNIX_TIMESTAMP(DATE(block_time))                    AS bucket_ts,
+        CAST(count(*) AS UNSIGNED)                           AS count,
+        CAST(coalesce(sum(research_subsidy), 0) AS CHAR)     AS research_total,
+        CAST(coalesce(sum(fee_offered), 0) AS CHAR)          AS fee_total,
+        CAST(count(DISTINCT cpid) AS UNSIGNED)               AS distinct_cpids
       FROM mrc_requests
       WHERE block_height IS NOT NULL
-        AND block_time >= make_timestamp($since::BIGINT * 1000000)
+        AND block_time >= FROM_UNIXTIME($since)
       GROUP BY bucket_ts
       ORDER BY bucket_ts ASC
     `,
@@ -286,22 +287,26 @@ mrcRequestsRouter.get('/wait-distribution', async (req: Request, res: Response) 
   }>(
     `
       WITH w AS (
-        SELECT CAST(epoch(block_time) AS BIGINT) - CAST(epoch(first_seen) AS BIGINT) AS wait_s
+        SELECT UNIX_TIMESTAMP(block_time) - UNIX_TIMESTAMP(first_seen) AS wait_s
         FROM mrc_requests
         WHERE block_height IS NOT NULL
           AND block_time > first_seen
-          AND first_seen >= make_timestamp($since::BIGINT * 1000000)
+          AND first_seen >= FROM_UNIXTIME($since)
       )
       SELECT
-        CAST(count(*) FILTER (WHERE wait_s < 30) AS UINTEGER)                       AS b_lt30s,
-        CAST(count(*) FILTER (WHERE wait_s >= 30 AND wait_s < 60) AS UINTEGER)      AS b_30s_1m,
-        CAST(count(*) FILTER (WHERE wait_s >= 60 AND wait_s < 300) AS UINTEGER)     AS b_1m_5m,
-        CAST(count(*) FILTER (WHERE wait_s >= 300 AND wait_s < 900) AS UINTEGER)    AS b_5m_15m,
-        CAST(count(*) FILTER (WHERE wait_s >= 900 AND wait_s < 3600) AS UINTEGER)   AS b_15m_1h,
-        CAST(count(*) FILTER (WHERE wait_s >= 3600 AND wait_s < 21600) AS UINTEGER) AS b_1h_6h,
-        CAST(count(*) FILTER (WHERE wait_s >= 21600) AS UINTEGER)                   AS b_gt6h,
-        quantile_cont(wait_s, 0.5)  AS p50,
-        quantile_cont(wait_s, 0.95) AS p95
+        CAST(SUM(CASE WHEN wait_s < 30 THEN 1 ELSE 0 END) AS UNSIGNED)                       AS b_lt30s,
+        CAST(SUM(CASE WHEN wait_s >= 30 AND wait_s < 60 THEN 1 ELSE 0 END) AS UNSIGNED)      AS b_30s_1m,
+        CAST(SUM(CASE WHEN wait_s >= 60 AND wait_s < 300 THEN 1 ELSE 0 END) AS UNSIGNED)     AS b_1m_5m,
+        CAST(SUM(CASE WHEN wait_s >= 300 AND wait_s < 900 THEN 1 ELSE 0 END) AS UNSIGNED)    AS b_5m_15m,
+        CAST(SUM(CASE WHEN wait_s >= 900 AND wait_s < 3600 THEN 1 ELSE 0 END) AS UNSIGNED)   AS b_15m_1h,
+        CAST(SUM(CASE WHEN wait_s >= 3600 AND wait_s < 21600 THEN 1 ELSE 0 END) AS UNSIGNED) AS b_1h_6h,
+        CAST(SUM(CASE WHEN wait_s >= 21600 THEN 1 ELSE 0 END) AS UNSIGNED)                   AS b_gt6h,
+        -- MariaDB PERCENTILE_CONT is window-only, so it can't sit beside the
+        -- bare aggregates above. Pull each percentile from a scalar subquery
+        -- over the same CTE (DISTINCT collapses the per-row window output to
+        -- one value; empty w → no rows → NULL, matching DuckDB quantile_cont).
+        (SELECT DISTINCT PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY wait_s) OVER () FROM w)  AS p50,
+        (SELECT DISTINCT PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY wait_s) OVER () FROM w)  AS p95
       FROM w
     `,
     { since },
@@ -354,13 +359,13 @@ mrcRequestsRouter.get('/bid-vs-payout', async (req: Request, res: Response) => {
   }>(
     `
       SELECT
-        CAST(research_subsidy AS VARCHAR)   AS research_subsidy,
-        CAST(fee_offered AS VARCHAR)        AS fee_offered,
-        CAST(epoch(block_time) AS BIGINT)   AS block_time,
+        CAST(research_subsidy AS CHAR)      AS research_subsidy,
+        CAST(fee_offered AS CHAR)           AS fee_offered,
+        UNIX_TIMESTAMP(block_time)          AS block_time,
         cpid
       FROM mrc_requests
       WHERE block_height IS NOT NULL
-        AND block_time >= make_timestamp($since::BIGINT * 1000000)
+        AND block_time >= FROM_UNIXTIME($since)
       ORDER BY block_time DESC
       LIMIT ${Number(limit)}
     `,
@@ -397,12 +402,12 @@ mrcRequestsRouter.get('/staker-take', async (req: Request, res: Response) => {
   }>(
     `
       SELECT
-        CAST(epoch(date_trunc('day', block_time)) AS BIGINT) AS bucket_ts,
-        CAST(coalesce(sum(mrc_staker_fees), 0) AS VARCHAR)   AS staker_total,
-        CAST(coalesce(sum(mrc_foundation_fees), 0) AS VARCHAR) AS foundation_total,
-        CAST(count(*) FILTER (WHERE mrc_staker_fees > 0) AS UINTEGER) AS mrc_blocks
+        UNIX_TIMESTAMP(DATE(block_time))                      AS bucket_ts,
+        CAST(coalesce(sum(mrc_staker_fees), 0) AS CHAR)       AS staker_total,
+        CAST(coalesce(sum(mrc_foundation_fees), 0) AS CHAR)   AS foundation_total,
+        CAST(SUM(CASE WHEN mrc_staker_fees > 0 THEN 1 ELSE 0 END) AS UNSIGNED) AS mrc_blocks
       FROM claims
-      WHERE block_time >= make_timestamp($since::BIGINT * 1000000)
+      WHERE block_time >= FROM_UNIXTIME($since)
         AND (mrc_staker_fees > 0 OR mrc_foundation_fees > 0)
       GROUP BY bucket_ts
       ORDER BY bucket_ts ASC

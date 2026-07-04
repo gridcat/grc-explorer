@@ -12,6 +12,7 @@ import {
   formatCompact, formatGrc, formatNumber, formatTime,
 } from '../../lib/format';
 import { track } from '../../lib/track';
+import { Seo } from '@/components/Seo';
 import { HashTrim } from '../../components/HashTrim';
 import { Crumbs } from '../../components/Crumbs';
 import { CpidLabel } from '../../components/CpidLabel';
@@ -202,7 +203,13 @@ export function BlockDetail({
   const hasNext = tipHeight === null || block.height < tipHeight;
 
   return (
-    <Layout>
+    <>
+      <Seo
+        title={`Block #${formatNumber(block.height)} · Gridcoin Block Explorer`}
+        description={`Gridcoin block ${block.height}: hash, ${block.txCount} transactions, staker, claim and money-flow details.`}
+        path={`/block/${block.height}`}
+      />
+      <Layout>
       <Stack spacing={2}>
         <Crumbs items={[
           { label: 'Blocks', href: '/blocks' },
@@ -440,7 +447,8 @@ export function BlockDetail({
 
         <BlockFlow flow={flow} />
       </Stack>
-    </Layout>
+      </Layout>
+    </>
   );
 }
 

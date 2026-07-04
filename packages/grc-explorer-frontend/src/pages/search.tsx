@@ -5,6 +5,7 @@ import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../layouts/Layout';
 import { Crumbs } from '../components/Crumbs';
 import { api } from '../lib/api';
@@ -85,6 +86,12 @@ export default function SearchPage({ initialQ, initialResults, initialLoaded }: 
   const totalHits = results.reduce((acc, r) => acc + r.hits.length, 0);
 
   return (
+    <>
+      <Seo
+        title="Search · Gridcoin Block Explorer"
+        description="Search the Gridcoin chain by block height, transaction, address, CPID or poll."
+        path="/search"
+      />
     <Layout>
       <Stack spacing={2}>
         <Crumbs items={[{ label: 'Search' }]} />
@@ -139,6 +146,7 @@ export default function SearchPage({ initialQ, initialResults, initialLoaded }: 
         )}
       </Stack>
     </Layout>
+    </>
   );
 }
 
