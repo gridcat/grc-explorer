@@ -1,3 +1,15 @@
+# [grc-explorer-frontend-v2.0.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.5.0...grc-explorer-frontend-v2.0.0) (2026-07-04)
+
+
+### Features
+
+* migrate datastore to MariaDB and run the explorer on a 2 GB box ([9756bbf](https://github.com/gridcat/grc-explorer/commit/9756bbffa5f32369767d04b9c216e1444d95284f))
+
+
+### BREAKING CHANGES
+
+* datastore is now MariaDB; production must be re-seeded from a mariabackup physical backup rather than upgraded in place.
+
 # [grc-explorer-frontend-v1.5.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v1.4.0...grc-explorer-frontend-v1.5.0) (2026-06-27)
 
 
