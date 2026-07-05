@@ -245,10 +245,12 @@ nconf
     DATABASE_URL: 'mysql://admin:IamAdmin@mysql:3306/grc_explorer',
     DB_POOL_WRITE: 1,
     DB_POOL_READ: 6,
-    // 2 — background analytical jobs run serially-ish so their cold
-    // full-history scans neither starve the API readers nor saturate the
-    // HDD with many concurrent scans.
-    DB_POOL_MAINT_READ: 2,
+    // 3 — serves both the background analytical jobs AND the metrics
+    // route's cold cache rebuilds (routes/metrics.ts). Small enough that
+    // their full-history scans neither starve the API readers nor saturate
+    // the HDD with many concurrent scans; big enough that a metrics rebuild
+    // doesn't have to wait behind a long job.
+    DB_POOL_MAINT_READ: 3,
     REDIS_HOST: 'redis',
     REDIS_PORT: 6379,
     REDIS_PREFIX: 'grc-explorer:testnet',

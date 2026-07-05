@@ -1,6 +1,13 @@
 import { Request, Response, Router } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { query } from '../lib/db';
+// This module is nothing but cached analytical aggregates: every query
+// here runs inside an swrCached* builder (or the active-stakers cache
+// below), so a DB read only happens on a cold/expired rebuild, never on a
+// cache hit. Route those rebuilds through the MAINTENANCE reader pool so a
+// 6-60s metrics recompute can't seize one of the few API request
+// connections and stall the fast pages. Warm hits serve from cache and
+// touch no pool at all.
+import { maintenanceQuery as query } from '../lib/db';
 import { cpidDisplayName, resolveCpidNames } from '../lib/cpidNames';
 import { ErrorModel } from '../lib/errors';
 import { halford2grc } from '../lib/halford';
@@ -991,11 +998,13 @@ metricsRouter.get('/cpid-cohort-retention', async (req: Request, res: Response) 
 // Computed against `blocks` directly — chain-derivable, works for any
 // historical moment, doesn't depend on whether our daemon happened to
 // be observing the P2P network at that time.
-metricsRouter.get('/active-stakers', async (req: Request, res: Response) => {
-  const hours = clampedQueryInt(req, 'hours', { def: 24, min: 1, max: 168 });
-  const at = parseAt(req) ?? await getTipAnchor();
-  const since = at - hours * 3600;
+// Two count(DISTINCT staker_cpid) scans over the blocks time-window — was
+// uncached and ran on every request. Cache it like every other metric here.
+const ACTIVE_STAKERS_TTL_MS = 300_000;
+const getActiveStakers = swrCachedLiveKeyed<JsonApiResource>(ACTIVE_STAKERS_TTL_MS);
 
+async function buildActiveStakers(hours: number, at: number): Promise<JsonApiResource> {
+  const since = at - hours * 3600;
   const [headlineRows, seriesRows] = await Promise.all([
     query<{ c: string | number }>(
       `
@@ -1021,20 +1030,26 @@ metricsRouter.get('/active-stakers', async (req: Request, res: Response) => {
     ),
   ]);
   const current = Number(headlineRows[0]?.c ?? 0);
-  const points = seriesRows.map((p) => ({
-    ts: p.bucket_ts,
-    count: Number(p.count),
-  }));
-
-  res.status(StatusCodes.OK).send(withMeta({
-    data: {
-      type: 'active_stakers',
-      id: `last_${hours}h`,
-      attributes: {
-        hours, anchor: at, current, points,
-      },
+  const points = seriesRows.map((p) => ({ ts: p.bucket_ts, count: Number(p.count) }));
+  return {
+    type: 'active_stakers',
+    id: `last_${hours}h`,
+    attributes: {
+      hours, anchor: at, current, points,
     },
-  }));
+  };
+}
+
+metricsRouter.get('/active-stakers', async (req: Request, res: Response) => {
+  const hours = clampedQueryInt(req, 'hours', { def: 24, min: 1, max: 168 });
+  const at = parseAt(req);
+  // Time-travel (?at=) is exact and rare — build fresh. The live view keys
+  // on hours only and reuses the first build's result for the TTL; the
+  // "active stakers in the last N hours" window drifts negligibly over 5 min.
+  const data = at !== undefined
+    ? await buildActiveStakers(hours, at)
+    : await getActiveStakers(String(hours), async () => buildActiveStakers(hours, await getTipAnchor()));
+  res.status(StatusCodes.OK).send(withMeta({ data }));
 });
 
 const STAKER_MIX_TTL_MS = 300_000;
