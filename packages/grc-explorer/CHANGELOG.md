@@ -1,3 +1,10 @@
+# [grc-explorer-v2.0.6](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.0.5...grc-explorer-v2.0.6) (2026-07-05)
+
+
+### Bug Fixes
+
+* trim superblock SSR + estimate rich-list total ([60c432f](https://github.com/gridcat/grc-explorer/commit/60c432faafc54a37e0417cc431e49d9f806cc600))
+
 # [grc-explorer-v2.0.5](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.0.4...grc-explorer-v2.0.5) (2026-07-05)
 
 
