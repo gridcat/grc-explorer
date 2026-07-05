@@ -1,3 +1,10 @@
+# [grc-explorer-v2.0.4](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.0.3...grc-explorer-v2.0.4) (2026-07-05)
+
+
+### Bug Fixes
+
+* memoize immutable poll-weight balance; index project pages ([d425e84](https://github.com/gridcat/grc-explorer/commit/d425e84285d8bf640414044105c300675f029216))
+
 # [grc-explorer-v2.0.3](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.0.2...grc-explorer-v2.0.3) (2026-07-05)
 
 
