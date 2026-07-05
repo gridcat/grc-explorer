@@ -4,8 +4,54 @@ import { maintenanceQuery as query, run } from '../../lib/db';
 import { HALFORD } from '../../lib/halford';
 import { getTipAnchor } from '../../lib/indexerTip';
 import { log } from '../../lib/log';
+import { swrCachedKeyed } from '../../lib/swrCache';
 import { WEIGHT_TYPE } from '../indexer/ContractParser';
 import { forkHeight } from '../network/ChainForks';
+
+// Total AV-W eligible balance (sum of every positive address balance) as
+// of a chain height. This is a full GROUP BY scan of address_balance_history
+// — ~8 min on the prod HDD — but for a settled chain its result is fixed:
+// the height is a poll's start height, so once buried the total never moves.
+// Active polls are re-processed every tick to refresh per-voter weights as
+// new votes land, but the denominator does NOT need re-scanning each time.
+// Memoise it (effectively forever within a process; swrCachedKeyed also
+// single-flights so two active polls at the same height don't both kick off
+// the scan). Turns an every-15-min disk grind into a one-shot — the
+// sustained I/O that kept pages slow under load.
+//
+// Keyed by (startHeight, block hash at startHeight), NOT height alone. A
+// reorg reaching at/below startHeight replaces that block (fork+1..tip are
+// all rewritten), so its hash changes and the memo correctly misses and
+// recomputes on the new chain. A reorg strictly above startHeight leaves
+// both the hash and the summed history unchanged, so the cached value stays
+// valid — a plain height key would instead pin the abandoned chain's
+// denominator for the life of the process. The hash lookup is a cheap PK
+// read per tick; the ~8-min scan is what's being avoided.
+const ELIGIBLE_BALANCE_TTL_MS = 10 * 365 * 24 * 60 * 60_000;
+const eligibleBalanceCache = swrCachedKeyed<bigint>(ELIGIBLE_BALANCE_TTL_MS);
+
+async function eligibleBalanceAtHeight(startHeight: number): Promise<bigint> {
+  const hashRows = await query<{ hash: string }>(
+    'SELECT hash FROM blocks WHERE height = $h',
+    { h: startHeight },
+  );
+  const chainKey = hashRows[0]?.hash ?? String(startHeight);
+  return eligibleBalanceCache(`${startHeight}:${chainKey}`, async () => {
+    const rows = await query<{ total: string | null }>(
+      `
+        SELECT CAST(sum(bal) AS CHAR) AS total FROM (
+          SELECT sum(delta) AS bal
+          FROM address_balance_history
+          WHERE valid_from_height <= $h
+          GROUP BY address
+          HAVING sum(delta) > 0
+        ) AS t
+      `,
+      { h: startHeight },
+    );
+    return BigInt(rows[0]?.total ?? '0');
+  });
+}
 
 // Vote-weight + AV-W aggregator. For each poll it processes:
 //   1. Find the latest superblock at-or-before poll.block_height
@@ -160,19 +206,10 @@ export class PollWeightAggregator {
     // eligible magnitude (depends on sbHeight), and the vote list.
     // None of these depend on each other — only the post-await
     // per-voter dictionary queries do.
-    const [eligBalRows, eligMagRows, votes] = await Promise.all([
-      query<{ total: string | null }>(
-        `
-          SELECT CAST(sum(bal) AS CHAR) AS total FROM (
-            SELECT sum(delta) AS bal
-            FROM address_balance_history
-            WHERE valid_from_height <= $h
-            GROUP BY address
-            HAVING sum(delta) > 0
-          ) AS t
-        `,
-        { h: startHeight },
-      ),
+    const [avwBalance, eligMagRows, votes] = await Promise.all([
+      // Immutable per start height — memoised so it's not re-scanned every
+      // tick (see eligibleBalanceAtHeight).
+      eligibleBalanceAtHeight(startHeight),
       sbHeight !== null
         ? query<{ total: string | null }>(
           `
@@ -194,7 +231,6 @@ export class PollWeightAggregator {
         { id: poll.poll_id },
       ),
     ]);
-    const avwBalance = BigInt(eligBalRows[0]?.total ?? '0');
     const avwMagnitude = Number(eligMagRows[0]?.total ?? 0);
     if (votes.length === 0) {
       // No votes: just stamp weights_computed_at_height so the poll

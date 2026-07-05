@@ -585,7 +585,7 @@ projectsRouter.get('/:name', async (req: Request, res: Response) => {
               ORDER BY superblock_height ASC
             ) AS rn
           FROM superblock_projects
-          WHERE lower(REGEXP_REPLACE(project_name, '[ _-]', '')) = $sbName
+          WHERE project_name_norm = $sbName
         ) AS ranked
         WHERE rn = 1
         ORDER BY superblock_height ASC
