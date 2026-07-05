@@ -1,3 +1,10 @@
+# [grc-explorer-v2.0.2](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.0.1...grc-explorer-v2.0.2) (2026-07-05)
+
+
+### Bug Fixes
+
+* make superblock/poll/rich-list reads index-only on cold prod ([9ad6654](https://github.com/gridcat/grc-explorer/commit/9ad665423a27337f0fdd98da2886ac48f2c36718))
+
 # [grc-explorer-v2.0.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.0.0...grc-explorer-v2.0.1) (2026-07-04)
 
 
