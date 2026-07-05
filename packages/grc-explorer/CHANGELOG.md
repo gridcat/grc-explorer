@@ -1,3 +1,10 @@
+# [grc-explorer-v2.0.3](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.0.2...grc-explorer-v2.0.3) (2026-07-05)
+
+
+### Bug Fixes
+
+* **explorer:** stop background jobs starving the API DB reader pool ([b5b9292](https://github.com/gridcat/grc-explorer/commit/b5b9292b86666ba57ee55b514fcd646a58c08851))
+
 # [grc-explorer-v2.0.2](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.0.1...grc-explorer-v2.0.2) (2026-07-05)
 
 
