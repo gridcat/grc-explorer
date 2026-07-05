@@ -1,4 +1,4 @@
-import { query, run } from './db';
+import { query, maintenanceQuery, run } from './db';
 import { swrCached } from './swrCache';
 
 // Wallet current-state projection, backed by the `address_state` table
@@ -246,8 +246,14 @@ export async function getWalletCount(): Promise<number> {
 // current-bucket input (Gini / top-N / holder count need magnitudes
 // only). Index-only backward scan of idx_address_state_balance; same
 // f64 truncation stance as the Redis ZSET scores it replaces.
+//
+// Reads on the MAINTENANCE pool: the only caller is the periodic
+// WealthSnapshotJob, and this scans all ~3.3M positive balances — a
+// full index scan that must not sit on an API reader connection. (The
+// alias trick in the job file doesn't reach here: this helper closes
+// over addressState's own `query` import, not the caller's.)
 export async function positiveBalancesDesc(): Promise<number[]> {
-  const rows = await query<{ balance: number | string }>(
+  const rows = await maintenanceQuery<{ balance: number | string }>(
     `
       SELECT CAST(balance AS DOUBLE) AS balance
       FROM address_state

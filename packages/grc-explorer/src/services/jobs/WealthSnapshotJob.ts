@@ -1,4 +1,6 @@
-import { query, upsert } from '../../lib/db';
+// Reads go through the maintenance reader pool (aliased to `query`) so
+// this job's full address_state scans can't starve the API readers.
+import { maintenanceQuery as query, upsert } from '../../lib/db';
 import { positiveBalancesDesc } from '../../lib/addressState';
 import { events } from '../../lib/emitter';
 import { getTipAnchor } from '../../lib/indexerTip';

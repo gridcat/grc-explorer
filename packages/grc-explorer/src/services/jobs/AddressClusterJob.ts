@@ -1,6 +1,8 @@
 import { chunked } from '../../lib/chunked';
 import { config } from '../../config';
-import { query, run, upsert } from '../../lib/db';
+// Reads go through the maintenance reader pool (aliased to `query`) so
+// this job's paged tx_inputs / cluster scans can't starve the API readers.
+import { maintenanceQuery as query, run, upsert } from '../../lib/db';
 import { log } from '../../lib/log';
 import { getCursor, redis } from '../../lib/redis';
 

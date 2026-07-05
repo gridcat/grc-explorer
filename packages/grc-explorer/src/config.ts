@@ -12,6 +12,16 @@ interface Config {
   DATABASE_URL: string;
   DB_POOL_WRITE: number;
   DB_POOL_READ: number;
+  // Dedicated pool for LONG analytical reads issued by the periodic
+  // background jobs (poll-weight aggregation, wealth snapshot, address
+  // clustering, …) via maintenanceQuery(). Kept separate from DB_POOL_READ
+  // so a 30-minute sum-over-history scan can't seize the handful of API
+  // reader connections and stall every page (the observed prod cascade:
+  // PollWeightAggregator held API readers for tens of minutes, timing out
+  // /beacons and friends). Small on purpose — these jobs are not
+  // latency-sensitive, and capping concurrency also bounds how much cold
+  // HDD I/O they can contend for at once.
+  DB_POOL_MAINT_READ: number;
   // Cloudflare cache purge on reorg. Optional — when both are set, a chain
   // reorg purges the edge cache so stale tip-ward pages don't survive the
   // rollback. Unset → no-op (e.g. dev / no CDN in front).
@@ -167,6 +177,7 @@ nconf
       'DATABASE_URL',
       'DB_POOL_WRITE',
       'DB_POOL_READ',
+      'DB_POOL_MAINT_READ',
       'CF_API_TOKEN',
       'CF_ZONE_ID',
       'NETWORK',
@@ -234,6 +245,10 @@ nconf
     DATABASE_URL: 'mysql://admin:IamAdmin@mysql:3306/grc_explorer',
     DB_POOL_WRITE: 1,
     DB_POOL_READ: 6,
+    // 2 — background analytical jobs run serially-ish so their cold
+    // full-history scans neither starve the API readers nor saturate the
+    // HDD with many concurrent scans.
+    DB_POOL_MAINT_READ: 2,
     REDIS_HOST: 'redis',
     REDIS_PORT: 6379,
     REDIS_PREFIX: 'grc-explorer:testnet',

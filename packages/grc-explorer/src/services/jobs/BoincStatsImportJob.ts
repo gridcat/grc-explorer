@@ -1,6 +1,8 @@
 import { createGunzip } from 'node:zlib';
 import { Readable } from 'node:stream';
-import { query, upsert } from '../../lib/db';
+// Reads go through the maintenance reader pool (aliased to `query`) so
+// this job can't starve the API readers.
+import { maintenanceQuery as query, upsert } from '../../lib/db';
 import { log } from '../../lib/log';
 import { tsToUnix } from '../../lib/time';
 import { loadNameDenylist } from '../../lib/boincDenylist';

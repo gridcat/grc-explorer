@@ -1,4 +1,6 @@
-import { query, run } from '../../lib/db';
+// Reads go through the maintenance reader pool (aliased to `query`) so
+// this job's long sum-over-history scans can't starve the API readers.
+import { maintenanceQuery as query, run } from '../../lib/db';
 import { HALFORD } from '../../lib/halford';
 import { getTipAnchor } from '../../lib/indexerTip';
 import { log } from '../../lib/log';

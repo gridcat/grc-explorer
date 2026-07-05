@@ -1,4 +1,6 @@
-import { query, run } from '../../lib/db';
+// Reads go through the maintenance reader pool (aliased to `query`) so
+// this job's rollup recompute scans can't starve the API readers.
+import { maintenanceQuery as query, run } from '../../lib/db';
 
 // Incremental maintenance for the materialised rollup tables (migration
 // 0002), replacing DuckDB's recompute-on-read VIEWs. Strategy:
