@@ -32,6 +32,10 @@ interface ProjectRow {
 interface SuperblockDetailProps {
   initialSb: Superblock | null;
   initialMagnitudes: MagnitudeRow[];
+  // Total magnitude rows for this superblock. initialMagnitudes may be a
+  // truncated top-N prefix (see getServerSideProps) to keep the SSR payload
+  // small; when it's short of the total the client fetches the full list.
+  initialMagnitudeTotal: number;
   initialProjects: ProjectRow[];
   initialBlockTime: number | null;
   initialActiveBeaconCount: number | null;
@@ -39,8 +43,8 @@ interface SuperblockDetailProps {
 }
 
 export default function SuperblockDetail({
-  initialSb, initialMagnitudes, initialProjects, initialBlockTime, initialActiveBeaconCount,
-  initialCpidNames,
+  initialSb, initialMagnitudes, initialMagnitudeTotal, initialProjects, initialBlockTime,
+  initialActiveBeaconCount, initialCpidNames,
 }: SuperblockDetailProps) {
   const router = useRouter();
   const { height } = router.query;
@@ -50,8 +54,16 @@ export default function SuperblockDetail({
   const [blockTime, setBlockTime] = useState<number | null>(initialBlockTime);
   const [activeBeaconCount, setActiveBeaconCount] = useState<number | null>(initialActiveBeaconCount);
 
-  // Ref guard so post-fetch setSb doesn't re-trigger the effect.
-  const lastFetchedRef = useRef<string | null>(initialSb ? String(initialSb.height) : null);
+  // SSR may ship only a top-N prefix of the magnitudes to keep the page
+  // payload small; when it's short of the total, let the effect run once to
+  // pull the full list client-side (post-hydration, so no hydration mismatch).
+  const magnitudesComplete = initialMagnitudes.length >= initialMagnitudeTotal;
+  // Ref guard so post-fetch setSb doesn't re-trigger the effect. Seed it with
+  // the current height only when SSR already has every row — otherwise leave
+  // it null so the effect fires once to fetch the remaining magnitudes.
+  const lastFetchedRef = useRef<string | null>(
+    initialSb && magnitudesComplete ? String(initialSb.height) : null,
+  );
   useEffect(() => {
     if (!height) return;
     const key = String(height);
@@ -180,7 +192,7 @@ export default function SuperblockDetail({
 
           <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
             <Typography variant="subtitle2" sx={{ p: 2 }} color="text.secondary">
-              User rewards · per-CPID magnitudes ({magnitudes.length})
+              User rewards · per-CPID magnitudes ({Math.max(magnitudes.length, initialMagnitudeTotal)})
             </Typography>
           <Table size="small">
             <TableHead>
@@ -197,7 +209,12 @@ export default function SuperblockDetail({
                   <TableCell sx={{ color: 'text.secondary' }}>{i + 1}</TableCell>
                   <TableCell>
                     <Link href={`/cpids/${m.cpid}`} style={{ color: 'inherit', textDecoration: 'none' }}>
-                      <CpidLabel cpid={m.cpid} name={names.get(m.cpid)} />
+                      {/* Prefer the name carried on the row itself (present
+                          in both the SSR seed and the full client fetch) so
+                          rows past the SSR top-N don't flash the bare CPID
+                          while the shared useCpidNames resolver catches up,
+                          and so first render is identical server/client. */}
+                      <CpidLabel cpid={m.cpid} name={m.displayName ?? names.get(m.cpid)} />
                     </Link>
                   </TableCell>
                   <TableCell align="right">{m.magnitude.toFixed(2)}</TableCell>
@@ -259,17 +276,25 @@ export const getServerSideProps: GetServerSideProps<SuperblockDetailProps> = asy
     const r = await api.get(`/superblocks/${height}`);
     const attrs = r.data?.data?.attributes as Superblock | undefined;
     if (!attrs) return { notFound: true };
-    const magnitudes = (r.data?.magnitudes ?? []) as MagnitudeRow[];
+    const allMagnitudes = (r.data?.magnitudes ?? []) as MagnitudeRow[];
+    // Ship only the top-N (already magnitude-desc) in SSR — a big superblock
+    // has ~1200 rows (~150 kB) which blows Next's page-data budget and slows
+    // first paint. The client pulls the full list post-hydration (see the
+    // effect + magnitudesComplete). Small superblocks ship whole.
+    const SSR_MAGNITUDE_CAP = 200;
+    const initialMagnitudes = allMagnitudes.slice(0, SSR_MAGNITUDE_CAP);
     // Names come server-side on each magnitude row now (displayName);
-    // seed useCpidNames from them instead of a second /cpids/names call.
+    // seed useCpidNames from the shipped rows (the rest arrive with the
+    // client fetch) instead of a second /cpids/names call.
     const initialCpidNames: Record<string, string> = {};
-    for (const m of magnitudes) {
+    for (const m of initialMagnitudes) {
       if (m.displayName) initialCpidNames[m.cpid] = m.displayName;
     }
     return {
       props: {
         initialSb: attrs,
-        initialMagnitudes: magnitudes,
+        initialMagnitudes,
+        initialMagnitudeTotal: allMagnitudes.length,
         initialProjects: r.data?.projects ?? [],
         initialBlockTime: r.data?.blockTime ?? null,
         initialActiveBeaconCount: r.data?.activeBeaconCount ?? null,

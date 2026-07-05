@@ -228,10 +228,26 @@ export async function getRichList(offset: number, limit: number): Promise<Wallet
     .sort((a, b) => (order.get(a.address) ?? 0) - (order.get(b.address) ?? 0));
 }
 
-// Total wallet count for the rich-list header. COUNT(*) walks the
-// narrow balance index (~1.5M entries); memoised because the header is
-// cosmetic and the count moves by a handful per block.
+// Total wallet count for the rich-list header ("N addresses indexed in
+// total" — cosmetic display value; no pagination depends on it). Uses
+// InnoDB's row-count estimate from information_schema (an instant metadata
+// read) instead of COUNT(*) over the ~3.3M-row address_state table: that
+// count is index-only but still walks every entry — ~78 s COLD on the
+// HDD / small-buffer-pool prod slice (observed in the processlist), which
+// blocks the /wallets page (its SSR fetch times out at 15 s) and holds an
+// API reader connection the whole time, once per 10-min cache cycle. The
+// estimate is well within tolerance for a display total (measured ~3 %
+// under exact). Falls back to the exact count only if the estimate is
+// unavailable (0/NULL — e.g. stats not yet gathered after a fresh import),
+// so the header is never blank. Still memoised so even the metadata read
+// is amortised.
 const cachedWalletCount = swrCached(async () => {
+  const est = await query<{ c: number | string | null }>(
+    `SELECT table_rows AS c FROM information_schema.tables
+     WHERE table_schema = DATABASE() AND table_name = 'address_state'`,
+  );
+  const approx = Number(est[0]?.c ?? 0);
+  if (approx > 0) return approx;
   const rows = await query<{ c: number | string }>(
     'SELECT count(*) AS c FROM address_state',
   );

@@ -49,7 +49,7 @@ export default function WalletsPage({ initialRows, initialTotal }: WalletsPagePr
             addresses worth a closer look. Balances reflect every
             confirmed input and output the indexer has seen; pending
             mempool moves are not included.
-            {total !== null && ` ${formatNumber(total)} addresses indexed in total.`}
+            {total !== null && ` About ${formatNumber(total)} addresses indexed in total.`}
           </Typography>
         </Box>
         <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
