@@ -7,11 +7,55 @@ import { getTipAnchor } from '../lib/indexerTip';
 import { getPagination } from '../lib/pagination';
 import { param } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
+import { swrCachedLiveKeyed } from '../lib/swrCache';
 import { SuperblockPresenter } from '../presenters';
 import { registerParamValidators } from '../lib/validators';
 
 export const superblocksRouter = Router();
 registerParamValidators(superblocksRouter);
+
+// Active-beacon-count at a superblock height, evaluated as-of the
+// superblock's block time. Immutable once the height is buried: every
+// beacon with block_height <= H already exists, expiration is tested
+// against the fixed block time, and a supersession after H does not
+// remove the beacon from the as-of-H view. Backed by
+// idx_beacons_active_count (migration 0013) so the scan is index-only
+// rather than one random HDD row lookup per in-range beacon.
+async function computeActiveBeaconCount(height: number, evalAt: number): Promise<number> {
+  const rows = await query<{ c: string | number }>(
+    `
+      SELECT count(*) AS c FROM beacons
+      WHERE block_height <= $h
+        AND timestamp <= FROM_UNIXTIME($eval)
+        AND expiration > FROM_UNIXTIME($eval)
+        AND status != 'revoked'
+        AND (superseded_at_height IS NULL OR superseded_at_height > $h)
+    `,
+    { h: height, eval: evalAt },
+  );
+  return Number(rows[0]?.c ?? 0);
+}
+
+// Keyed by height (bypassed entirely while the indexer is backfilling —
+// swrCachedLiveKeyed — so a half-built chain can't poison it). A short
+// memo, not permanent: only the tip-ward superblock's count can still
+// drift as new beacons land, and the count is a cosmetic header stat.
+const activeBeaconCountCache = swrCachedLiveKeyed<number>(30 * 60_000);
+
+// Only the canonical block-time path (blockTime !== null) is cached.
+// BlockWriter inserts the superblock row and the same-height block row
+// in separate statements, so this route can briefly see the superblock
+// before its block — then blockTime is null, evalAt falls back to the
+// live tip anchor, and caching THAT by height would pin a wrong value
+// for the full TTL. In that window we compute fresh and skip the cache.
+function activeBeaconCountAtHeight(
+  height: number,
+  evalAt: number,
+  cacheable: boolean,
+): Promise<number> {
+  if (!cacheable) return computeActiveBeaconCount(height, evalAt);
+  return activeBeaconCountCache(String(height), () => computeActiveBeaconCount(height, evalAt));
+}
 
 interface SuperblockRow {
   height: number;
@@ -116,7 +160,7 @@ superblocksRouter.get('/:height', async (req: Request, res: Response) => {
   const blockTime = blockRows[0]?.time ?? null;
   const evalAt = blockTime ?? await getTipAnchor();
 
-  const [rawMagnitudes, projects, beaconCountRows] = await Promise.all([
+  const [rawMagnitudes, projects, activeBeaconCount] = await Promise.all([
     // (cpid, superblock_height) is the PK, so each cpid appears once for
     // this superblock — no dedup needed.
     query<{ cpid: string; magnitude: number }>(
@@ -139,17 +183,7 @@ superblocksRouter.get('/:height', async (req: Request, res: Response) => {
       `,
       { h: height },
     ),
-    query<{ c: string | number }>(
-      `
-        SELECT count(*) AS c FROM beacons
-        WHERE block_height <= $h
-          AND timestamp <= FROM_UNIXTIME($eval)
-          AND expiration > FROM_UNIXTIME($eval)
-          AND status != 'revoked'
-          AND (superseded_at_height IS NULL OR superseded_at_height > $h)
-      `,
-      { h: height, eval: evalAt },
-    ),
+    activeBeaconCountAtHeight(height, evalAt, blockTime !== null),
   ]);
   // Server-side names so the superblock-detail SSR seed (can be ~900
   // CPIDs) renders without fanning out parallel /cpids/names calls.
@@ -158,7 +192,6 @@ superblocksRouter.get('/:height', async (req: Request, res: Response) => {
     ...m,
     displayName: cpidDisplayName(magNames, m.cpid),
   }));
-  const activeBeaconCount = Number(beaconCountRows[0]?.c ?? 0);
 
   const body = SuperblockPresenter.render(row);
   res.status(StatusCodes.OK).send(withMeta(body, {
