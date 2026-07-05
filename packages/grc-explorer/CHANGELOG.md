@@ -1,3 +1,10 @@
+# [grc-explorer-v2.0.5](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.0.4...grc-explorer-v2.0.5) (2026-07-05)
+
+
+### Bug Fixes
+
+* route metrics cold-rebuilds to the maintenance pool ([6f8d086](https://github.com/gridcat/grc-explorer/commit/6f8d0865814428b12d369e0efeaf07632d91f7c1))
+
 # [grc-explorer-v2.0.4](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.0.3...grc-explorer-v2.0.4) (2026-07-05)
 
 
