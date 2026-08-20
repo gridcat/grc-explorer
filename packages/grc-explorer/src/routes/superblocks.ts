@@ -166,10 +166,7 @@ superblocksRouter.get('/:height', async (req: Request, res: Response) => {
     ? null
     : clampedQueryInt(req, 'magnitudesLimit', { def: 200, min: 1, max: 5000 });
   const includeActiveBeaconCount = String(req.query.includeActiveBeaconCount ?? 'true') !== 'false';
-  const sbRows = await timed(timings, 'superblock', () => query<SuperblockRow>(
-    'SELECT * FROM superblocks WHERE height = $h LIMIT 1', { h: height },
-  ));
-  );
+  const sbRows = await timed(timings, 'superblock', () => query<SuperblockRow>('SELECT * FROM superblocks WHERE height = $h LIMIT 1', { h: height }));
   if (sbRows.length === 0) {
     res.status(StatusCodes.NOT_FOUND).send({
       errors: [new ErrorModel(StatusCodes.NOT_FOUND, 'Superblock not found')],
@@ -258,9 +255,7 @@ superblocksRouter.get('/:height/magnitudes', async (req: Request, res: Response)
   }
   const limit = clampedQueryInt(req, 'limit', { def: 200, min: 1, max: 500 });
   const offset = clampedQueryInt(req, 'offset', { def: 0, min: 0, max: 100_000 });
-  const sbRows = await timed(timings, 'superblock', () => query<{ cpid_count: number }>(
-    'SELECT cpid_count FROM superblocks WHERE height = $h LIMIT 1', { h: height },
-  ));
+  const sbRows = await timed(timings, 'superblock', () => query<{ cpid_count: number }>('SELECT cpid_count FROM superblocks WHERE height = $h LIMIT 1', { h: height }));
   if (sbRows.length === 0) {
     res.status(StatusCodes.NOT_FOUND).send({
       errors: [new ErrorModel(StatusCodes.NOT_FOUND, 'Superblock not found')],
@@ -311,9 +306,7 @@ superblocksRouter.get('/:height/active-beacon-count', async (req: Request, res: 
     });
     return;
   }
-  const blockRows = await timed(timings, 'block', () => query<{ time: number }>(
-    'SELECT UNIX_TIMESTAMP(time) AS time FROM blocks WHERE height = $h LIMIT 1', { h: height },
-  ));
+  const blockRows = await timed(timings, 'block', () => query<{ time: number }>('SELECT UNIX_TIMESTAMP(time) AS time FROM blocks WHERE height = $h LIMIT 1', { h: height }));
   const blockTime = blockRows[0]?.time ?? null;
   const evalAt = blockTime ?? await timed(timings, 'tipAnchor', () => getTipAnchor());
   const count = await timed(

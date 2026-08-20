@@ -231,7 +231,7 @@ export default function SuperblockDetail({
                           rows past the SSR top-N don't flash the bare CPID
                           while the shared useCpidNames resolver catches up,
                           and so first render is identical server/client. */}
-                      <CpidLabel cpid={m.cpid} name={m.displayName} />
+                      <CpidLabel cpid={m.cpid} name={m.displayName ?? undefined} />
                     </Link>
                   </TableCell>
                   <TableCell align="right">{m.magnitude.toFixed(2)}</TableCell>
