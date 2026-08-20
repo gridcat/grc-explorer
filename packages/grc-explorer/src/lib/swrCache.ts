@@ -35,7 +35,7 @@ export function swrCached<T>(build: () => Promise<T>, ttlMs: number): () => Prom
     const now = Date.now();
     if (cached && cached.expiresAt > now) return cached.value;
     if (inflight) return inflight;
-    inflight = (async () => {
+    const rebuild = (async () => {
       try {
         const v = await build();
         cached = { value: v, expiresAt: Date.now() + ttlMs };
@@ -44,7 +44,13 @@ export function swrCached<T>(build: () => Promise<T>, ttlMs: number): () => Prom
         inflight = null;
       }
     })();
-    return inflight;
+    inflight = rebuild;
+    if (cached) {
+      // Serve stale immediately while one caller refreshes in the background.
+      void rebuild.catch(() => { /* keep the previous value; retry next request */ });
+      return cached.value;
+    }
+    return rebuild;
   };
 }
 
@@ -56,7 +62,7 @@ export function swrCachedKeyed<T>(ttlMs: number): (key: string, build: () => Pro
     const c = cache.get(key);
     if (c && c.expiresAt > now) return c.value;
     const i = inflight.get(key);
-    if (i) return i;
+    if (i) return c ? c.value : i;
     const p = (async () => {
       try {
         const v = await build();
@@ -67,6 +73,11 @@ export function swrCachedKeyed<T>(ttlMs: number): (key: string, build: () => Pro
       }
     })();
     inflight.set(key, p);
+    if (c) {
+      // Serve stale immediately while the keyed value refreshes once.
+      void p.catch(() => { /* keep the previous value; retry next request */ });
+      return c.value;
+    }
     return p;
   };
 }

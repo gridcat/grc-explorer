@@ -1,10 +1,22 @@
 import {
-  Box, Card, CardContent, Chip, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  Chip,
+  Paper,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
+  Typography,
 } from '@mui/material';
 import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import { api, notFoundOrRethrow } from '../../lib/api';
@@ -12,7 +24,6 @@ import { formatCompact, formatNumber, formatTime } from '../../lib/format';
 import { HashTrim } from '../../components/HashTrim';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { CpidLabel } from '../../components/CpidLabel';
-import { useCpidNames } from '../../hooks/useCpidNames';
 
 interface Superblock {
   height: number;
@@ -39,46 +50,52 @@ interface SuperblockDetailProps {
   initialProjects: ProjectRow[];
   initialBlockTime: number | null;
   initialActiveBeaconCount: number | null;
-  initialCpidNames: Record<string, string>;
 }
 
 export default function SuperblockDetail({
   initialSb, initialMagnitudes, initialMagnitudeTotal, initialProjects, initialBlockTime,
-  initialActiveBeaconCount, initialCpidNames,
+  initialActiveBeaconCount,
 }: SuperblockDetailProps) {
   const router = useRouter();
   const { height } = router.query;
-  const [sb, setSb] = useState<Superblock | null>(initialSb);
   const [magnitudes, setMagnitudes] = useState<MagnitudeRow[]>(initialMagnitudes);
-  const [projects, setProjects] = useState<ProjectRow[]>(initialProjects);
-  const [blockTime, setBlockTime] = useState<number | null>(initialBlockTime);
   const [activeBeaconCount, setActiveBeaconCount] = useState<number | null>(initialActiveBeaconCount);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const sb = initialSb;
+  const projects = initialProjects;
+  const blockTime = initialBlockTime;
 
-  // SSR may ship only a top-N prefix of the magnitudes to keep the page
-  // payload small; when it's short of the total, let the effect run once to
-  // pull the full list client-side (post-hydration, so no hydration mismatch).
-  const magnitudesComplete = initialMagnitudes.length >= initialMagnitudeTotal;
-  // Ref guard so post-fetch setSb doesn't re-trigger the effect. Seed it with
-  // the current height only when SSR already has every row — otherwise leave
-  // it null so the effect fires once to fetch the remaining magnitudes.
-  const lastFetchedRef = useRef<string | null>(
-    initialSb && magnitudesComplete ? String(initialSb.height) : null,
-  );
+  // Sync state on client-side navigation between dynamic superblock routes.
   useEffect(() => {
-    if (!height) return;
-    const key = String(height);
-    if (lastFetchedRef.current === key) return;
-    lastFetchedRef.current = key;
-    api.get(`/superblocks/${height}`).then((r) => {
-      setSb(r.data?.data?.attributes ?? null);
-      setMagnitudes(r.data?.magnitudes ?? []);
-      setProjects(r.data?.projects ?? []);
-      setBlockTime(r.data?.blockTime ?? null);
-      setActiveBeaconCount(r.data?.activeBeaconCount ?? null);
-    }).catch(() => { /* ignore */ });
-  }, [height]);
+    setMagnitudes(initialMagnitudes);
+    setActiveBeaconCount(initialActiveBeaconCount);
+    setLoadingMore(false);
+  }, [initialSb?.height, initialMagnitudes, initialActiveBeaconCount]);
 
-  const names = useCpidNames(magnitudes.map((m) => m.cpid), initialCpidNames);
+  // This cosmetic count has a comparatively expensive cold path. Fetch it
+  // after first paint rather than making SSR wait for it.
+  useEffect(() => {
+    if (!height || initialActiveBeaconCount !== null) return undefined;
+    let cancelled = false;
+    api.get(`/superblocks/${height}/active-beacon-count`).then((r) => {
+      if (!cancelled) setActiveBeaconCount(r.data?.data?.attributes?.count ?? null);
+    }).catch(() => { /* keep the non-blocking placeholder */ });
+    return () => { cancelled = true; };
+  }, [height, initialActiveBeaconCount]);
+
+  const loadMoreMagnitudes = () => {
+    if (!height || loadingMore || magnitudes.length >= initialMagnitudeTotal) return;
+    const offset = magnitudes.length;
+    setLoadingMore(true);
+    api.get(`/superblocks/${height}/magnitudes`, {
+      params: { offset, limit: 200 },
+    }).then((r) => {
+      const next = (r.data?.data?.attributes?.magnitudes ?? []) as MagnitudeRow[];
+      setMagnitudes((current) => (current.length === offset ? [...current, ...next] : current));
+    }).catch(() => { /* retain the rows already rendered */ }).finally(() => {
+      setLoadingMore(false);
+    });
+  };
 
   if (!sb) return <Layout><Typography>Loading…</Typography></Layout>;
 
@@ -214,7 +231,7 @@ export default function SuperblockDetail({
                           rows past the SSR top-N don't flash the bare CPID
                           while the shared useCpidNames resolver catches up,
                           and so first render is identical server/client. */}
-                      <CpidLabel cpid={m.cpid} name={m.displayName ?? names.get(m.cpid)} />
+                      <CpidLabel cpid={m.cpid} name={m.displayName} />
                     </Link>
                   </TableCell>
                   <TableCell align="right">{m.magnitude.toFixed(2)}</TableCell>
@@ -234,6 +251,15 @@ export default function SuperblockDetail({
               )}
             </TableBody>
           </Table>
+          {magnitudes.length < initialMagnitudeTotal && (
+            <Box sx={{ display: 'flex', justifyContent: 'center', p: 2 }}>
+              <Button onClick={loadMoreMagnitudes} disabled={loadingMore} variant="outlined" size="small">
+                {loadingMore
+                  ? 'Loading…'
+                  : `Load more (${magnitudes.length.toLocaleString()} of ${initialMagnitudeTotal.toLocaleString()})`}
+              </Button>
+            </Box>
+          )}
         </Paper>
         </Box>
       </Stack>
@@ -273,7 +299,10 @@ export const getServerSideProps: GetServerSideProps<SuperblockDetailProps> = asy
   const { height } = ctx.params ?? {};
   if (typeof height !== 'string') return { notFound: true };
   try {
-    const r = await api.get(`/superblocks/${height}`);
+    const SSR_MAGNITUDE_CAP = 200;
+    const r = await api.get(`/superblocks/${height}`, {
+      params: { magnitudesLimit: SSR_MAGNITUDE_CAP, includeActiveBeaconCount: false },
+    });
     const attrs = r.data?.data?.attributes as Superblock | undefined;
     if (!attrs) return { notFound: true };
     const allMagnitudes = (r.data?.magnitudes ?? []) as MagnitudeRow[];
@@ -281,28 +310,18 @@ export const getServerSideProps: GetServerSideProps<SuperblockDetailProps> = asy
     // has ~1200 rows (~150 kB) which blows Next's page-data budget and slows
     // first paint. The client pulls the full list post-hydration (see the
     // effect + magnitudesComplete). Small superblocks ship whole.
-    const SSR_MAGNITUDE_CAP = 200;
     const initialMagnitudes = allMagnitudes.slice(0, SSR_MAGNITUDE_CAP);
-    // Names come server-side on each magnitude row now (displayName);
-    // seed useCpidNames from the shipped rows (the rest arrive with the
-    // client fetch) instead of a second /cpids/names call.
-    const initialCpidNames: Record<string, string> = {};
-    for (const m of initialMagnitudes) {
-      if (m.displayName) initialCpidNames[m.cpid] = m.displayName;
-    }
     return {
       props: {
         initialSb: attrs,
         initialMagnitudes,
-        initialMagnitudeTotal: allMagnitudes.length,
+        initialMagnitudeTotal: Number(r.data?.magnitudeTotal ?? allMagnitudes.length),
         initialProjects: r.data?.projects ?? [],
         initialBlockTime: r.data?.blockTime ?? null,
         initialActiveBeaconCount: r.data?.activeBeaconCount ?? null,
-        initialCpidNames,
       },
     };
   } catch (err) {
     return notFoundOrRethrow(err);
   }
 };
-

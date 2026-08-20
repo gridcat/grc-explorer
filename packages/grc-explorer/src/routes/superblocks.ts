@@ -4,8 +4,9 @@ import { hasColumns, query } from '../lib/db';
 import { cpidDisplayName, resolveCpidNames } from '../lib/cpidNames';
 import { ErrorModel } from '../lib/errors';
 import { getTipAnchor } from '../lib/indexerTip';
+import { log } from '../lib/log';
 import { getPagination } from '../lib/pagination';
-import { param } from '../lib/req';
+import { clampedQueryInt, param } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
 import { swrCachedLiveKeyed } from '../lib/swrCache';
 import { SuperblockPresenter } from '../presenters';
@@ -13,6 +14,24 @@ import { registerParamValidators } from '../lib/validators';
 
 export const superblocksRouter = Router();
 registerParamValidators(superblocksRouter);
+
+type StageTimings = Record<string, number>;
+
+async function timed<T>(timings: StageTimings, stage: string, work: () => Promise<T>): Promise<T> {
+  const started = Date.now();
+  try {
+    return await work();
+  } finally {
+    timings[stage] = Date.now() - started;
+  }
+}
+
+function logRouteTiming(route: string, started: number, timings: StageTimings): void {
+  const totalMs = Date.now() - started;
+  if (totalMs < 250) return;
+  const stages = Object.entries(timings).map(([name, ms]) => `${name}=${ms}ms`).join(' ');
+  log.info(`[perf] ${route} total=${totalMs}ms ${stages}`);
+}
 
 // Active-beacon-count at a superblock height, evaluated as-of the
 // superblock's block time. Immutable once the height is buried: every
@@ -134,6 +153,8 @@ superblocksRouter.get('/', async (req: Request, res: Response) => {
 });
 
 superblocksRouter.get('/:height', async (req: Request, res: Response) => {
+  const requestStarted = Date.now();
+  const timings: StageTimings = {};
   const height = parseInt(param(req, 'height'), 10);
   if (Number.isNaN(height)) {
     res.status(StatusCodes.BAD_REQUEST).send({
@@ -141,9 +162,13 @@ superblocksRouter.get('/:height', async (req: Request, res: Response) => {
     });
     return;
   }
-  const sbRows = await query<SuperblockRow>(
-    'SELECT * FROM superblocks WHERE height = $h LIMIT 1',
-    { h: height },
+  const magnitudeLimit = req.query.magnitudesLimit === undefined
+    ? null
+    : clampedQueryInt(req, 'magnitudesLimit', { def: 200, min: 1, max: 5000 });
+  const includeActiveBeaconCount = String(req.query.includeActiveBeaconCount ?? 'true') !== 'false';
+  const sbRows = await timed(timings, 'superblock', () => query<SuperblockRow>(
+    'SELECT * FROM superblocks WHERE height = $h LIMIT 1', { h: height },
+  ));
   );
   if (sbRows.length === 0) {
     res.status(StatusCodes.NOT_FOUND).send({
@@ -153,26 +178,27 @@ superblocksRouter.get('/:height', async (req: Request, res: Response) => {
   }
   const row = sbRows[0];
 
-  const blockRows = await query<{ time: number }>(
+  const blockRows = await timed(timings, 'block', () => query<{ time: number }>(
     'SELECT UNIX_TIMESTAMP(time) AS time FROM blocks WHERE height = $h LIMIT 1',
     { h: height },
-  );
+  ));
   const blockTime = blockRows[0]?.time ?? null;
   const evalAt = blockTime ?? await getTipAnchor();
 
   const [rawMagnitudes, projects, activeBeaconCount] = await Promise.all([
     // (cpid, superblock_height) is the PK, so each cpid appears once for
     // this superblock — no dedup needed.
-    query<{ cpid: string; magnitude: number }>(
+    timed(timings, 'magnitudes', () => query<{ cpid: string; magnitude: number }>(
       `
         SELECT cpid, magnitude
         FROM superblock_magnitudes
         WHERE superblock_height = $h
         ORDER BY magnitude DESC
+        ${magnitudeLimit === null ? '' : `LIMIT ${Number(magnitudeLimit)}`}
       `,
       { h: height },
-    ),
-    query<{
+    )),
+    timed(timings, 'projects', () => query<{
       project_name: string; average_rac: number; rac: number; total_credit: number;
     }>(
       `
@@ -182,21 +208,29 @@ superblocksRouter.get('/:height', async (req: Request, res: Response) => {
         ORDER BY rac DESC
       `,
       { h: height },
-    ),
-    activeBeaconCountAtHeight(height, evalAt, blockTime !== null),
+    )),
+    includeActiveBeaconCount
+      ? timed(timings, 'activeBeacons', () => activeBeaconCountAtHeight(height, evalAt, blockTime !== null))
+      : Promise.resolve(null),
   ]);
   // Server-side names so the superblock-detail SSR seed (can be ~900
   // CPIDs) renders without fanning out parallel /cpids/names calls.
-  const magNames = await resolveCpidNames(rawMagnitudes.map((m) => m.cpid));
+  const magNames = await timed(
+    timings,
+    'cpidNames',
+    () => resolveCpidNames(rawMagnitudes.map((m) => m.cpid)),
+  );
   const magnitudes = rawMagnitudes.map((m) => ({
     ...m,
     displayName: cpidDisplayName(magNames, m.cpid),
   }));
 
   const body = SuperblockPresenter.render(row);
+  const sendStarted = Date.now();
   res.status(StatusCodes.OK).send(withMeta(body, {
     blockTime,
     activeBeaconCount,
+    magnitudeTotal: Number(row.cpid_count ?? rawMagnitudes.length),
     magnitudes,
     projects: projects.map((p) => ({
       projectName: p.project_name,
@@ -205,4 +239,96 @@ superblocksRouter.get('/:height', async (req: Request, res: Response) => {
       totalCredit: p.total_credit,
     })),
   }));
+  timings.serialize = Date.now() - sendStarted;
+  logRouteTiming(`GET /superblocks/${height}`, requestStarted, timings);
+});
+
+// Paginated magnitude rows for progressive disclosure on the detail page.
+// The legacy detail endpoint still returns every row unless its caller opts
+// into magnitudesLimit, preserving the public API contract.
+superblocksRouter.get('/:height/magnitudes', async (req: Request, res: Response) => {
+  const requestStarted = Date.now();
+  const timings: StageTimings = {};
+  const height = parseInt(param(req, 'height'), 10);
+  if (Number.isNaN(height)) {
+    res.status(StatusCodes.BAD_REQUEST).send({
+      errors: [new ErrorModel(StatusCodes.BAD_REQUEST, 'Bad height')],
+    });
+    return;
+  }
+  const limit = clampedQueryInt(req, 'limit', { def: 200, min: 1, max: 500 });
+  const offset = clampedQueryInt(req, 'offset', { def: 0, min: 0, max: 100_000 });
+  const sbRows = await timed(timings, 'superblock', () => query<{ cpid_count: number }>(
+    'SELECT cpid_count FROM superblocks WHERE height = $h LIMIT 1', { h: height },
+  ));
+  if (sbRows.length === 0) {
+    res.status(StatusCodes.NOT_FOUND).send({
+      errors: [new ErrorModel(StatusCodes.NOT_FOUND, 'Superblock not found')],
+    });
+    return;
+  }
+  const rows = await timed(timings, 'magnitudes', () => query<{ cpid: string; magnitude: number }>(
+    `SELECT cpid, magnitude
+     FROM superblock_magnitudes
+     WHERE superblock_height = $h
+     ORDER BY magnitude DESC
+     LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
+    { h: height },
+  ));
+  const names = await timed(timings, 'cpidNames', () => resolveCpidNames(rows.map((r) => r.cpid)));
+  const magnitudes = rows.map((row) => ({
+    ...row,
+    displayName: cpidDisplayName(names, row.cpid),
+  }));
+  const sendStarted = Date.now();
+  res.status(StatusCodes.OK).send(withMeta({
+    data: {
+      type: 'superblock_magnitudes',
+      id: `${height}:${offset}`,
+      attributes: {
+        height,
+        total: Number(sbRows[0].cpid_count ?? 0),
+        offset,
+        limit,
+        magnitudes,
+      },
+    },
+  }));
+  timings.serialize = Date.now() - sendStarted;
+  logRouteTiming(`GET /superblocks/${height}/magnitudes`, requestStarted, timings);
+});
+
+// The active-beacon count is useful context but not required to render the
+// detail page. Load it independently so a cold historical count cannot hold
+// the whole SSR response hostage.
+superblocksRouter.get('/:height/active-beacon-count', async (req: Request, res: Response) => {
+  const requestStarted = Date.now();
+  const timings: StageTimings = {};
+  const height = parseInt(param(req, 'height'), 10);
+  if (Number.isNaN(height)) {
+    res.status(StatusCodes.BAD_REQUEST).send({
+      errors: [new ErrorModel(StatusCodes.BAD_REQUEST, 'Bad height')],
+    });
+    return;
+  }
+  const blockRows = await timed(timings, 'block', () => query<{ time: number }>(
+    'SELECT UNIX_TIMESTAMP(time) AS time FROM blocks WHERE height = $h LIMIT 1', { h: height },
+  ));
+  const blockTime = blockRows[0]?.time ?? null;
+  const evalAt = blockTime ?? await timed(timings, 'tipAnchor', () => getTipAnchor());
+  const count = await timed(
+    timings,
+    'activeBeacons',
+    () => activeBeaconCountAtHeight(height, evalAt, blockTime !== null),
+  );
+  const sendStarted = Date.now();
+  res.status(StatusCodes.OK).send(withMeta({
+    data: {
+      type: 'superblock_active_beacon_count',
+      id: String(height),
+      attributes: { height, count },
+    },
+  }));
+  timings.serialize = Date.now() - sendStarted;
+  logRouteTiming(`GET /superblocks/${height}/active-beacon-count`, requestStarted, timings);
 });

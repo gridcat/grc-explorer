@@ -358,7 +358,26 @@ interface SeriesEntry {
 const SERIES_TTL_MS = 60 * 60 * 1000;
 const getCachedSeries = swrCachedKeyed<SeriesEntry[]>(SERIES_TTL_MS);
 
-async function buildSeries(minH: number, maxH: number, limit: number): Promise<SeriesEntry[]> {
+function downsampleSeriesPoints(
+  points: Array<{ height: number; magnitude: number }>,
+  maxPoints: number | null,
+): Array<{ height: number; magnitude: number }> {
+  if (maxPoints === null || points.length <= maxPoints) return points;
+  if (maxPoints <= 1) return [points[points.length - 1]];
+  const sampled: Array<{ height: number; magnitude: number }> = [];
+  const last = points.length - 1;
+  for (let i = 0; i < maxPoints; i += 1) {
+    sampled.push(points[Math.round((i * last) / (maxPoints - 1))]);
+  }
+  return sampled;
+}
+
+async function buildSeries(
+  minH: number,
+  maxH: number,
+  limit: number,
+  maxPoints: number | null,
+): Promise<SeriesEntry[]> {
   // Two-step query — pick the top-N CPIDs by total magnitude-days in
   // the height range, then fetch their per-superblock magnitudes.
   // `superblock_magnitudes` only has rows for actual superblock
@@ -409,27 +428,27 @@ async function buildSeries(minH: number, maxH: number, limit: number): Promise<S
   return series.map(({ cpid, points }) => ({
     cpid,
     displayName: cpidDisplayName(names, cpid),
-    points,
+    points: downsampleSeriesPoints(points, maxPoints),
   }));
 }
 
-async function getYearSeries(year: number, limit: number): Promise<SeriesEntry[]> {
-  return getCachedSeries(`year:${year}:${limit}`, async () => {
+async function getYearSeries(year: number, limit: number, maxPoints: number | null): Promise<SeriesEntry[]> {
+  return getCachedSeries(`year:${year}:${limit}:${maxPoints ?? 'all'}`, async () => {
     // Bound height range to the year using the cached chain-wide
     // history. Avoids a separate blocks-table round trip and keeps
     // the filter aligned with whatever the chain-wide chart shows.
     const chain = await getResearchersHistory();
     const inYear = chain.filter((p) => p.date.startsWith(`${year}-`));
     if (inYear.length === 0) return [];
-    return buildSeries(inYear[0].height, inYear[inYear.length - 1].height, limit);
+    return buildSeries(inYear[0].height, inYear[inYear.length - 1].height, limit, maxPoints);
   });
 }
 
-async function getChainSeries(limit: number): Promise<SeriesEntry[]> {
-  return getCachedSeries(`chain:${limit}`, async () => {
+async function getChainSeries(limit: number, maxPoints: number | null): Promise<SeriesEntry[]> {
+  return getCachedSeries(`chain:${limit}:${maxPoints ?? 'all'}`, async () => {
     const chain = await getResearchersHistory();
     if (chain.length === 0) return [];
-    return buildSeries(chain[0].height, chain[chain.length - 1].height, limit);
+    return buildSeries(chain[0].height, chain[chain.length - 1].height, limit, maxPoints);
   });
 }
 
@@ -442,7 +461,10 @@ metricsRouter.get('/researchers/history/year/:year/series', async (req: Request,
     return;
   }
   const limit = clampedQueryInt(req, 'limit', { def: 30, min: 1, max: 100 });
-  const series = await getYearSeries(year, limit);
+  const maxPoints = req.query.maxPoints === undefined
+    ? null
+    : clampedQueryInt(req, 'maxPoints', { def: 600, min: 2, max: 5000 });
+  const series = await getYearSeries(year, limit, maxPoints);
   res.status(StatusCodes.OK).send(withMeta({
     data: {
       type: 'researchers_year_series',
@@ -454,7 +476,10 @@ metricsRouter.get('/researchers/history/year/:year/series', async (req: Request,
 
 metricsRouter.get('/researchers/history/series', async (req: Request, res: Response) => {
   const limit = clampedQueryInt(req, 'limit', { def: 30, min: 1, max: 100 });
-  const series = await getChainSeries(limit);
+  const maxPoints = req.query.maxPoints === undefined
+    ? null
+    : clampedQueryInt(req, 'maxPoints', { def: 600, min: 2, max: 5000 });
+  const series = await getChainSeries(limit, maxPoints);
   res.status(StatusCodes.OK).send(withMeta({
     data: {
       type: 'researchers_chain_series',

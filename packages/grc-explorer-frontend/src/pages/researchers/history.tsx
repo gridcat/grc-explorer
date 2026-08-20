@@ -18,7 +18,6 @@ import { CpidLabel } from '../../components/CpidLabel';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { CopyLinkButton } from '../../components/CopyLinkButton';
 import { useXZoom, ZoomViewport, ZoomResetButton } from '../../components/charts/useXZoom';
-import { useCpidNames } from '../../hooks/useCpidNames';
 import { api } from '../../lib/api';
 import { buildSmoothLinePath, paletteColor } from '../../lib/chartUtils';
 import { formatCount, formatYmdDate, MONTHS_SHORT } from '../../lib/format';
@@ -34,7 +33,7 @@ interface Point {
 }
 
 interface SeriesPoint { height: number; magnitude: number }
-interface Series { cpid: string; points: SeriesPoint[] }
+interface Series { cpid: string; displayName?: string | null; points: SeriesPoint[] }
 
 interface ResearchersHistoryProps {
   points: Point[];
@@ -254,6 +253,15 @@ function Stat({ label, value }: { label: string; value: string }) {
 }
 
 const SERIES_LIMIT = 20;
+const SERIES_MAX_POINTS = 600;
+
+function namesFromSeries(series: Series[]): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const item of series) {
+    if (item.displayName) names.set(item.cpid, item.displayName);
+  }
+  return names;
+}
 
 interface YearGroup {
   year: number;
@@ -294,7 +302,7 @@ function ChainMultiLineChart({ points }: { points: Point[] }) {
     reqIdRef.current = id;
     setLoading(true);
     api.get('/metrics/researchers/history/series', {
-      params: { limit: SERIES_LIMIT },
+      params: { limit: SERIES_LIMIT, maxPoints: SERIES_MAX_POINTS },
     }).then((r) => {
       if (reqIdRef.current !== id) return;
       const attrs = r.data?.data?.attributes as { series?: Series[] } | undefined;
@@ -307,7 +315,7 @@ function ChainMultiLineChart({ points }: { points: Point[] }) {
     });
   }, []);
 
-  const names = useCpidNames(series.map((s) => s.cpid));
+  const names = useMemo(() => namesFromSeries(series), [series]);
 
   if (loading && series.length === 0) {
     return (
@@ -484,7 +492,7 @@ function YearMultiLineChart({
     reqIdRef.current = id;
     setLoading(true);
     api.get(`/metrics/researchers/history/year/${year}/series`, {
-      params: { limit: SERIES_LIMIT },
+      params: { limit: SERIES_LIMIT, maxPoints: SERIES_MAX_POINTS },
     }).then((r) => {
       if (reqIdRef.current !== id) return;
       const attrs = r.data?.data?.attributes as { series?: Series[] } | undefined;
@@ -497,7 +505,7 @@ function YearMultiLineChart({
     });
   }, [year]);
 
-  const names = useCpidNames(series.map((s) => s.cpid));
+  const names = useMemo(() => namesFromSeries(series), [series]);
 
   if (yearPoints.length < 2) {
     return (
