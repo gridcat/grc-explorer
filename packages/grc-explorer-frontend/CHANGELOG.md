@@ -1,3 +1,11 @@
+# [grc-explorer-frontend-v2.0.2](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.0.1...grc-explorer-frontend-v2.0.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* linter issues ([876672c](https://github.com/gridcat/grc-explorer/commit/876672c4bf1fff058185e56e41114ba6bd54da5e))
+* performance improvements ([f999dbf](https://github.com/gridcat/grc-explorer/commit/f999dbf9e0bba0904a34d1dcaf7bd7d9cff1c150))
+
 # [grc-explorer-frontend-v2.0.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.0.0...grc-explorer-frontend-v2.0.1) (2026-07-05)
 
 
