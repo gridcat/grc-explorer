@@ -1,3 +1,10 @@
+# [grc-explorer-v2.0.8](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.0.7...grc-explorer-v2.0.8) (2026-08-22)
+
+
+### Bug Fixes
+
+* add nidices ([71f858e](https://github.com/gridcat/grc-explorer/commit/71f858e5b72d6f08e25381b818dcca0d54f87d96))
+
 # [grc-explorer-v2.0.7](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.0.6...grc-explorer-v2.0.7) (2026-08-20)
 
 
