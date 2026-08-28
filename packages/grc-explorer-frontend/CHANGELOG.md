@@ -1,3 +1,10 @@
+# [grc-explorer-frontend-v2.1.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.0.2...grc-explorer-frontend-v2.1.0) (2026-08-28)
+
+
+### Features
+
+* update logos ([d56ab8d](https://github.com/gridcat/grc-explorer/commit/d56ab8d51a8517fef99a3c7b4c5788cbf8e93dc9))
+
 # [grc-explorer-frontend-v2.0.2](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.0.1...grc-explorer-frontend-v2.0.2) (2026-08-20)
 
 
