@@ -1,3 +1,10 @@
+# [grc-explorer-frontend-v2.1.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.1.0...grc-explorer-frontend-v2.1.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* add rate limits for ai to robots.txt ([779c5e1](https://github.com/gridcat/grc-explorer/commit/779c5e11b542a896ee8926987c1bc3cacdbdc233))
+
 # [grc-explorer-frontend-v2.1.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.0.2...grc-explorer-frontend-v2.1.0) (2026-08-28)
 
 
