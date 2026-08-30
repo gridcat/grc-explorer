@@ -108,7 +108,7 @@
     "build:watch": "tsc -w",
     "clean": "rimraf ./dist",
     "commit": "git-cz",
-    "dev": "npm run db:migrate && npm-run-all -p build:watch start:dev",
+    "dev": "npm run db:migrate && npm run build && npm-run-all -p build:watch start:dev",
     "db:migrate": "GRC_RPC_HOST=migrate GRC_RPC_PORT=0 ts-node --compiler-options '{\"resolveJsonModule\":true}' src/cli/migrate.ts",
     "db:reset": "GRC_RPC_HOST=migrate GRC_RPC_PORT=0 ts-node --compiler-options '{\"resolveJsonModule\":true}' src/cli/resetDb.ts",
     "db:reset:dist": "node dist/cli/resetDb.js",
