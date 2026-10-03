@@ -1,3 +1,10 @@
+# [grc-explorer-v2.3.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.3.0...grc-explorer-v2.3.1) (2026-10-03)
+
+
+### Bug Fixes
+
+* cap request-path DB reads at 12s and log response times ([216dd36](https://github.com/gridcat/grc-explorer/commit/216dd36725cc587c9f2d11585d679b4cf4beebd0))
+
 # [grc-explorer-v2.3.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.2.0...grc-explorer-v2.3.0) (2026-10-03)
 
 
