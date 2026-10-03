@@ -4,7 +4,7 @@ import {
 import type { GetServerSideProps } from 'next';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import { AddressBalanceSparkline } from '../../components/AddressBalanceSparkline';
@@ -66,12 +66,26 @@ interface AddressDetailProps {
   initialShareOfSupplyPct: number;
   initialCombinedCount: number;
   initialMssEntry: MssRegistryEntry | null;
+  // The API skipped the linked-wallets/combined block to stay inside its
+  // deadline; the client fetches it from /addresses/X/linked instead.
+  initialLinkedDeferred: boolean;
+}
+
+// The linked/combined fields as both GET /addresses/X and
+// GET /addresses/X/linked return them.
+interface LinkedBlock {
+  linkedCpids?: string[];
+  linkedWallets?: LinkedWallet[];
+  combinedBalance?: string;
+  combinedSharePct?: number;
+  shareOfSupplyPct?: number;
+  combinedCount?: number;
 }
 
 export default function AddressDetail({
   initialAddr, initialPending, initialTxs, initialLinkedCpids, initialLinkedWallets,
   initialCombinedBalance, initialCombinedSharePct, initialShareOfSupplyPct,
-  initialCombinedCount, initialMssEntry,
+  initialCombinedCount, initialMssEntry, initialLinkedDeferred,
 }: AddressDetailProps) {
   const router = useRouter();
   const { address } = router.query;
@@ -88,6 +102,25 @@ export default function AddressDetail({
   });
   const [mssEntry, setMssEntry] = useState<MssRegistryEntry | null>(initialMssEntry);
 
+  const applyLinked = useCallback((d: LinkedBlock | undefined) => {
+    setLinkedCpids(d?.linkedCpids ?? []);
+    setLinkedWallets(d?.linkedWallets ?? []);
+    setCombined({
+      balance: d?.combinedBalance ?? '0',
+      sharePct: d?.combinedSharePct ?? 0,
+      selfPct: d?.shareOfSupplyPct ?? 0,
+      count: d?.combinedCount ?? 0,
+    });
+  }, []);
+  const loadLinked = useCallback((a: string) => {
+    api.get(`/addresses/${a}/linked`).then((r) => applyLinked(r.data)).catch(() => { /* ignore */ });
+  }, [applyLinked]);
+
+  // SSR rendered without the linked block (API deadline) — fetch it now.
+  useEffect(() => {
+    if (initialLinkedDeferred && initialAddr) loadLinked(initialAddr.address);
+  }, [initialLinkedDeferred, initialAddr, loadLinked]);
+
   // The three /addresses/X, /addresses/X/transactions, /mandatory-
   // sidestakes/X fetches are independent — Promise.all collapses three
   // serial round trips into one wallclock. Address-keyed ref guards
@@ -103,14 +136,8 @@ export default function AddressDetail({
       api.get(`/addresses/${address}`).then((r) => {
         setAddr(r.data?.data?.attributes ?? null);
         setPending(r.data?.pendingBalance ?? '0');
-        setLinkedCpids(r.data?.linkedCpids ?? []);
-        setLinkedWallets(r.data?.linkedWallets ?? []);
-        setCombined({
-          balance: r.data?.combinedBalance ?? '0',
-          sharePct: r.data?.combinedSharePct ?? 0,
-          selfPct: r.data?.shareOfSupplyPct ?? 0,
-          count: r.data?.combinedCount ?? 0,
-        });
+        if (r.data?.linkedDeferred) loadLinked(address);
+        else applyLinked(r.data);
       }).catch(() => { /* ignore */ }),
       api.get(`/addresses/${address}/transactions`, { params: { 'page[size]': 50 } }).then((r) => {
         const data = (r.data?.data ?? []) as Array<{ attributes: AddrTx }>;
@@ -124,7 +151,7 @@ export default function AddressDetail({
         setMssEntry(attrs ?? null);
       }).catch(() => { setMssEntry(null); }),
     ]);
-  }, [address]);
+  }, [address, applyLinked, loadLinked]);
 
   // Live balance updates for *this* address only — server-side topic
   // filtering means we don't get the full firehose. The SSE payload
@@ -477,6 +504,7 @@ export const getServerSideProps: GetServerSideProps<AddressDetailProps> = async 
         initialShareOfSupplyPct: (addrR.data?.shareOfSupplyPct ?? 0) as number,
         initialCombinedCount: (addrR.data?.combinedCount ?? 0) as number,
         initialMssEntry: mssAttrs ?? null,
+        initialLinkedDeferred: addrR.data?.linkedDeferred === true,
       },
     };
   } catch (err) {

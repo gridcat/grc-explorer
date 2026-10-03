@@ -19,6 +19,7 @@ const entries: PageContentsEntry[] = [
   { id: 'addresses', label: 'Addresses' },
   { id: 'addresses-list', label: 'Rich list', indent: true },
   { id: 'addresses-get', label: 'Get an address', indent: true },
+  { id: 'addresses-linked', label: 'Linked wallets', indent: true },
   { id: 'addresses-tx', label: 'Tx history', indent: true },
   { id: 'addresses-blocks', label: 'Blocks staked', indent: true },
   { id: 'addresses-utxos', label: 'UTXOs', indent: true },

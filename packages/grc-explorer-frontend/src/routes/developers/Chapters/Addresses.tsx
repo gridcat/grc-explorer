@@ -87,6 +87,55 @@ export function Addresses() {
 }`}
       />
 
+      <Typography gutterBottom variant="body1" component="p">
+        The response also carries the linked-wallets block (
+        <code>linkedCpids</code>, <code>linkedWallets</code>,{' '}
+        <code>combinedBalance</code> and friends). When that block takes
+        too long to compute, the response has{' '}
+        <code>&quot;linkedDeferred&quot;: true</code> instead; fetch it
+        from <code>/linked</code> below.
+      </Typography>
+
+      <Typography variant="h6" component="h3" id="addresses-linked" sx={{ pt: 2, pb: 1 }}>
+        Linked wallets
+      </Typography>
+      <Endpoint method="GET" path="/api/addresses/:address/linked" title="CPID links + combined balance" />
+      <Typography gutterBottom variant="body1" component="p">
+        CPIDs this address has provably acted under (beacon, coinstake or
+        MRC payout), the other addresses tied to those CPIDs, and the
+        combined balance of the address&apos;s co-spend cluster.{' '}
+        <code>combinedCount</code> is the number of addresses in the
+        cluster.
+      </Typography>
+      <CodeBlock
+        caption="Request"
+        language="bash"
+        code={`curl '${API_BASE}/addresses/S6XqhSVj4eSAoRshrYVcCcdtdqejZ7nApu/linked'`}
+      />
+      <CodeBlock
+        caption="Response — 200 OK (excerpt)"
+        language="json"
+        code={`{
+  "linkedCpids": ["f73c4a99a56b68e4b0c649e2cef6bde7"],
+  "linkedWallets": [
+    {
+      "cpid": "f73c4a99a56b68e4b0c649e2cef6bde7",
+      "address": "SAkSFeF9...",
+      "beaconCount": 2,
+      "stakedBlocks": 140,
+      "mrcPayouts": 0,
+      "firstHeight": 2410022,
+      "lastHeight": 3300469,
+      "balance": "812.40000000"
+    }
+  ],
+  "combinedBalance": "2046.96789012",
+  "combinedSharePct": 0.00048,
+  "shareOfSupplyPct": 0.00029,
+  "combinedCount": 3
+}`}
+      />
+
       <Typography variant="h6" component="h3" id="addresses-tx" sx={{ pt: 2, pb: 1 }}>
         Transaction history
       </Typography>

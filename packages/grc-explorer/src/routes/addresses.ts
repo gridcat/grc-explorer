@@ -5,6 +5,7 @@ import { byBalanceDesc, computeCombined } from '../lib/combined';
 import { ErrorModel } from '../lib/errors';
 import { halford2grc } from '../lib/halford';
 import { getBlockTimes, getTipAnchor } from '../lib/indexerTip';
+import { log } from '../lib/log';
 import { getPagination, heightOrder } from '../lib/pagination';
 import {
   getRichList, getWallet, getWalletCount, WalletState,
@@ -82,6 +83,89 @@ async function enrichCombined(
     selfSharePct: sharePct(balMap.get(selfAddress) ?? 0n, supply),
     combinedCount,
   };
+}
+
+interface LinkedBlock {
+  linkedCpids: string[];
+  linkedWallets: LinkedWalletRow[];
+  combinedBalance: string;
+  combinedSharePct: number;
+  shareOfSupplyPct: number;
+  combinedCount: number;
+}
+
+// Per-step wall times of one detail request, logged only when the
+// request is slow enough to matter (cold buffer pool on prod's HDD).
+type Timings = Record<string, number>;
+const SLOW_REQUEST_MS = 2_000;
+
+function timed<T>(timings: Timings, name: string, p: Promise<T>): Promise<T> {
+  const t0 = Date.now();
+  return p.finally(() => { timings[name] = Date.now() - t0; });
+}
+
+// The linked-wallets + combined-balance block: CPID linkage, then the
+// co-spend cluster expansion and a balance lookup per member. The one
+// part of the address page whose cost scales with something other than
+// the address itself (a big cluster is thousands of random reads cold),
+// so the detail route bounds it with LINKED_DEADLINE_MS and the client
+// fetches it from GET /:address/linked when it was deferred. In-flight
+// calls are shared per address so that follow-up joins the abandoned
+// computation instead of starting a second one.
+const LINKED_DEADLINE_MS = 3_000;
+const linkedInFlight = new Map<string, Promise<LinkedBlock>>();
+
+function fetchLinkedBlock(address: string, timings: Timings = {}): Promise<LinkedBlock> {
+  const existing = linkedInFlight.get(address);
+  if (existing) return existing;
+  const p = (async () => {
+    const [ctx, supply] = await Promise.all([
+      timed(timings, 'linked', fetchLinkedWallets(address)),
+      timed(timings, 'supply', getMoneySupplyRaw()),
+    ]);
+    const combined = await timed(timings, 'combined', enrichCombined(ctx, supply, address));
+    return {
+      linkedCpids: ctx.cpids,
+      linkedWallets: combined.wallets,
+      combinedBalance: combined.combinedBalance,
+      combinedSharePct: combined.combinedSharePct,
+      shareOfSupplyPct: combined.selfSharePct,
+      combinedCount: combined.combinedCount,
+    };
+  })().finally(() => { linkedInFlight.delete(address); });
+  linkedInFlight.set(address, p);
+  return p;
+}
+
+// fetchLinkedBlock bounded by LINKED_DEADLINE_MS. Past the deadline the
+// response carries `linkedDeferred: true` instead of the block; the
+// query keeps running (warming the buffer pool) and its outcome is
+// dropped.
+async function linkedOrDeferred(
+  address: string,
+  timings: Timings,
+): Promise<LinkedBlock | { linkedDeferred: true }> {
+  const work = fetchLinkedBlock(address, timings);
+  work.catch(() => { /* surfaced via the race below, or dropped once deferred */ });
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<{ linkedDeferred: true }>((resolve) => {
+    timer = setTimeout(() => {
+      timings.deferred = LINKED_DEADLINE_MS;
+      resolve({ linkedDeferred: true });
+    }, LINKED_DEADLINE_MS);
+  });
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function logIfSlow(address: string, t0: number, timings: Timings): void {
+  const total = Date.now() - t0;
+  if (total < SLOW_REQUEST_MS) return;
+  const steps = Object.entries(timings).map(([k, v]) => `${k}=${v}`).join(' ');
+  log.warn(`slow address detail ${address} total=${total}ms ${steps}`);
 }
 
 // Cross-reference an address against the three on-chain CPID-linkage
@@ -337,16 +421,22 @@ function parseInclude(req: Request): Set<string> {
   return new Set(joined.split(',').map((x) => x.trim()).filter(Boolean));
 }
 
-async function fetchIncluded(req: Request, address: string): Promise<Record<string, unknown>> {
+async function fetchIncluded(
+  req: Request,
+  address: string,
+  timings: Timings = {},
+): Promise<Record<string, unknown>> {
   const include = parseInclude(req);
   const extra: Record<string, unknown> = {};
   const tasks: Promise<void>[] = [];
   if (include.has('transactions')) {
     const { offset, limit } = getPagination(req);
-    tasks.push(fetchAddressTxPage(address, offset, limit, null).then((d) => { extra.transactions = d; }));
+    tasks.push(timed(timings, 'txs', fetchAddressTxPage(address, offset, limit, null))
+      .then((d) => { extra.transactions = d; }));
   }
   if (include.has('sidestakes')) {
-    tasks.push(fetchSidestakeSummary(address).then((m) => { extra.mandatorySidestake = m; }));
+    tasks.push(timed(timings, 'sidestakes', fetchSidestakeSummary(address))
+      .then((m) => { extra.mandatorySidestake = m; }));
   }
   await Promise.all(tasks);
   return extra;
@@ -405,7 +495,9 @@ addressesRouter.get('/:address', async (req: Request, res: Response) => {
   }
 
   // Live path: point lookup on the address_state projection.
-  const wallet = await getWallet(address);
+  const t0 = Date.now();
+  const timings: Timings = {};
+  const wallet = await timed(timings, 'state', getWallet(address));
   if (!wallet) {
     // Beacon-only addresses are real but may never have transacted —
     // a researcher advertises a beacon address and then stakes/spends
@@ -433,31 +525,25 @@ addressesRouter.get('/:address', async (req: Request, res: Response) => {
       firstSeenBlock: null,
       lastSeenBlock: null,
     });
-    const [stubLinkedContext, stubSupply, stubIncluded] = await Promise.all([
-      fetchLinkedWallets(address),
-      getMoneySupplyRaw(),
-      fetchIncluded(req, address),
+    const [stubLinked, stubIncluded] = await Promise.all([
+      linkedOrDeferred(address, timings),
+      fetchIncluded(req, address, timings),
     ]);
-    const stubCombined = await enrichCombined(stubLinkedContext, stubSupply, address);
     const body = AddressPresenter.render(stub);
     res.status(StatusCodes.OK).send(withMeta(body, {
       pendingBalance: '0',
-      linkedCpids: stubLinkedContext.cpids,
-      linkedWallets: stubCombined.wallets,
-      combinedBalance: stubCombined.combinedBalance,
-      combinedSharePct: stubCombined.combinedSharePct,
-      shareOfSupplyPct: stubCombined.selfSharePct,
-      combinedCount: stubCombined.combinedCount,
+      ...stubLinked,
       ...stubIncluded,
     }));
+    logIfSlow(address, t0, timings);
     return;
   }
 
   // Pending balance + linked-wallets + seen-block times (+ any
   // `include`d side lookups) in parallel — all extra attributes on the
   // same response, none depend on each other.
-  const [pendingRows, linkedContext, seenTimes, supplyRaw, included] = await Promise.all([
-    query<{ pending: string | null }>(
+  const [pendingRows, linked, seenTimes, included] = await Promise.all([
+    timed(timings, 'pending', query<{ pending: string | null }>(
       `
         SELECT CAST(sum(o.value) AS CHAR) AS pending
         FROM tx_outputs AS o
@@ -468,27 +554,33 @@ addressesRouter.get('/:address', async (req: Request, res: Response) => {
           )
       `,
       { addr: address },
-    ),
-    fetchLinkedWallets(address),
-    fetchSeenTimes(wallet.firstSeenBlock, wallet.lastSeenBlock),
-    getMoneySupplyRaw(),
-    fetchIncluded(req, address),
+    )),
+    linkedOrDeferred(address, timings),
+    timed(timings, 'seen', fetchSeenTimes(wallet.firstSeenBlock, wallet.lastSeenBlock)),
+    fetchIncluded(req, address, timings),
   ]);
   const pendingSum = pendingRows[0]?.pending && pendingRows[0].pending !== '0'
     ? BigInt(pendingRows[0].pending)
     : null;
-  const combined = await enrichCombined(linkedContext, supplyRaw, address);
   const body = AddressPresenter.render(presentWallet(wallet, seenTimes));
   res.status(StatusCodes.OK).send(withMeta(body, {
     pendingBalance: pendingSum ? halford2grc(pendingSum) : '0',
-    linkedCpids: linkedContext.cpids,
-    linkedWallets: combined.wallets,
-    combinedBalance: combined.combinedBalance,
-    combinedSharePct: combined.combinedSharePct,
-    shareOfSupplyPct: combined.selfSharePct,
-    combinedCount: combined.combinedCount,
+    ...linked,
     ...included,
   }));
+  logIfSlow(address, t0, timings);
+});
+
+// The linked-wallets + combined-balance block on its own, for clients
+// whose GET /:address answered `linkedDeferred: true`. Not bounded by
+// the deadline: this request exists to wait for it.
+addressesRouter.get('/:address/linked', async (req: Request, res: Response) => {
+  const address = param(req, 'address');
+  const t0 = Date.now();
+  const timings: Timings = {};
+  const linked = await fetchLinkedBlock(address, timings);
+  res.status(StatusCodes.OK).send(withMeta({ meta: {} }, { ...linked }));
+  logIfSlow(address, t0, timings);
 });
 
 addressesRouter.get('/:address/transactions', async (req: Request, res: Response) => {
