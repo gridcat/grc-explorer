@@ -64,6 +64,6 @@
     "start": "next start -p 3002",
     "test:lint": "eslint .",
     "test:unit": "vitest run",
-    "typecheck": "tsc --project ./tsconfig.json --noEmit --pretty false"
+    "typecheck": "next typegen && tsc --project ./tsconfig.json --noEmit --pretty false"
   }
 }
