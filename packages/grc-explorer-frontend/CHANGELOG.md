@@ -1,3 +1,16 @@
+# [grc-explorer-frontend-v2.2.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.1.2...grc-explorer-frontend-v2.2.0) (2026-10-03)
+
+
+### Bug Fixes
+
+* correct and update the history articles for 2013-2026 ([e25ef28](https://github.com/gridcat/grc-explorer/commit/e25ef28ef800d6417bbe796e1bd268b7c5be88a7))
+* retire cohorts ([a3a6f57](https://github.com/gridcat/grc-explorer/commit/a3a6f577ed66e9ba101b354fc6c132a239035315))
+
+
+### Features
+
+* add address blocks endpoint ([8cd7f6a](https://github.com/gridcat/grc-explorer/commit/8cd7f6abbcb0ac64ec3af126922de085a9637453))
+
 # [grc-explorer-frontend-v2.1.2](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.1.1...grc-explorer-frontend-v2.1.2) (2026-10-03)
 
 
