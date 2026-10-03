@@ -375,47 +375,6 @@ curl '${API_BASE}/metrics/wealth-distribution/series?from=1768262400'`}
 }`}
       />
 
-      <Typography variant="h6" component="h3" id="metrics-cohort-retention" sx={{ pt: 2, pb: 1 }}>
-        CPID cohort retention
-      </Typography>
-      <Endpoint method="GET" path="/api/metrics/cpid-cohort-retention" title="Per-cohort curve" />
-      <Typography variant="subtitle2" component="h4" sx={{ pt: 1, pb: 0.5 }}>
-        Query parameters
-      </Typography>
-      <List dense>
-        <ListItem disableGutters>
-          <ListItemText primary={<><code>cohort</code> (required)</>} secondary="YYYY-MM. The month CPIDs were first seen claiming." />
-        </ListItem>
-        <ListItem disableGutters>
-          <ListItemText primary={<><code>horizon</code></>} secondary="Months forward to follow. Default 12, max 36." />
-        </ListItem>
-      </List>
-      <CodeBlock
-        caption="Request"
-        language="bash"
-        code={`curl '${API_BASE}/metrics/cpid-cohort-retention?cohort=2024-01&horizon=12'`}
-      />
-      <CodeBlock
-        caption="Response — 200 OK (excerpt)"
-        language="json"
-        code={`{
-  "data": {
-    "type": "cpid_cohort_retention",
-    "id": "2024-01:12",
-    "attributes": {
-      "cohort": "2024-01",
-      "horizon": 12,
-      "cohortSize": 87,
-      "points": [
-      { "monthOffset": 0, "bucketTs": 1704067200, "active": 87 },
-      { "monthOffset": 1, "bucketTs": 1706745600, "active": 71 },
-      { "monthOffset": 2, "bucketTs": 1709251200, "active": 64 }
-      ]
-    }
-  }
-}`}
-      />
-
       <Typography variant="h6" component="h3" id="metrics-beacon-survival" sx={{ pt: 2, pb: 1 }}>
         Beacon survival funnel
       </Typography>

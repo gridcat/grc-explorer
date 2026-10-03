@@ -168,7 +168,6 @@ export default function CpidDetail({
         <Crumbs
           items={[
             RESEARCHERS_CRUMB,
-            { label: 'CPIDs', href: '/cpids/cohorts' },
             { label: shortHash(summary.cpid, 8, 6) },
           ]}
           trailing={<CopyLinkButton />}

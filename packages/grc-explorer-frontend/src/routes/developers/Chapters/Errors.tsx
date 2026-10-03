@@ -41,7 +41,7 @@ export function Errors() {
         <ListItem disableGutters>
           <ListItemText
             primary="400 Bad Request"
-            secondary="A query parameter failed validation. Common causes: malformed cohort string, non-integer page size, unsupported granularity."
+            secondary="A query parameter failed validation. Common causes: non-integer page size, unsupported granularity."
           />
         </ListItem>
         <ListItem disableGutters>

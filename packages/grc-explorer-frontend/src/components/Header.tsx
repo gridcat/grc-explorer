@@ -124,7 +124,6 @@ const NAV_ITEMS: NavEntry[] = [
     children: [
       { href: '/superblocks', label: 'Superblocks' },
       { href: '/beacons', label: 'Beacons' },
-      { href: '/cpids/cohorts', label: 'Cohorts' },
       { href: '/researchers/history', label: 'Top researchers history' },
       { href: '/mrc-requests', label: 'MRC requests' },
       { href: '/network/difficulty', label: 'Difficulty' },

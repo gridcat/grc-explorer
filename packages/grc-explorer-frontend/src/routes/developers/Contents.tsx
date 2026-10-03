@@ -58,7 +58,6 @@ const entries: PageContentsEntry[] = [
   { id: 'metrics-staker-mix', label: 'Staker mix', indent: true },
   { id: 'metrics-fee-percentiles', label: 'Fee percentiles', indent: true },
   { id: 'metrics-wealth', label: 'Wealth distribution', indent: true },
-  { id: 'metrics-cohort-retention', label: 'Cohort retention', indent: true },
   { id: 'metrics-beacon-survival', label: 'Beacon survival', indent: true },
   { id: 'mandatory-sidestakes', label: 'Mandatory sidestakes' },
   { id: 'mss-list', label: 'Active registry', indent: true },

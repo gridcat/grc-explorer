@@ -2,7 +2,6 @@ import { Box, Stack, Typography } from '@mui/material';
 import type { GetServerSideProps } from 'next';
 import { BeaconFlux, Flux as BeaconFluxData } from '../components/BeaconFlux';
 import { BeaconSurvival, Point as BeaconSurvivalPoint } from '../components/BeaconSurvival';
-import { CohortRetentionPreview, CohortPayload } from '../components/CohortRetentionPreview';
 import { GradientLine } from '../components/GradientLine';
 import { LazyOnVisible } from '../components/LazyOnVisible';
 import {
@@ -55,7 +54,6 @@ interface HomeProps {
   initialFeePercentilePoints: PercentilePoint[];
   initialFeePercentileMeta: PercentileMeta | null;
   initialBeaconSurvival: BeaconSurvivalPoint[];
-  initialCohorts: CohortPayload[];
   initialCpidNames: Record<string, string>;
 }
 
@@ -66,7 +64,7 @@ export default function Home({
   initialWealthSnapshot, initialWealthSeries,
   initialLiveBlocks, initialTxsPerBlock, initialLiveTxFeed,
   initialMempoolFeeBuckets, initialFeePercentilePoints, initialFeePercentileMeta,
-  initialBeaconSurvival, initialCohorts, initialCpidNames,
+  initialBeaconSurvival, initialCpidNames,
 }: HomeProps) {
   return (
     <>
@@ -171,16 +169,7 @@ export default function Home({
           </LazyOnVisible>
         )}
         <LazyOnVisible minHeight={300}>
-          <Box
-            sx={{
-              display: 'grid',
-              gap: 3,
-              gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' },
-            }}
-          >
-            <StakerMix initialMix={initialStakerMix} />
-            <CohortRetentionPreview initialCohorts={initialCohorts} />
-          </Box>
+          <StakerMix initialMix={initialStakerMix} />
         </LazyOnVisible>
         <LazyOnVisible minHeight={300}>
           <BeaconSurvival initialPoints={initialBeaconSurvival} />
@@ -292,7 +281,6 @@ export const getServerSideProps: GetServerSideProps<HomeProps> = async () => {
       initialFeePercentilePoints: [],
       initialFeePercentileMeta: null,
       initialBeaconSurvival: [],
-      initialCohorts: [],
       initialCpidNames,
     },
   };
