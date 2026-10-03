@@ -14,9 +14,7 @@ import { halford2grc } from '../lib/halford';
 import { getTipAnchor } from '../lib/indexerTip';
 import { clampedQueryInt, parseYearRange } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
-import {
-  swrCached, swrCachedKeyed, swrCachedLive, swrCachedLiveKeyed,
-} from '../lib/swrCache';
+import { swrCachedLive, swrCachedLiveKeyed } from '../lib/swrCache';
 import { parseAt, resolveAtSuperblockHeight } from '../lib/timeMachine';
 
 export const metricsRouter = Router();
@@ -262,7 +260,9 @@ metricsRouter.get('/leaderboard/magnitude', async (req: Request, res: Response) 
 //
 // Cached 1h: the underlying data only changes on superblock landings
 // (~daily). The cache is also invalidated implicitly by process
-// restart, so a deploy resets it.
+// restart, so a deploy resets it. Live variant: bypassed while the
+// indexer is backfilling or mid-reorg, so a moving rollup is never
+// memoised for an hour.
 
 interface ResearchersHistoryPoint {
   height: number;
@@ -329,7 +329,7 @@ async function buildResearchersHistory(): Promise<ResearchersHistoryPoint[]> {
   });
 }
 
-const getResearchersHistory = swrCached(buildResearchersHistory, RESEARCHERS_HISTORY_TTL_MS);
+const getResearchersHistory = swrCachedLive(buildResearchersHistory, RESEARCHERS_HISTORY_TTL_MS);
 
 // Top-N series within a height range: for each of the top-N CPIDs
 // (ranked by total magnitude across all superblocks in the range),
@@ -356,7 +356,7 @@ interface SeriesEntry {
 }
 
 const SERIES_TTL_MS = 60 * 60 * 1000;
-const getCachedSeries = swrCachedKeyed<SeriesEntry[]>(SERIES_TTL_MS);
+const getCachedSeries = swrCachedLiveKeyed<SeriesEntry[]>(SERIES_TTL_MS);
 
 function downsampleSeriesPoints(
   points: Array<{ height: number; magnitude: number }>,
@@ -372,38 +372,66 @@ function downsampleSeriesPoints(
   return sampled;
 }
 
+// Top-N CPIDs by total magnitude for a bucket of the cpid_magnitude_totals
+// rollup (migration 0020, kept current by RollupMaintainer): a covered
+// backward index scan returning N rows. `bucketYear` 0 is all-time; a
+// year bucket spans exactly the height range getYearSeries derives, so
+// the two rankings agree by construction. An empty bucket — mid-recompute
+// gap, or a deployment whose rollup isn't seeded yet — falls back to
+// ranking over the base table: the old whole-range GROUP BY, correct but
+// the 3.6M-row scan this rollup exists to avoid.
+async function topCpids(bucketYear: number, minH: number, maxH: number, limit: number): Promise<string[]> {
+  const ranked = await query<{ cpid: string }>(
+    `
+      SELECT cpid
+      FROM cpid_magnitude_totals
+      WHERE bucket_year = $y
+      ORDER BY total_magnitude DESC
+      LIMIT ${Number(limit)}
+    `,
+    { y: bucketYear },
+  );
+  if (ranked.length > 0) return ranked.map((r) => r.cpid);
+  const fallback = await query<{ cpid: string }>(
+    `
+      SELECT cpid
+      FROM superblock_magnitudes
+      WHERE superblock_height >= $minH
+        AND superblock_height <= $maxH
+        AND magnitude > 0
+      GROUP BY cpid
+      ORDER BY sum(magnitude) DESC
+      LIMIT ${Number(limit)}
+    `,
+    { minH, maxH },
+  );
+  return fallback.map((r) => r.cpid);
+}
+
 async function buildSeries(
+  bucketYear: number,
   minH: number,
   maxH: number,
   limit: number,
   maxPoints: number | null,
 ): Promise<SeriesEntry[]> {
-  // Two-step query — pick the top-N CPIDs by total magnitude-days in
-  // the height range, then fetch their per-superblock magnitudes.
-  // `superblock_magnitudes` only has rows for actual superblock
-  // heights, so a height range filter is implicit-superblock without
-  // a separate join.
+  // Two steps — rank the top-N CPIDs, then fetch their per-superblock
+  // magnitudes by PK (cpid, superblock_height). `superblock_magnitudes`
+  // only has rows for actual superblock heights, so the height range
+  // filter is implicit-superblock without a separate join.
+  const cpids = await topCpids(bucketYear, minH, maxH, limit);
+  if (cpids.length === 0) return [];
   const rows = await query<SeriesRow>(
     `
-      WITH top_cpids AS (
-        SELECT cpid
-        FROM superblock_magnitudes
-        WHERE superblock_height >= $minH
-          AND superblock_height <= $maxH
-          AND magnitude > 0
-        GROUP BY cpid
-        ORDER BY sum(magnitude) DESC
-        LIMIT ${Number(limit)}
-      )
       SELECT cpid, superblock_height AS height, magnitude
       FROM superblock_magnitudes
-      WHERE cpid IN (SELECT cpid FROM top_cpids)
+      WHERE cpid IN ($cpids)
         AND superblock_height >= $minH
         AND superblock_height <= $maxH
         AND magnitude > 0
       ORDER BY cpid, superblock_height
     `,
-    { minH, maxH },
+    { cpids, minH, maxH },
   );
 
   const byCpid = new Map<string, Array<{ height: number; magnitude: number }>>();
@@ -440,7 +468,7 @@ async function getYearSeries(year: number, limit: number, maxPoints: number | nu
     const chain = await getResearchersHistory();
     const inYear = chain.filter((p) => p.date.startsWith(`${year}-`));
     if (inYear.length === 0) return [];
-    return buildSeries(inYear[0].height, inYear[inYear.length - 1].height, limit, maxPoints);
+    return buildSeries(year, inYear[0].height, inYear[inYear.length - 1].height, limit, maxPoints);
   });
 }
 
@@ -448,7 +476,7 @@ async function getChainSeries(limit: number, maxPoints: number | null): Promise<
   return getCachedSeries(`chain:${limit}:${maxPoints ?? 'all'}`, async () => {
     const chain = await getResearchersHistory();
     if (chain.length === 0) return [];
-    return buildSeries(chain[0].height, chain[chain.length - 1].height, limit, maxPoints);
+    return buildSeries(0, chain[0].height, chain[chain.length - 1].height, limit, maxPoints);
   });
 }
 

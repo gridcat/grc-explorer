@@ -253,6 +253,47 @@ async function doRefresh(batchMinTimeUnix: number): Promise<void> {
          GROUP BY superblock_height`,
         { h: hLo },
       );
+
+      // ---- cpid_magnitude_totals (per-CPID totals by UTC year; 0 = all-time) ----
+      // Same trigger: every year bucket with a superblock at/after hLo
+      // (one bucket, two at a year boundary) is rebuilt from that year's
+      // superblock height range, then the all-time bucket is re-derived
+      // from the year rows. DELETE+INSERT like the rollups above;
+      // routes/metrics.ts falls back to the base table if it reads a
+      // bucket in the gap between the two statements.
+      const years = await query<{ y: number | string; lo: number | string; hi: number | string }>(
+        `SELECT YEAR(b.time) AS y, MIN(s.height) AS lo, MAX(s.height) AS hi
+         FROM superblocks s JOIN blocks b ON b.height = s.height
+         WHERE YEAR(b.time) IN (
+           SELECT DISTINCT YEAR(b2.time)
+           FROM superblocks s2 JOIN blocks b2 ON b2.height = s2.height
+           WHERE s2.height >= $h
+         )
+         GROUP BY YEAR(b.time)`,
+        { h: hLo },
+      );
+      for (const yr of years) {
+        const y = Number(yr.y);
+        // eslint-disable-next-line no-await-in-loop
+        await run('DELETE FROM cpid_magnitude_totals WHERE bucket_year = $y', { y });
+        // eslint-disable-next-line no-await-in-loop
+        await run(
+          `INSERT INTO cpid_magnitude_totals (bucket_year, cpid, total_magnitude, superblocks)
+           SELECT $y, cpid, SUM(magnitude), COUNT(*)
+           FROM superblock_magnitudes
+           WHERE superblock_height >= $lo AND superblock_height <= $hi AND magnitude > 0
+           GROUP BY cpid`,
+          { y, lo: Number(yr.lo), hi: Number(yr.hi) },
+        );
+      }
+      await run('DELETE FROM cpid_magnitude_totals WHERE bucket_year = 0');
+      await run(
+        `INSERT INTO cpid_magnitude_totals (bucket_year, cpid, total_magnitude, superblocks)
+         SELECT 0, cpid, SUM(total_magnitude), SUM(superblocks)
+         FROM cpid_magnitude_totals
+         WHERE bucket_year > 0
+         GROUP BY cpid`,
+      );
     }
   }
 }
