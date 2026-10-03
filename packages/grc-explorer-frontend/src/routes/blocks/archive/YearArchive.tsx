@@ -46,8 +46,8 @@ export function YearArchive({
     total_blocks: formatNumber(data.blockCount),
     total_txs: formatNumber(data.txCount),
     total_superblocks: formatNumber(data.superblockCount),
-    grc_moved: data.valueMovedGrc,
-    grc_minted: data.mintTotalGrc,
+    grc_moved: formatNumber(Math.round(Number(data.valueMovedGrc))),
+    grc_minted: formatNumber(Math.round(Number(data.mintTotalGrc))),
   };
   const title = `Gridcoin in ${year} — block archive`;
   const description = isEmpty

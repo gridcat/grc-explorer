@@ -217,15 +217,14 @@ function NotableEvents() {
   // consensus / economic forks, keyed to their mainnet activation
   // year. Note Fern is the 2020 v11 fork, NOT 2018 — the 2018 fork is
   // 4.0.0.0 'Betsy' / v10 (constant block reward). Natasha's v13/v14
-  // fork is released but, as of the indexed cursor, not yet activated
-  // on mainnet, so it's framed as "released" rather than "activated".
+  // fork activated on mainnet at blocks 3,989,800 / 3,990,000.
   const events = [
     { year: 2013, label: 'Gridcoin Classic launches (predecessor chain)' },
     { year: 2014, label: 'Gridcoin Research · proof-of-research mainnet launch' },
     { year: 2018, label: '4.0.0.0 "Betsy" · constant block reward (v10)' },
     { year: 2020, label: 'Fern (5.0.0.0) · the v11 rewrite' },
     { year: 2022, label: '"Kermit\'s Mom" (5.4.0.0) · Manual Reward Claims (v12)' },
-    { year: 2026, label: 'Natasha (5.5.0.0) released · v13/v14 fork scheduled' },
+    { year: 2026, label: 'Natasha (5.5.0.0) · v13/v14 fork and the fivefold reward raise' },
   ];
   return (
     <Box>
