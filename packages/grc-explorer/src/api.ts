@@ -60,7 +60,8 @@ app.use(express.json());
 app.disable('x-powered-by');
 
 if (!config.isTesting) {
-  app.use(morgan('combined'));
+  // Apache "combined" + response time, to see which endpoints are slow.
+  app.use(morgan(':remote-addr - :remote-user [:date[clf]] ":method :url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent" :response-time ms'));
 }
 
 app.use((_req, res, next) => {

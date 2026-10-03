@@ -2,6 +2,7 @@ import { Kysely, MysqlDialect } from 'kysely';
 import { createPool, Pool } from 'mysql2';
 import { config } from '../config';
 import { chunked } from './chunked';
+import { getRequestSignal } from './requestContext';
 
 // MariaDB data layer — the explorer's source of truth for chain data
 // (replaces the embedded DuckDB client in lib/db.ts). The whole codebase
@@ -114,11 +115,21 @@ export function compile(sql: string, params?: Params): { text: string; values: u
   return { text, values };
 }
 
+// Reads made for an HTTP request are killed after this long. The
+// frontend's SSR gives up at 15 s, so a read past that only holds one of
+// the reader pool's few connections while cheap requests queue behind
+// it. Cache rebuilds run outside the request (swrCache → outsideRequest)
+// and stay uncapped.
+const REQUEST_STATEMENT_TIMEOUT_S = 12;
+
 // Read path (reader pool). Returns plain row objects in the contract
 // shape above.
 export async function query<T = Row>(sql: string, params?: Params): Promise<T[]> {
   const { text, values } = compile(sql, params);
-  const [rows] = await reader().promise().query(text, values);
+  const capped = getRequestSignal()
+    ? `SET STATEMENT max_statement_time=${REQUEST_STATEMENT_TIMEOUT_S} FOR ${text}`
+    : text;
+  const [rows] = await reader().promise().query(capped, values);
   return rows as T[];
 }
 

@@ -27,6 +27,7 @@
  * behaviour is identical to the plain variants.
  */
 import { getCursor } from './redis';
+import { outsideRequest } from './requestContext';
 
 export function swrCached<T>(build: () => Promise<T>, ttlMs: number): () => Promise<T> {
   let cached: { value: T; expiresAt: number } | null = null;
@@ -37,7 +38,7 @@ export function swrCached<T>(build: () => Promise<T>, ttlMs: number): () => Prom
     if (inflight) return inflight;
     const rebuild = (async () => {
       try {
-        const v = await build();
+        const v = await outsideRequest(build);
         cached = { value: v, expiresAt: Date.now() + ttlMs };
         return v;
       } finally {
@@ -65,7 +66,7 @@ export function swrCachedKeyed<T>(ttlMs: number): (key: string, build: () => Pro
     if (i) return c ? c.value : i;
     const p = (async () => {
       try {
-        const v = await build();
+        const v = await outsideRequest(build);
         cache.set(key, { value: v, expiresAt: Date.now() + ttlMs });
         return v;
       } finally {
@@ -94,12 +95,12 @@ async function indexerLive(): Promise<boolean> {
 
 export function swrCachedLive<T>(build: () => Promise<T>, ttlMs: number): () => Promise<T> {
   const cached = swrCached(build, ttlMs);
-  return async () => ((await indexerLive()) ? cached() : build());
+  return async () => ((await indexerLive()) ? cached() : outsideRequest(build));
 }
 
 export function swrCachedLiveKeyed<T>(
   ttlMs: number,
 ): (key: string, build: () => Promise<T>) => Promise<T> {
   const keyed = swrCachedKeyed<T>(ttlMs);
-  return async (key, build) => ((await indexerLive()) ? keyed(key, build) : build());
+  return async (key, build) => ((await indexerLive()) ? keyed(key, build) : outsideRequest(build));
 }

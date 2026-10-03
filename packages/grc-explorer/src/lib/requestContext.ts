@@ -28,6 +28,14 @@ export function getRequestSignal(): AbortSignal | undefined {
   return store.getStore()?.signal;
 }
 
+// Run `fn` detached from the current request's context: shared work
+// (cache rebuilds other callers will reuse) must not inherit one
+// caller's abort signal or request-only limits like db.ts's statement
+// cap.
+export function outsideRequest<T>(fn: () => Promise<T>): Promise<T> {
+  return store.exit(fn);
+}
+
 export function requestContextMiddleware(
   req: Request,
   _res: Response,
