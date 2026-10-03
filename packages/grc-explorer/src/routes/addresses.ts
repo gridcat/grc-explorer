@@ -540,40 +540,50 @@ addressesRouter.get('/:address/balance-history', async (req: Request, res: Respo
   const fromTs = Number.isFinite(from) && from > 0 ? from : toTs - 30 * 86_400;
   const granularity = String(req.query.granularity ?? 'raw');
 
-  // Running balance reconstructed on read via a window function.
-  // address_balance_history stores per-block deltas only; the OVER
-  // clause re-derives running_balance up to each row's height. Bounded
-  // by the [from, to] window so we don't have to scan the full
-  // address history every call.
-  const rows = await query<{ height: number; ts: number; balance: string }>(
-    `
-      SELECT
-        valid_from_height AS height,
-        UNIX_TIMESTAMP(valid_from_time) AS ts,
-        CAST(running_balance AS CHAR) AS balance
-      FROM (
-        SELECT
-          valid_from_height,
-          valid_from_time,
-          sum(delta) OVER (
-            PARTITION BY address ORDER BY valid_from_height
-            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-          ) AS running_balance
+  // Running balance = balance at the window start + cumulative deltas
+  // inside the window. address_balance_history stores per-block deltas
+  // only. The seed comes from the address_state projection (Σ of every
+  // delta, maintained at write time) minus the deltas at/after `from`,
+  // so the request reads rows from `from` onwards and nothing older.
+  // The previous form ran the window function over the address's whole
+  // history and only then dropped everything before `from` — O(history)
+  // per chart view, ~126k rows for a busy staker.
+  const [wallet, suffixRows, rows] = await Promise.all([
+    getWallet(address),
+    query<{ s: string }>(
+      `
+        SELECT CAST(coalesce(sum(delta), 0) AS CHAR) AS s
         FROM address_balance_history
         WHERE address = $addr
-      ) AS bh
-      WHERE valid_from_time >= FROM_UNIXTIME($from)
-        AND valid_from_time <= FROM_UNIXTIME($to)
-      ORDER BY valid_from_height ASC
-    `,
-    { addr: address, from: fromTs, to: toTs },
-  );
+          AND valid_from_time >= FROM_UNIXTIME($from)
+      `,
+      { addr: address, from: fromTs },
+    ),
+    query<{ height: number; ts: number; running: string }>(
+      `
+        SELECT
+          valid_from_height AS height,
+          UNIX_TIMESTAMP(valid_from_time) AS ts,
+          CAST(sum(delta) OVER (
+            ORDER BY valid_from_height
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+          ) AS CHAR) AS running
+        FROM address_balance_history
+        WHERE address = $addr
+          AND valid_from_time >= FROM_UNIXTIME($from)
+          AND valid_from_time <= FROM_UNIXTIME($to)
+        ORDER BY valid_from_height ASC
+      `,
+      { addr: address, from: fromTs, to: toTs },
+    ),
+  ]);
+  const seed = (wallet?.balance ?? 0n) - BigInt(suffixRows[0]?.s ?? '0');
 
   type Point = { height: number; ts: number; balance: string };
   let points: Point[] = rows.map((r) => ({
     height: r.height,
     ts: r.ts,
-    balance: halford2grc(BigInt(r.balance)),
+    balance: halford2grc(seed + BigInt(r.running)),
   }));
 
   const bucketSec = ({ '1h': 3600, '1d': 86_400, '1w': 604_800 } as Record<string, number>)[granularity];
