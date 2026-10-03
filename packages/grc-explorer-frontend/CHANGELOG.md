@@ -1,3 +1,10 @@
+# [grc-explorer-frontend-v2.2.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.2.0...grc-explorer-frontend-v2.2.1) (2026-10-03)
+
+
+### Bug Fixes
+
+* drop testnet references from explorer docs ([591bdcd](https://github.com/gridcat/grc-explorer/commit/591bdcd10e121aff67c2c7a76d4344ad7ae301ac))
+
 # [grc-explorer-frontend-v2.2.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.1.2...grc-explorer-frontend-v2.2.0) (2026-10-03)
 
 
