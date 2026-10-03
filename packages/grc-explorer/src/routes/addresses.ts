@@ -5,7 +5,7 @@ import { byBalanceDesc, computeCombined } from '../lib/combined';
 import { ErrorModel } from '../lib/errors';
 import { halford2grc } from '../lib/halford';
 import { getBlockTimes, getTipAnchor } from '../lib/indexerTip';
-import { getPagination } from '../lib/pagination';
+import { getPagination, heightOrder } from '../lib/pagination';
 import {
   getRichList, getWallet, getWalletCount, WalletState,
 } from '../lib/addressState';
@@ -500,15 +500,16 @@ addressesRouter.get('/:address/transactions', async (req: Request, res: Response
   res.status(StatusCodes.OK).send(withMeta({ data, meta: { count: data.length } }));
 });
 
-// Blocks staked by this address, newest first. Same shape as
-// GET /cpids/:cpid/blocks plus stakerCpid (null for investor stakes).
-// Served by idx_blocks_miner_height (0022): the page is a backward
-// index range read, the count an index-only range scan.
+// Blocks staked by this address, newest first (`?sort=height` for oldest
+// first). Same shape as GET /cpids/:cpid/blocks plus stakerCpid (null
+// for investor stakes). Served by idx_blocks_miner_height (0022): the
+// page is an index range read, the count an index-only range scan.
 addressesRouter.get('/:address/blocks', async (req: Request, res: Response) => {
   const address = param(req, 'address');
   const at = parseAt(req);
   const atHeight = at !== undefined ? await resolveAtHeight(at) : null;
   const { offset, limit } = getPagination(req);
+  const order = heightOrder(req);
   const cap = atHeight !== null ? 'AND height <= $h' : '';
   const params: Record<string, unknown> = { addr: address };
   if (atHeight !== null) params.h = atHeight;
@@ -522,7 +523,7 @@ addressesRouter.get('/:address/blocks', async (req: Request, res: Response) => {
         SELECT height, hash, UNIX_TIMESTAMP(time) AS time, is_superblock, staker_cpid
         FROM blocks
         WHERE miner_address = $addr ${cap}
-        ORDER BY height DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}
+        ORDER BY height ${order} LIMIT ${Number(limit)} OFFSET ${Number(offset)}
       `,
       params,
     ),

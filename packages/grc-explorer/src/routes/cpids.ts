@@ -5,7 +5,7 @@ import { byBalanceDesc, computeCombined } from '../lib/combined';
 import { cpidDisplayName, resolveCpidNames } from '../lib/cpidNames';
 import { halford2grc } from '../lib/halford';
 import { statusOf, waitSecondsOf } from '../lib/mrcStatus';
-import { getPagination } from '../lib/pagination';
+import { getPagination, heightOrder } from '../lib/pagination';
 import { clampedQueryInt, param } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
 import { getMoneySupplyRaw } from '../lib/supply';
@@ -487,6 +487,7 @@ cpidsRouter.get('/:cpid/blocks', async (req: Request, res: Response) => {
   const at = parseAt(req);
   const atHeight = at !== undefined ? await resolveAtHeight(at) : null;
   const { offset, limit } = getPagination(req);
+  const order = heightOrder(req);
   const cap = atHeight !== null && at !== undefined ? 'AND height <= $h' : '';
   const params: Record<string, unknown> = { cpid };
   if (atHeight !== null && at !== undefined) params.h = atHeight;
@@ -499,7 +500,7 @@ cpidsRouter.get('/:cpid/blocks', async (req: Request, res: Response) => {
         SELECT height, hash, UNIX_TIMESTAMP(time) AS time, is_superblock
         FROM blocks
         WHERE staker_cpid = $cpid ${cap}
-        ORDER BY height DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}
+        ORDER BY height ${order} LIMIT ${Number(limit)} OFFSET ${Number(offset)}
       `,
       params,
     ),

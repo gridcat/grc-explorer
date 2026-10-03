@@ -127,8 +127,9 @@ export function Addresses() {
       </Typography>
       <Endpoint method="GET" path="/api/addresses/:address/blocks" title="Paginated" />
       <Typography gutterBottom variant="body1" component="p">
-        One row per block this address staked, newest first, with the
-        subsidy and magnitude from the block&apos;s claim.{' '}
+        One row per block this address staked, newest first (
+        <code>?sort=height</code> for oldest first), with the subsidy and
+        magnitude from the block&apos;s claim.{' '}
         <code>stakerCpid</code> is the CPID the block was staked under, or{' '}
         <code>null</code> for an investor stake. <code>meta.count</code> is
         the total number of blocks the address has staked.

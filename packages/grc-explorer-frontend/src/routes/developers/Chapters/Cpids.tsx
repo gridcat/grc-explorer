@@ -77,7 +77,8 @@ export function Cpids() {
       <Endpoint method="GET" path="/api/cpids/:cpid/blocks" title="Paginated" />
       <Typography gutterBottom variant="body1" component="p">
         One row per block this CPID staked, joined to the matching claim
-        for subsidy + magnitude. Newest-first.
+        for subsidy + magnitude. Newest-first; <code>?sort=height</code>{' '}
+        lists oldest first.
       </Typography>
       <CodeBlock
         caption="Request"
