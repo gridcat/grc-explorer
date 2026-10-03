@@ -1,6 +1,8 @@
 import { Card, CardContent, Typography } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
-import { useEffect, useMemo, useState } from 'react';
+import {
+  useEffect, useMemo, useRef, useState,
+} from 'react';
 import { api } from '../lib/api';
 import {
   ChartAxes,
@@ -27,8 +29,30 @@ const WINDOW_DAYS = 30;
  */
 export function AddressBalanceSparkline({ address }: { address: string }) {
   const [points, setPoints] = useState<Point[]>([]);
+  const [inView, setInView] = useState(false);
+  const anchorRef = useRef<HTMLDivElement>(null);
+
+  // Fetch only once the card's slot is near the viewport. The history
+  // query is per-address work the page renders fine without for anyone
+  // (human or JS-running crawler) who never scrolls this far.
+  useEffect(() => {
+    const el = anchorRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      setInView(true);
+      return undefined;
+    }
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) {
+        setInView(true);
+        io.disconnect();
+      }
+    }, { rootMargin: '200px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
 
   useEffect(() => {
+    if (!inView) return undefined;
     let cancelled = false;
     const now = nowSec();
     const from = now - WINDOW_DAYS * 86_400;
@@ -40,9 +64,9 @@ export function AddressBalanceSparkline({ address }: { address: string }) {
       setPoints(attrs?.points ?? []);
     }).catch(() => { /* ignore */ });
     return () => { cancelled = true; };
-  }, [address]);
+  }, [address, inView]);
 
-  if (points.length < 2) return null;
+  if (points.length < 2) return <div ref={anchorRef} />;
 
   return (
     <Card variant="outlined">
