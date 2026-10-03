@@ -1,3 +1,14 @@
+# [grc-explorer-frontend-v2.1.2](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.1.1...grc-explorer-frontend-v2.1.2) (2026-10-03)
+
+
+### Bug Fixes
+
+* bump next and sharp, drop unused yayson ([e56be77](https://github.com/gridcat/grc-explorer/commit/e56be775c89976f248139c1e20ecaa9ef6c1348d))
+* bump vulnerable production dependencies ([8c543f0](https://github.com/gridcat/grc-explorer/commit/8c543f0f97940bb64af9264446a68da1fcf2436f))
+* cap concurrent SSR sockets to the API ([350a5cd](https://github.com/gridcat/grc-explorer/commit/350a5cdfdf77d9602c28dfc4036928ad5f75d7f4))
+* edge-cache SSR pages and forward visitor IP/UA to the API ([a0f6186](https://github.com/gridcat/grc-explorer/commit/a0f6186371e1b4789166659b06859fbe60c07272))
+* load the address balance sparkline only when scrolled into view ([d4ccaaf](https://github.com/gridcat/grc-explorer/commit/d4ccaaf966578cebac9c486b7b0ba4bfa70a8a5d))
+
 # [grc-explorer-frontend-v2.1.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.1.0...grc-explorer-frontend-v2.1.1) (2026-08-30)
 
 
