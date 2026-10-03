@@ -1,3 +1,10 @@
+# [grc-explorer-frontend-v2.3.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.2.1...grc-explorer-frontend-v2.3.0) (2026-10-03)
+
+
+### Features
+
+* add ?sort=height to address and CPID staked-blocks endpoints ([49c69c7](https://github.com/gridcat/grc-explorer/commit/49c69c7c8acc5bca6894c853cfae6cad13ab71c2))
+
 # [grc-explorer-frontend-v2.2.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.2.0...grc-explorer-frontend-v2.2.1) (2026-10-03)
 
 
