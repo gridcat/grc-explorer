@@ -93,7 +93,9 @@ export function Addresses() {
       <Endpoint method="GET" path="/api/addresses/:address/transactions" title="Per-tx deltas" />
       <Typography gutterBottom variant="body1" component="p">
         Paginated, newest-first. Each row carries the net delta this
-        address experienced in that transaction.
+        address experienced in that transaction; <code>ts</code> is the
+        transaction time. <code>meta.count</code> is the number of rows on
+        this page, not a total.
       </Typography>
       <CodeBlock
         caption="Request"
@@ -104,18 +106,56 @@ export function Addresses() {
         caption="Response — 200 OK (excerpt)"
         language="json"
         code={`{
-  "meta": { "count": 42 },
+  "meta": { "count": 25 },
   "data": [
     {
-      "type": "address_transactions",
-      "id": "56886c5134...:0",
+      "type": "address_tx",
+      "id": "S6XqhSVj4eSAoRshrYVcCcdtdqejZ7nApu:3300495:966a37a117...",
       "attributes": {
-        "txId": "56886c5134...",
-        "blockHeight": 89281,
-        "time": 1775914221,
-        "delta": "100.00000000",
-        "fee": "0.00010000",
-        "isCoinstake": false
+        "txId": "966a37a117838b117bf23240ffb8d7206f1dd85214bc82505aff6d3a7c14f826",
+        "height": 3300495,
+        "delta": "189.16587624",
+        "ts": 1791028480
+      }
+    }
+  ]
+}`}
+      />
+
+      <Typography variant="h6" component="h3" id="addresses-blocks" sx={{ pt: 2, pb: 1 }}>
+        Blocks staked
+      </Typography>
+      <Endpoint method="GET" path="/api/addresses/:address/blocks" title="Paginated" />
+      <Typography gutterBottom variant="body1" component="p">
+        One row per block this address staked, newest first, with the
+        subsidy and magnitude from the block&apos;s claim.{' '}
+        <code>stakerCpid</code> is the CPID the block was staked under, or{' '}
+        <code>null</code> for an investor stake. <code>meta.count</code> is
+        the total number of blocks the address has staked.
+      </Typography>
+      <CodeBlock
+        caption="Request"
+        language="bash"
+        code={`curl -g '${API_BASE}/addresses/S6XqhSVj4eSAoRshrYVcCcdtdqejZ7nApu/blocks?page[size]=25'`}
+      />
+      <CodeBlock
+        caption="Response — 200 OK (excerpt)"
+        language="json"
+        code={`{
+  "meta": { "count": 31281 },
+  "data": [
+    {
+      "type": "blocks",
+      "id": "3300469",
+      "attributes": {
+        "height": 3300469,
+        "hash": "9be1f7efb9414c6804e1f4e252f1fe38e0034c87e0c04e6d9c034b157c5a6a05",
+        "time": 1791026160,
+        "isSuperblock": false,
+        "stakerCpid": "f73c4a99a56b68e4b0c649e2cef6bde7",
+        "researchSubsidy": "120.5015175",
+        "blockSubsidy": "76.29373193",
+        "magnitude": 23387
       }
     }
   ]

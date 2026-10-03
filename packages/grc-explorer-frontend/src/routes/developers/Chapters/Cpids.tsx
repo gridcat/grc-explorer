@@ -88,17 +88,19 @@ export function Cpids() {
         caption="Response — 200 OK (excerpt)"
         language="json"
         code={`{
-  "meta": { "count": 87 },
+  "meta": { "count": 45604 },
   "data": [
     {
-      "type": "cpid_blocks",
-      "id": "89281",
+      "type": "blocks",
+      "id": "3300497",
       "attributes": {
-        "blockHeight": 89281,
-        "time": 1775914221,
-        "researchSubsidy": "5.00000000",
-        "magnitude": 12.34,
-        "isMrc": false
+        "height": 3300497,
+        "hash": "319059b3dd5d0d132147f4aa45526f437e3ace72fb81c8919b1784d1d6502710",
+        "time": 1791028880,
+        "isSuperblock": false,
+        "researchSubsidy": "111.57547916",
+        "blockSubsidy": "76.29373193",
+        "magnitude": 23387
       }
     }
   ]

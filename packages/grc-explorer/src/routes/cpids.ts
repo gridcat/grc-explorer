@@ -493,7 +493,7 @@ cpidsRouter.get('/:cpid/blocks', async (req: Request, res: Response) => {
 
   const [rows, countRows] = await Promise.all([
     query<{
-      height: number; hash: string; time: number; is_superblock: boolean;
+      height: number; hash: string; time: number | string; is_superblock: boolean;
     }>(
       `
         SELECT height, hash, UNIX_TIMESTAMP(time) AS time, is_superblock
@@ -539,7 +539,7 @@ cpidsRouter.get('/:cpid/blocks', async (req: Request, res: Response) => {
         attributes: {
           height: b.height,
           hash: b.hash,
-          time: b.time,
+          time: Number(b.time),
           isSuperblock: b.is_superblock,
           researchSubsidy: c ? halford2grc(BigInt(c.research_subsidy)) : '0',
           blockSubsidy: c ? halford2grc(BigInt(c.block_subsidy)) : '0',

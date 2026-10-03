@@ -500,6 +500,77 @@ addressesRouter.get('/:address/transactions', async (req: Request, res: Response
   res.status(StatusCodes.OK).send(withMeta({ data, meta: { count: data.length } }));
 });
 
+// Blocks staked by this address, newest first. Same shape as
+// GET /cpids/:cpid/blocks plus stakerCpid (null for investor stakes).
+// Served by idx_blocks_miner_height (0022): the page is a backward
+// index range read, the count an index-only range scan.
+addressesRouter.get('/:address/blocks', async (req: Request, res: Response) => {
+  const address = param(req, 'address');
+  const at = parseAt(req);
+  const atHeight = at !== undefined ? await resolveAtHeight(at) : null;
+  const { offset, limit } = getPagination(req);
+  const cap = atHeight !== null ? 'AND height <= $h' : '';
+  const params: Record<string, unknown> = { addr: address };
+  if (atHeight !== null) params.h = atHeight;
+
+  const [rows, countRows] = await Promise.all([
+    query<{
+      height: number; hash: string; time: number | string; is_superblock: boolean;
+      staker_cpid: string | null;
+    }>(
+      `
+        SELECT height, hash, UNIX_TIMESTAMP(time) AS time, is_superblock, staker_cpid
+        FROM blocks
+        WHERE miner_address = $addr ${cap}
+        ORDER BY height DESC LIMIT ${Number(limit)} OFFSET ${Number(offset)}
+      `,
+      params,
+    ),
+    query<{ c: string | number }>(
+      `SELECT count(*) AS c FROM blocks WHERE miner_address = $addr ${cap}`,
+      params,
+    ),
+  ]);
+
+  const claimsByHeight = new Map<number, { research_subsidy: string; block_subsidy: string; magnitude: number }>();
+  if (rows.length > 0) {
+    const cR = await query<{
+      block_height: number; research_subsidy: string; block_subsidy: string; magnitude: number;
+    }>(
+      `
+        SELECT block_height,
+               CAST(research_subsidy AS CHAR) AS research_subsidy,
+               CAST(block_subsidy AS CHAR)    AS block_subsidy,
+               magnitude
+        FROM claims WHERE block_height IN ($heights)
+      `,
+      { heights: rows.map((b) => b.height) },
+    );
+    for (const c of cR) claimsByHeight.set(c.block_height, c);
+  }
+
+  res.status(StatusCodes.OK).send(withMeta({
+    data: rows.map((b) => {
+      const c = claimsByHeight.get(b.height);
+      return {
+        type: 'blocks',
+        id: String(b.height),
+        attributes: {
+          height: b.height,
+          hash: b.hash,
+          time: Number(b.time),
+          isSuperblock: b.is_superblock,
+          stakerCpid: b.staker_cpid || null,
+          researchSubsidy: c ? halford2grc(BigInt(c.research_subsidy)) : '0',
+          blockSubsidy: c ? halford2grc(BigInt(c.block_subsidy)) : '0',
+          magnitude: c?.magnitude ?? null,
+        },
+      };
+    }),
+    meta: { count: Number(countRows[0]?.c ?? 0) },
+  }));
+});
+
 addressesRouter.get('/:address/utxos', async (req: Request, res: Response) => {
   const address = param(req, 'address');
   const at = parseAt(req);
