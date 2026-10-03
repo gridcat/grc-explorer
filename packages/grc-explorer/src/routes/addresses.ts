@@ -13,6 +13,7 @@ import { param } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
 import { getMoneySupplyRaw, sharePct } from '../lib/supply';
 import { parseAt, resolveAtHeight } from '../lib/timeMachine';
+import { fetchSidestakeSummary } from './mandatorySidestakes';
 import { AddressPresenter } from '../presenters';
 import { registerParamValidators } from '../lib/validators';
 
@@ -262,6 +263,95 @@ addressesRouter.get('/', async (req: Request, res: Response) => {
   res.status(StatusCodes.OK).send(withMeta(body));
 });
 
+interface AddressTxResource {
+  type: 'address_tx';
+  id: string;
+  attributes: { txId: string; height: number; delta: string; ts: number };
+}
+
+// One page of an address's movements, straight off the address_txs
+// projection (one row per (address, tx) with the net delta, maintained
+// at write time) — a clustered-PK range read of `limit` entries instead
+// of the old UNION + GROUP BY over the address's entire
+// tx_outputs/tx_inputs history, which cost O(history) per page view
+// (~0.6 s warm for a 50k-movement staker). Times come from a second
+// bounded PK lookup on transactions. Tie-break within a block is tx_id
+// DESC so the ordering is exactly the PK read backwards. Shared by
+// GET /:address/transactions and the detail route's include=transactions.
+async function fetchAddressTxPage(
+  address: string,
+  offset: number,
+  limit: number,
+  atHeight: number | null,
+): Promise<AddressTxResource[]> {
+  const cap = atHeight !== null ? 'AND block_height <= $h' : '';
+  const params: Record<string, unknown> = { addr: address };
+  if (atHeight !== null) params.h = atHeight;
+  const rows = await query<{
+    tx_id: string; height: number; delta_sum: string;
+  }>(
+    `
+      SELECT tx_id, block_height AS height, CAST(delta AS CHAR) AS delta_sum
+      FROM address_txs
+      WHERE address = $addr ${cap}
+      ORDER BY block_height DESC, tx_id DESC
+      LIMIT ${Number(limit)} OFFSET ${Number(offset)}
+    `,
+    params,
+  );
+
+  const timesByTx = new Map<string, number>();
+  if (rows.length > 0) {
+    const timeRows = await query<{ tx_id: string; ts: number | string | null }>(
+      'SELECT tx_id, UNIX_TIMESTAMP(time) AS ts FROM transactions WHERE tx_id IN ($ids)',
+      { ids: rows.map((r) => r.tx_id) },
+    );
+    for (const t of timeRows) {
+      if (t.ts !== null) timesByTx.set(t.tx_id, Number(t.ts));
+    }
+  }
+
+  return rows.map((r) => ({
+    type: 'address_tx',
+    id: `${address}:${r.height}:${r.tx_id}`,
+    attributes: {
+      txId: r.tx_id,
+      height: r.height,
+      delta: halford2grc(BigInt(r.delta_sum)),
+      ts: timesByTx.get(r.tx_id) ?? 0,
+    },
+  }));
+}
+
+// `?include=transactions,sidestakes` on GET /:address folds the address
+// page's two side lookups into the one response — `transactions` (the
+// first page, honouring the usual page[size]) and `mandatorySidestake`
+// (badge summary, or null for the non-recipient majority) — so SSR makes
+// one API call instead of three: one TCP round trip, one limiter
+// consume, one JSON parse. The standalone endpoints are unchanged and
+// the client-side refreshes keep using them. Not applied on the
+// time-machine (`?at=`) path.
+function parseInclude(req: Request): Set<string> {
+  const raw = req.query.include;
+  const joined = Array.isArray(raw) ? raw.join(',') : String(raw ?? '');
+  return new Set(joined.split(',').map((x) => x.trim()).filter(Boolean));
+}
+
+async function fetchIncluded(req: Request, address: string): Promise<Record<string, unknown>> {
+  const include = parseInclude(req);
+  const extra: Record<string, unknown> = {};
+  const tasks: Promise<void>[] = [];
+  if (include.has('transactions')) {
+    const { offset, limit } = getPagination(req);
+    tasks.push(fetchAddressTxPage(address, offset, limit, null).then((d) => { extra.transactions = d; }));
+  }
+  if (include.has('sidestakes')) {
+    tasks.push(fetchSidestakeSummary(address).then((m) => { extra.mandatorySidestake = m; }));
+  }
+  await Promise.all(tasks);
+  return extra;
+}
+
 addressesRouter.get('/:address', async (req: Request, res: Response) => {
   const address = param(req, 'address');
   const at = parseAt(req);
@@ -343,9 +433,10 @@ addressesRouter.get('/:address', async (req: Request, res: Response) => {
       firstSeenBlock: null,
       lastSeenBlock: null,
     });
-    const [stubLinkedContext, stubSupply] = await Promise.all([
+    const [stubLinkedContext, stubSupply, stubIncluded] = await Promise.all([
       fetchLinkedWallets(address),
       getMoneySupplyRaw(),
+      fetchIncluded(req, address),
     ]);
     const stubCombined = await enrichCombined(stubLinkedContext, stubSupply, address);
     const body = AddressPresenter.render(stub);
@@ -357,14 +448,15 @@ addressesRouter.get('/:address', async (req: Request, res: Response) => {
       combinedSharePct: stubCombined.combinedSharePct,
       shareOfSupplyPct: stubCombined.selfSharePct,
       combinedCount: stubCombined.combinedCount,
+      ...stubIncluded,
     }));
     return;
   }
 
-  // Pending balance + linked-wallets + seen-block times in parallel —
-  // all three are extra attributes on the same response, none depend
-  // on each other.
-  const [pendingRows, linkedContext, seenTimes, supplyRaw] = await Promise.all([
+  // Pending balance + linked-wallets + seen-block times (+ any
+  // `include`d side lookups) in parallel — all extra attributes on the
+  // same response, none depend on each other.
+  const [pendingRows, linkedContext, seenTimes, supplyRaw, included] = await Promise.all([
     query<{ pending: string | null }>(
       `
         SELECT CAST(sum(o.value) AS CHAR) AS pending
@@ -380,6 +472,7 @@ addressesRouter.get('/:address', async (req: Request, res: Response) => {
     fetchLinkedWallets(address),
     fetchSeenTimes(wallet.firstSeenBlock, wallet.lastSeenBlock),
     getMoneySupplyRaw(),
+    fetchIncluded(req, address),
   ]);
   const pendingSum = pendingRows[0]?.pending && pendingRows[0].pending !== '0'
     ? BigInt(pendingRows[0].pending)
@@ -394,6 +487,7 @@ addressesRouter.get('/:address', async (req: Request, res: Response) => {
     combinedSharePct: combined.combinedSharePct,
     shareOfSupplyPct: combined.selfSharePct,
     combinedCount: combined.combinedCount,
+    ...included,
   }));
 });
 
@@ -402,58 +496,8 @@ addressesRouter.get('/:address/transactions', async (req: Request, res: Response
   const at = parseAt(req);
   const atHeight = at !== undefined ? await resolveAtHeight(at) : null;
   const { offset, limit } = getPagination(req);
-
-  const cap = atHeight !== null && at !== undefined
-    ? 'AND block_height <= $h'
-    : '';
-  // Page straight off the address_txs projection (one row per
-  // (address, tx) with the net delta, maintained at write time) — a
-  // clustered-PK range read of `limit` entries instead of the old
-  // UNION + GROUP BY over the address's entire tx_outputs/tx_inputs
-  // history, which cost O(history) per page view (~0.6 s warm for a
-  // 50k-movement staker). Times come from a second bounded PK lookup
-  // on transactions. Tie-break within a block is tx_id DESC so the
-  // ordering is exactly the PK read backwards.
-  const params: Record<string, unknown> = { addr: address };
-  if (atHeight !== null && at !== undefined) params.h = atHeight;
-  const rows = await query<{
-    tx_id: string; height: number; delta_sum: string;
-  }>(
-    `
-      SELECT tx_id, block_height AS height, CAST(delta AS CHAR) AS delta_sum
-      FROM address_txs
-      WHERE address = $addr ${cap}
-      ORDER BY block_height DESC, tx_id DESC
-      LIMIT ${Number(limit)} OFFSET ${Number(offset)}
-    `,
-    params,
-  );
-
-  const timesByTx = new Map<string, number>();
-  if (rows.length > 0) {
-    const timeRows = await query<{ tx_id: string; ts: number | string | null }>(
-      'SELECT tx_id, UNIX_TIMESTAMP(time) AS ts FROM transactions WHERE tx_id IN ($ids)',
-      { ids: rows.map((r) => r.tx_id) },
-    );
-    for (const t of timeRows) {
-      if (t.ts !== null) timesByTx.set(t.tx_id, Number(t.ts));
-    }
-  }
-
-  const body = {
-    data: rows.map((r) => ({
-      type: 'address_tx',
-      id: `${address}:${r.height}:${r.tx_id}`,
-      attributes: {
-        txId: r.tx_id,
-        height: r.height,
-        delta: halford2grc(BigInt(r.delta_sum)),
-        ts: timesByTx.get(r.tx_id) ?? 0,
-      },
-    })),
-    meta: { count: rows.length },
-  };
-  res.status(StatusCodes.OK).send(withMeta(body));
+  const data = await fetchAddressTxPage(address, offset, limit, atHeight);
+  res.status(StatusCodes.OK).send(withMeta({ data, meta: { count: data.length } }));
 });
 
 addressesRouter.get('/:address/utxos', async (req: Request, res: Response) => {

@@ -105,27 +105,91 @@ mandatorySidestakesRouter.get('/', async (_req: Request, res: Response) => {
   res.status(StatusCodes.OK).send(body);
 });
 
+interface RegistryRow {
+  address: string; action: string; status: string;
+  allocation_pct: number; description: string;
+  tx_id: string; block_height: number; time: number;
+}
+
+interface PayoutTotals { total: string; payout_count: number | string }
+
+async function fetchRegistry(address: string): Promise<RegistryRow[]> {
+  return query<RegistryRow>(
+    `
+      SELECT address, action, status, allocation_pct, description,
+             tx_id, block_height, UNIX_TIMESTAMP(time) AS time
+      FROM mandatory_sidestakes
+      WHERE address = $addr
+      ORDER BY block_height
+    `,
+    { addr: address },
+  );
+}
+
+async function fetchPayoutTotals(address: string): Promise<PayoutTotals> {
+  const rows = await query<PayoutTotals>(
+    `
+      SELECT CAST(coalesce(sum(amount), 0) AS CHAR) AS total,
+             count(*)                               AS payout_count
+      FROM coinstake_sidestakes
+      WHERE address = $addr
+    `,
+    { addr: address },
+  );
+  return rows[0] ?? { total: '0', payout_count: 0 };
+}
+
+export interface SidestakeSummary {
+  address: string;
+  currentStatus: string;
+  currentAllocationPct: number;
+  currentDescription: string;
+  totalPaid: string;
+  payoutCount: number;
+}
+
+function summarise(address: string, registry: RegistryRow[], totals: PayoutTotals): SidestakeSummary {
+  const last = registry[registry.length - 1];
+  return {
+    address,
+    currentStatus: last.status,
+    currentAllocationPct: last.allocation_pct,
+    currentDescription: last.description,
+    totalPaid: halford2grc(BigInt(totals.total)),
+    payoutCount: Number(totals.payout_count),
+  };
+}
+
+/**
+ * Badge-sized view of an address's MSS standing, or null when it has
+ * never been a registered recipient. That null is the steady state for
+ * nearly every address, so the registry lookup runs alone first and the
+ * payout aggregate only for actual recipients. Shared with the address
+ * detail route's `include=sidestakes`.
+ */
+export async function fetchSidestakeSummary(address: string): Promise<SidestakeSummary | null> {
+  const registry = await fetchRegistry(address);
+  if (registry.length === 0) return null;
+  return summarise(address, registry, await fetchPayoutTotals(address));
+}
+
 /**
  * Per-address detail. Returns the registry lifecycle (every state
  * change for this destination) plus a paginated payout history.
+ * Registry first: a miss is a 404 after one small query, not three —
+ * the address page asks this for every address it renders.
  */
 mandatorySidestakesRouter.get('/:address', async (req: Request, res: Response) => {
   const address = param(req, 'address');
-  const [registry, payouts, totalsRows] = await Promise.all([
-    query<{
-      address: string; action: string; status: string;
-      allocation_pct: number; description: string;
-      tx_id: string; block_height: number; time: number;
-    }>(
-      `
-        SELECT address, action, status, allocation_pct, description,
-               tx_id, block_height, UNIX_TIMESTAMP(time) AS time
-        FROM mandatory_sidestakes
-        WHERE address = $addr
-        ORDER BY block_height
-      `,
-      { addr: address },
-    ),
+  const registry = await fetchRegistry(address);
+  if (registry.length === 0) {
+    res.status(StatusCodes.NOT_FOUND).send({
+      errors: [new ErrorModel(StatusCodes.NOT_FOUND, 'Sidestake recipient not found')],
+    });
+    return;
+  }
+
+  const [payouts, totals] = await Promise.all([
     query<{
       block_height: number; vout_idx: number; tx_id: string;
       amount: string; time: number;
@@ -141,37 +205,15 @@ mandatorySidestakesRouter.get('/:address', async (req: Request, res: Response) =
       `,
       { addr: address },
     ),
-    query<{ total: string; payout_count: number | string }>(
-      `
-        SELECT CAST(coalesce(sum(amount), 0) AS CHAR) AS total,
-               count(*)                               AS payout_count
-        FROM coinstake_sidestakes
-        WHERE address = $addr
-      `,
-      { addr: address },
-    ),
+    fetchPayoutTotals(address),
   ]);
-  const totalsRow = totalsRows[0] ?? { total: '0', payout_count: 0 };
 
-  if (registry.length === 0) {
-    res.status(StatusCodes.NOT_FOUND).send({
-      errors: [new ErrorModel(StatusCodes.NOT_FOUND, 'Sidestake recipient not found')],
-    });
-    return;
-  }
-
-  const last = registry[registry.length - 1];
   res.status(StatusCodes.OK).send(withMeta({
     data: {
       type: 'mandatory_sidestakes',
       id: address,
       attributes: {
-        address,
-        currentStatus: last.status,
-        currentAllocationPct: last.allocation_pct,
-        currentDescription: last.description,
-        totalPaid: halford2grc(BigInt(totalsRow.total)),
-        payoutCount: Number(totalsRow.payout_count),
+        ...summarise(address, registry, totals),
         registry: registry.map((r) => ({
           action: r.action,
           status: r.status,
