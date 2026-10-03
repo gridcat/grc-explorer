@@ -1,3 +1,10 @@
+# [grc-explorer-v2.3.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.2.0...grc-explorer-v2.3.0) (2026-10-03)
+
+
+### Features
+
+* bound address page linked-wallets lookup and log slow requests ([cdb06a0](https://github.com/gridcat/grc-explorer/commit/cdb06a0c59bf8d18308a2ea0105613d0493c9bf6))
+
 # [grc-explorer-v2.2.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.1.0...grc-explorer-v2.2.0) (2026-10-03)
 
 
