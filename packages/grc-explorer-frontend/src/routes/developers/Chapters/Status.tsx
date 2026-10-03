@@ -31,7 +31,7 @@ export function Status() {
     "attributes": {
       "service": "grc-explorer",
       "version": "1.0.0",
-      "network": "testnet",
+      "network": "mainnet",
       "indexer": {
       "status": "live",
       "lastIndexedHeight": 89281,

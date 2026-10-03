@@ -34,7 +34,7 @@ export function Addresses() {
         caption="Response — 200 OK (excerpt)"
         language="json"
         code={`{
-  "meta": { "count": 12345, "network": "testnet", "version": "1.0.0" },
+  "meta": { "count": 12345, "network": "mainnet", "version": "1.0.0" },
   "data": [
     {
       "type": "addresses",

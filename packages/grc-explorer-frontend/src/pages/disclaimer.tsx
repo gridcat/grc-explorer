@@ -1,5 +1,5 @@
 import {
-  Alert, AlertTitle, Box, Container, Divider, Grid, Typography,
+  Alert, Box, Container, Divider, Grid, Typography,
 } from '@mui/material';
 import { Seo } from '@/components/Seo';
 import { Layout } from '../layouts/Layout';
@@ -581,14 +581,6 @@ export default function DisclaimerPage() {
                 authority correspondence in English at this address.
               </Typography>
             </Box>
-
-            <Alert severity="info" variant="outlined" sx={{ mt: 2 }}>
-              <AlertTitle>Heads up</AlertTitle>
-              The explorer is approaching its public mainnet launch.
-              These Terms are effective from the date below and apply
-              both to the current testnet preview and to the public
-              mainnet release.
-            </Alert>
 
             <Divider sx={{ my: 4 }} />
             <Typography variant="caption" color="text.secondary" component="p">

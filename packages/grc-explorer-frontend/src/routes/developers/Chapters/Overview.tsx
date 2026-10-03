@@ -3,7 +3,7 @@ import {
 } from '@mui/material';
 import { CodeBlock } from '../../../components/CodeBlock/CodeBlock';
 import { IS_TESTNET } from '../../../lib/network';
-import { API_BASE, MAINNET_API_BASE, TESTNET_API_BASE } from './apiBase';
+import { API_BASE, MAINNET_API_BASE } from './apiBase';
 
 export function Overview() {
   return (
@@ -29,16 +29,9 @@ export function Overview() {
             secondary="The canonical Gridcoin chain."
           />
         </ListItem>
-        <ListItem disableGutters>
-          <ListItemText
-            primary={<><strong>Testnet:</strong> <code>{TESTNET_API_BASE}</code></>}
-            secondary="A separate stack indexing the Gridcoin testnet wallet. Same shape, separate data."
-          />
-        </ListItem>
       </List>
       <Typography gutterBottom variant="body1" component="p">
-        The two stacks are isolated; the testnet API will never return mainnet
-        data and vice versa. The active stack identifies itself in the {' '}
+        The stack identifies its network in the {' '}
         <code>meta.network</code> field of every response.
       </Typography>
 

@@ -35,7 +35,7 @@ export function Conventions() {
     "id": "89281",
     "attributes": { /* ... */ }
   },
-  "meta": { "network": "testnet", "version": "1.0.0" }
+  "meta": { "network": "mainnet", "version": "1.0.0" }
 }`}
       />
       <CodeBlock
@@ -46,7 +46,7 @@ export function Conventions() {
     { "type": "blocks", "id": "89281", "attributes": { /* ... */ } },
     { "type": "blocks", "id": "89280", "attributes": { /* ... */ } }
   ],
-  "meta": { "count": 89282, "network": "testnet", "version": "1.0.0" }
+  "meta": { "count": 89282, "network": "mainnet", "version": "1.0.0" }
 }`}
       />
 

@@ -118,7 +118,7 @@ export function Blocks() {
              "mrc_foundation_fees": "0", "mrc_staker_fees": "0" },
   "mrcs": [],
   "tipHeight": 89281,
-  "meta": { "network": "testnet", "version": "1.0.0" }
+  "meta": { "network": "mainnet", "version": "1.0.0" }
 }`}
       />
 
