@@ -1,3 +1,10 @@
+# [grc-explorer-v2.3.2](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.3.1...grc-explorer-v2.3.2) (2026-10-03)
+
+
+### Bug Fixes
+
+* refresh rollups for the new block only and stop the stale network tip ([a531274](https://github.com/gridcat/grc-explorer/commit/a531274d39661a9087c94d48d0c3812938fafcdf))
+
 # [grc-explorer-v2.3.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.3.0...grc-explorer-v2.3.1) (2026-10-03)
 
 
