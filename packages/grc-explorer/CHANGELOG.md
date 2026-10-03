@@ -1,3 +1,15 @@
+# [grc-explorer-v2.0.10](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.0.9...grc-explorer-v2.0.10) (2026-10-03)
+
+
+### Bug Fixes
+
+* bump vulnerable production dependencies ([8c543f0](https://github.com/gridcat/grc-explorer/commit/8c543f0f97940bb64af9264446a68da1fcf2436f))
+* cap the API reader pool's wait queue ([35f47b3](https://github.com/gridcat/grc-explorer/commit/35f47b3d0b4ba9e6a8ea5db010e223e915d0ecaf))
+* fold first tx page and MSS badge into the address response ([42f0847](https://github.com/gridcat/grc-explorer/commit/42f084748808fa6435ab3e771767cfb5d0a76389))
+* rank researcher series from a cpid_magnitude_totals rollup ([fc04173](https://github.com/gridcat/grc-explorer/commit/fc04173fe92aeb0257db8270086dc312366a54a1))
+* seed address balance history from address_state ([6b88ddc](https://github.com/gridcat/grc-explorer/commit/6b88ddc7af4828e78dc12b594a60e2d56202b374))
+* upgrade yayson to 4 ([1985ec0](https://github.com/gridcat/grc-explorer/commit/1985ec04dd5cf51bb7a41475161bc12061949367))
+
 # [grc-explorer-v2.0.9](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.0.8...grc-explorer-v2.0.9) (2026-08-30)
 
 
