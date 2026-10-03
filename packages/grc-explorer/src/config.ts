@@ -22,6 +22,8 @@ interface Config {
   // latency-sensitive, and capping concurrency also bounds how much cold
   // HDD I/O they can contend for at once.
   DB_POOL_MAINT_READ: number;
+  // Reader-pool wait queue cap; 0 = unbounded (mysql2 default).
+  DB_POOL_QUEUE_LIMIT: number;
   // Cloudflare cache purge on reorg. Optional — when both are set, a chain
   // reorg purges the edge cache so stale tip-ward pages don't survive the
   // rollback. Unset → no-op (e.g. dev / no CDN in front).
@@ -178,6 +180,7 @@ nconf
       'DB_POOL_WRITE',
       'DB_POOL_READ',
       'DB_POOL_MAINT_READ',
+      'DB_POOL_QUEUE_LIMIT',
       'CF_API_TOKEN',
       'CF_ZONE_ID',
       'NETWORK',
@@ -251,6 +254,14 @@ nconf
     // the HDD with many concurrent scans; big enough that a metrics rebuild
     // doesn't have to wait behind a long job.
     DB_POOL_MAINT_READ: 3,
+    // Requests waiting for one of the DB_POOL_READ connections beyond this
+    // fail immediately ("Queue limit reached" → 500) instead of queueing
+    // silently. Under a stall every queued query still runs after its
+    // client has long timed out, which is what keeps a stall going; at
+    // ~140 queries/s this is about 1.5 s of demand, so the cap only bites
+    // when the pool is genuinely wedged. 0 restores mysql2's unbounded
+    // queue.
+    DB_POOL_QUEUE_LIMIT: 200,
     REDIS_HOST: 'redis',
     REDIS_PORT: 6379,
     REDIS_PREFIX: 'grc-explorer:testnet',
