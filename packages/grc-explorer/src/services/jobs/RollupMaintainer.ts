@@ -1,29 +1,34 @@
 // Reads go through the maintenance reader pool (aliased to `query`) so
 // this job's rollup recompute scans can't starve the API readers.
 import { maintenanceQuery as query, run } from '../../lib/db';
+import { log } from '../../lib/log';
 
 // Incremental maintenance for the materialised rollup tables (migration
 // 0002), replacing DuckDB's recompute-on-read VIEWs. Strategy:
 // recompute-the-trailing-window. After each applied batch we recompute
-// every rollup bucket from a time floor `tLo = batchMinTime - MARGIN`
-// forward, by DELETE-ing those buckets and re-aggregating the current
-// base rows in that range. This is:
-//   - correct under backfill: blocks arrive in time order, so each batch
-//     rebuilds the buckets it crosses; by the end every bucket is final.
-//   - correct under reorg: a reorg is ≤ MAX_REORG_DEPTH (100) blocks, far
-//     inside MARGIN, so the next forward apply recomputes the affected
-//     buckets from whatever base rows survive (a bucket that lost all its
-//     blocks simply gets no row). No delta arithmetic, no double-count.
-//   - cheap: only the trailing window is touched; historical buckets are
-//     immutable and never rescanned.
+// every rollup bucket from the batch's earliest block time forward (to
+// now), by DELETE-ing those buckets and re-aggregating the current base
+// rows in that range. This is:
+//   - correct for any block timestamp order: the recompute always runs
+//     from the floor to the present, so a block stamped earlier than its
+//     parent is covered by its own (earlier) floor.
+//   - correct under backfill: each batch rebuilds the buckets it crosses;
+//     by the end every bucket is final.
+//   - correct under reorg: ChainReorgHandler calls refreshRollups with
+//     the abandoned range's earliest time + first height after deleting
+//     it, so buckets that lost blocks are rebuilt from the survivors (a
+//     bucket that lost all its blocks gets no row).
+//   - cheap at the tip: one block touches one 5m and one 1h bucket; the
+//     daily tables rebuild from UTC midnight. Historical buckets are
+//     never rescanned.
 //
-// MARGIN is wall-clock-generous (24 h ≫ 100 blocks at live spacing) so a
-// deep-ish reorg can never outrun it. The base-table scans are index-
-// pruned on `time` (idx_blocks_time) / `block_time`, so the window is a
-// few hundred rows. All time math is UTC — the server runs
+// The per-superblock rollups key on HEIGHT: they rebuild only when the
+// batch (or the reorged range) contains a superblock.
+//
+// The base-table scans are index-pruned on `time` (idx_blocks_time) /
+// `block_time`. All time math is UTC — the server runs
 // default-time-zone=+00:00 (compose) so FROM_UNIXTIME/UNIX_TIMESTAMP/DATE
 // match DuckDB's UTC timestamps.
-const MARGIN_SEC = 24 * 60 * 60;
 
 // One (delete, insert) pair per rollup. `floor` is the bucket-aligned unix
 // second from which we recompute; passed to both the DELETE (by bucket key)
@@ -54,33 +59,47 @@ async function refreshDaily(table: string, insertSql: string, tLo: number): Prom
 // Serialise + coalesce refreshes. The backfiller fires runPostCommit (and
 // thus refreshRollups) fire-and-forget, so without this two overlapping
 // passes race the per-rollup DELETE+INSERT and collide on the bucket PK
-// ("Duplicate entry … for key 'PRIMARY'"). Each pass is a trailing-window
+// ("Duplicate entry … for key 'PRIMARY'"). Each pass is a from-floor
 // rebuild, so a queued one is redundant — we keep only the EARLIEST pending
-// start time (widest window, covers every later batch) and run one at a
-// time. Callers after the first just lower the watermark and return.
+// start time and height (widest window, covers every later batch) and run
+// one at a time. Callers after the first just lower the watermarks and
+// return.
 let running = false;
 let pendingFrom: number | null = null;
+let pendingHeight: number | null = null;
+// Warm at the tip a refresh is well under 50 ms; log the ones that aren't.
+const SLOW_REFRESH_MS = 2_000;
 
-export async function refreshRollups(batchMinTimeUnix: number): Promise<void> {
+export async function refreshRollups(batchMinTimeUnix: number, batchMinHeight: number): Promise<void> {
   pendingFrom = pendingFrom === null
     ? batchMinTimeUnix
     : Math.min(pendingFrom, batchMinTimeUnix);
+  pendingHeight = pendingHeight === null
+    ? batchMinHeight
+    : Math.min(pendingHeight, batchMinHeight);
   if (running) return;
   running = true;
   try {
     while (pendingFrom !== null) {
       const from = pendingFrom;
+      const fromHeight = pendingHeight ?? 0;
       pendingFrom = null;
+      pendingHeight = null;
+      const t0 = Date.now();
       // eslint-disable-next-line no-await-in-loop
-      await doRefresh(from);
+      await doRefresh(from, fromHeight);
+      const ms = Date.now() - t0;
+      if (ms >= SLOW_REFRESH_MS) {
+        log.warn(`RollupMaintainer refresh from ${new Date(from * 1000).toISOString()} took ${ms}ms`);
+      }
     }
   } finally {
     running = false;
   }
 }
 
-async function doRefresh(batchMinTimeUnix: number): Promise<void> {
-  const tLo = Math.max(0, batchMinTimeUnix - MARGIN_SEC);
+async function doRefresh(batchMinTimeUnix: number, batchMinHeight: number): Promise<void> {
+  const tLo = Math.max(0, batchMinTimeUnix);
 
   // ---- network_5m / 1h / 1d (blocks) ----
   for (const [table, gran] of [['network_5m', 300], ['network_1h', 3600], ['network_1d', 86400]] as const) {
@@ -219,16 +238,13 @@ async function doRefresh(batchMinTimeUnix: number): Promise<void> {
   );
 
   // ---- superblock_researcher_stats (per-superblock, height-keyed) ----
-  // Same trailing-window recompute, but the key is a superblock HEIGHT:
-  // resolve the first superblock inside the window (superblocks arrive
-  // ~daily, so this touches 1-2 of them) and rebuild from there. No
-  // superblock in the window → nothing to do.
+  // Same from-floor recompute, but the key is a superblock HEIGHT: the
+  // first superblock at/after the batch's first height, i.e. only when the
+  // batch itself carries one (~once a day). No superblock → nothing to do.
   {
     const hRows = await query<{ h: number | null }>(
-      `SELECT MIN(s.height) AS h
-       FROM superblocks s JOIN blocks b ON b.height = s.height
-       WHERE b.time >= FROM_UNIXTIME($t)`,
-      { t: tLo },
+      'SELECT MIN(height) AS h FROM superblocks WHERE height >= $h',
+      { h: batchMinHeight },
     );
     const hLo = hRows[0]?.h;
     if (hLo !== null && hLo !== undefined) {

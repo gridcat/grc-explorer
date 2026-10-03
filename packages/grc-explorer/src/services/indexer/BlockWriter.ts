@@ -744,12 +744,15 @@ async function insertMrcRequests(parsedList: ParsedBlock[]): Promise<void> {
 async function runPostCommit(parsedList: ParsedBlock[], options: ApplyBlockOptions): Promise<void> {
   // Rollup maintenance runs ALWAYS (backfill + live) — the materialised
   // rollup tables (migration 0002) are built during backfill and kept
-  // current at the tip. Recompute the trailing window from the batch's
-  // earliest block time; reorg re-applies pass through here too, so the
-  // affected recent buckets self-correct on the next forward batch.
+  // current at the tip. Recompute from the batch's earliest block time
+  // (timestamps aren't height-monotonic, hence the min) and first height;
+  // ChainReorgHandler covers the buckets an abandoned range leaves behind.
   if (parsedList.length > 0) {
     try {
-      await refreshRollups(parsedList[0].block.time);
+      await refreshRollups(
+        parsedList.reduce((m, p) => Math.min(m, p.block.time), Infinity),
+        parsedList[0].block.height,
+      );
     } catch (err) {
       log.warn('post-commit rollup refresh failed', err);
     }

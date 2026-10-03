@@ -6,6 +6,7 @@ import { query } from '../../lib/db';
 import { events } from '../../lib/emitter';
 import { liveRpc } from '../../lib/gridcoin';
 import { log } from '../../lib/log';
+import { refreshRollups } from '../jobs/RollupMaintainer';
 import { getCursor, setCursor } from '../../lib/redis';
 
 interface CursorPosition {
@@ -56,6 +57,7 @@ export class ChainReorgHandler {
     // absorbed abandoned deltas. Served by idx_abh_height; bounded by
     // MAX_REORG_DEPTH blocks' worth of activity.
     const dirtyAddresses = await this.collectAffectedAddresses(fork.height + 1);
+    const abandonedFrom = await this.abandonedMinTime(fork.height + 1);
 
     // Delete the abandoned chain rows (fork+1 .. cursor) so the forward
     // replay re-inserts into a clean gap. Must happen before the cursor
@@ -67,6 +69,12 @@ export class ChainReorgHandler {
     // surviving event log (delete-then-reinsert inside). The forward
     // replay then re-applies the new chain's deltas additively on top.
     await repairAddressState(dirtyAddresses);
+
+    // Rollups only recompute from each new batch's own floor, so rebuild
+    // the buckets the abandoned range touched from the surviving rows.
+    if (abandonedFrom !== null) {
+      await refreshRollups(abandonedFrom, fork.height + 1);
+    }
 
     // Evict the edge cache for the rolled-back range so Cloudflare doesn't
     // keep serving the abandoned chain. Best-effort + no-op when CF isn't
@@ -142,6 +150,17 @@ export class ChainReorgHandler {
       { from },
     );
     return rows.map((r) => r.address);
+  }
+
+  // Earliest block time in the range about to be abandoned (PK range,
+  // ≤ MAX_REORG_DEPTH rows); null when the range is empty.
+  private async abandonedMinTime(from: number): Promise<number | null> {
+    const rows = await query<{ t: number | string | null }>(
+      'SELECT UNIX_TIMESTAMP(MIN(time)) AS t FROM blocks WHERE height >= $from',
+      { from },
+    );
+    const t = rows[0]?.t;
+    return t === null || t === undefined ? null : Number(t);
   }
 
   private async collectAbandonedHashes(from: number, to: number): Promise<string[]> {

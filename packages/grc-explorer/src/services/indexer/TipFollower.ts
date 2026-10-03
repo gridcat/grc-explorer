@@ -40,6 +40,14 @@ import { VerboseBlock } from './types';
 // enter bulk backfill mode.
 const LAG_THRESHOLD_FOR_REBACKFILL = 7000;
 
+// Lag logging. Normally the follower is 0–1 blocks behind; from
+// LAG_WARN_BLOCKS on it logs the lag every tick and a per-block timing
+// line (RPC fetch / prev-output lookup / write) so the logs show where
+// the time goes. A block slower than SLOW_BLOCK_MS is logged even
+// without lag.
+const LAG_WARN_BLOCKS = 3;
+const SLOW_BLOCK_MS = 10_000;
+
 export class TipFollower {
   constructor(private readonly reorg: ChainReorgHandler) {}
 
@@ -85,6 +93,13 @@ export class TipFollower {
       return;
     }
 
+    const lag = tipHeight - cursorHeight;
+    const lagging = lag >= LAG_WARN_BLOCKS;
+    if (lagging) {
+      log.warn(`TipFollower behind: indexed=${cursorHeight} tip=${tipHeight} lag=${lag} blocks`);
+    }
+    const tickStart = Date.now();
+
     let cursor = cursorHeight;
     let cursorHashLocal = cursorHash;
 
@@ -98,8 +113,13 @@ export class TipFollower {
     while (cursor < tipHeight) {
       const start = cursor + 1;
       const span = Math.min(tipHeight - cursor, CATCHUP_SPAN);
+      const fetchStart = Date.now();
       // eslint-disable-next-line no-await-in-loop
       const batch = await this.getBlocksBatch(start, span);
+      const fetchMs = Date.now() - fetchStart;
+      if (lagging) {
+        log.warn(`TipFollower fetched ${batch.length} blocks from ${start} in ${fetchMs}ms`);
+      }
 
       let reorged = false;
       for (const block of batch) {
@@ -115,17 +135,30 @@ export class TipFollower {
           break;
         }
 
+        const t0 = Date.now();
         // eslint-disable-next-line no-await-in-loop
         const lookup = await buildPrevOutputsLookup(block.tx);
+        const t1 = Date.now();
         const parsed = parseBlock(block, lookup);
+        const t2 = Date.now();
         // eslint-disable-next-line no-await-in-loop
         await applyBlock(parsed);
+        const t3 = Date.now();
+        if (lagging || t3 - t0 >= SLOW_BLOCK_MS) {
+          log.warn(
+            `TipFollower block ${block.height} (${block.tx.length} tx): total=${t3 - t0}ms prevOutputs=${t1 - t0}ms parse=${t2 - t1}ms apply=${t3 - t2}ms remaining=${tipHeight - block.height}`,
+          );
+        }
 
         cursor = block.height;
         cursorHashLocal = block.hash;
       }
       if (reorged) continue;
       if (batch.length === 0) break; // daemon returned nothing — try again next tick
+    }
+
+    if (lagging) {
+      log.warn(`TipFollower tick done: ${cursor - cursorHeight} blocks in ${Date.now() - tickStart}ms, now at ${cursor} (tip was ${tipHeight})`);
     }
 
     events.publish({

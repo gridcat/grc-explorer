@@ -247,6 +247,9 @@ function LastBlockTile() {
   );
 }
 
+// Mirrors grc-explorer's TipFollower LAG_THRESHOLD_FOR_REBACKFILL.
+const REBACKFILL_LAG = 7000;
+
 /**
  * Combined "Indexed / Tip" tile. Two heights matter to the user:
  *   - the daemon's tip (what the chain actually knows about), and
@@ -273,7 +276,13 @@ function HeightTile({
   // when it spots the huge lag). The numeric gap via `caughtUp` is
   // the honest test. Without this the % bar blinks on/off during
   // normal backfill rhythm.
-  const showProgress = !caughtUp && pct !== null;
+  // Below the indexer's re-backfill threshold (TipFollower's
+  // LAG_THRESHOLD_FOR_REBACKFILL) the indexer is following the tip block
+  // by block, just behind (e.g. a cold DB after a restart); a progress
+  // bar there reads as a backfill at "100.00%".
+  const gap = indexed !== null && tip !== null ? tip - indexed : null;
+  const showProgress = !caughtUp && pct !== null && gap !== null && gap > REBACKFILL_LAG;
+  const showBehind = !caughtUp && gap !== null && gap <= REBACKFILL_LAG;
 
   // ETA: rolling 5-minute window of (indexed, tip) samples. We measure
   // how fast the indexed-to-tip *gap* is closing (not raw indexer rate)
@@ -304,7 +313,7 @@ function HeightTile({
   }, []);
 
   const etaSec = (() => {
-    if (!showProgress || indexed == null || tip == null) return null;
+    if ((!showProgress && !showBehind) || indexed == null || tip == null) return null;
     const arr = samplesRef.current;
     if (arr.length < 2) return null;
     const oldest = arr[0];
@@ -369,6 +378,11 @@ function HeightTile({
               {`backfilling · ${pct.toFixed(2)}%${etaSec !== null ? ` · ~${formatDuration(etaSec)} left` : ''}`}
             </Typography>
           </>
+        )}
+        {showBehind && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+            {`${gap.toLocaleString()} ${gap === 1 ? 'block' : 'blocks'} behind${etaSec !== null ? ` · ~${formatDuration(etaSec)} left` : ''}`}
+          </Typography>
         )}
         {caughtUp && (
           <Typography variant="caption" sx={{ display: 'block', mt: 0.5, color: 'success.main' }}>

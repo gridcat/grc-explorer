@@ -108,14 +108,15 @@ export class NetworkStatsPoller {
       rpc_version: net?.protocolVersion ?? previous?.rpc_version ?? 0,
     };
     const payloadJson = JSON.stringify(payload);
-    // Skip the Redis write + SSE fanout when the payload is byte-
-    // identical to the cached one. Difficulty / peer_count /
-    // mempool_size only move on block + connection events; at 15s
-    // poll cadence the unchanged case is the common case and the
-    // fanout to thousands of SSE clients isn't free.
+    // Always rewrite the cache so its TTL keeps sliding: blocks are 90 s
+    // apart, so an unchanged payload is the common case, and skipping
+    // the write let the 60 s key expire mid-block — /network then fell
+    // back to the snapshot at the indexer's anchor and showed a stale
+    // tip. Only the SSE fanout (thousands of clients) is skipped when
+    // the payload is byte-identical.
+    await redis.set(CACHE_KEY, payloadJson, 'EX', CACHE_TTL_SECONDS);
     const previousJson = previous ? JSON.stringify(previous) : null;
     if (payloadJson !== previousJson) {
-      await redis.set(CACHE_KEY, payloadJson, 'EX', CACHE_TTL_SECONDS);
       events.publish({ topic: 'network.stats', payload });
     }
 
