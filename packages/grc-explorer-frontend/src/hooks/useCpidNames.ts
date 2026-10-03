@@ -84,7 +84,10 @@ async function fetchNames(missing: string[]): Promise<void> {
  * Missing / anonymous CPIDs are simply absent from the returned object;
  * callers should treat absence as "unknown".
  */
-export async function fetchCpidNames(cpids: string[]): Promise<Record<string, string>> {
+export async function fetchCpidNames(
+  cpids: string[],
+  headers?: Record<string, string>,
+): Promise<Record<string, string>> {
   const unique = Array.from(new Set(
     cpids.map((c) => c.toLowerCase()).filter((c) => CPID_RE.test(c)),
   )).sort();
@@ -96,7 +99,7 @@ export async function fetchCpidNames(cpids: string[]): Promise<Record<string, st
   }
   await Promise.all(chunks.map(async (chunk) => {
     try {
-      const r = await api.get<NamesResponse>('/cpids/names', { params: { cpids: chunk.join(',') } });
+      const r = await api.get<NamesResponse>('/cpids/names', { params: { cpids: chunk.join(',') }, headers });
       const names = r.data?.data?.attributes?.names ?? {};
       for (const [k, v] of Object.entries(names)) {
         if (typeof v === 'string' && v) out[k] = v;

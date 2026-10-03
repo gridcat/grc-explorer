@@ -468,9 +468,12 @@ function DetailRow({ label, value, mono }: { label: string; value: React.ReactNo
  * dispatcher in /blocks/[year] use this. Returns null when the height
  * is unknown (or RPC fails) so callers can hand off to Next's notFound.
  */
-export async function fetchBlockDetailProps(height: string): Promise<BlockDetailProps | null> {
+export async function fetchBlockDetailProps(
+  height: string,
+  headers?: Record<string, string>,
+): Promise<BlockDetailProps | null> {
   try {
-    const r = await api.get(`/blocks/${height}`);
+    const r = await api.get(`/blocks/${height}`, { headers });
     const attrs = r.data?.data?.attributes as Block | undefined;
     if (!attrs) return null;
     const c = r.data?.claim;

@@ -1,4 +1,5 @@
 import type { GetServerSideProps } from 'next';
+import { clientHeaders, depthTtl, setPageCache } from '../../lib/ssr';
 import { BlockDetail, fetchBlockDetailProps, type BlockDetailProps } from '../../routes/blocks/BlockDetail';
 
 /**
@@ -14,7 +15,10 @@ export default BlockDetail;
 export const getServerSideProps: GetServerSideProps<BlockDetailProps> = async (ctx) => {
   const { height } = ctx.params ?? {};
   if (typeof height !== 'string') return { notFound: true };
-  const props = await fetchBlockDetailProps(height);
+  const props = await fetchBlockDetailProps(height, clientHeaders(ctx.req));
   if (!props) return { notFound: true };
+  if (props.initialBlock && props.initialTipHeight !== null) {
+    setPageCache(ctx.res, depthTtl(props.initialTipHeight - props.initialBlock.height));
+  }
   return { props };
 };

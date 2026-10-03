@@ -13,6 +13,7 @@ import { Seo } from '@/components/Seo';
 import { JsonTree } from '../../components/JsonTree';
 import { Layout } from '../../layouts/Layout';
 import { api, notFoundOrRethrow } from '../../lib/api';
+import { clientHeaders, depthTtl, setPageCache } from '../../lib/ssr';
 import { formatGrc, formatTime } from '../../lib/format';
 import { HashTrim } from '../../components/HashTrim';
 import { Crumbs } from '../../components/Crumbs';
@@ -519,17 +520,21 @@ export const getServerSideProps: GetServerSideProps<TxDetailProps> = async (ctx)
   const { tx_id: txId } = ctx.params ?? {};
   if (typeof txId !== 'string') return { notFound: true };
   try {
-    const r = await api.get(`/transactions/${txId}`);
+    const headers = clientHeaders(ctx.req);
+    const r = await api.get(`/transactions/${txId}`, { headers });
     const attrs = r.data?.data?.attributes as Tx | undefined;
     if (!attrs) return { notFound: true };
     const mrc = (r.data?.mrc as MrcInfo | undefined) ?? null;
-    const initialCpidNames = mrc?.cpid ? await fetchCpidNames([mrc.cpid]) : {};
+    const initialCpidNames = mrc?.cpid ? await fetchCpidNames([mrc.cpid], headers) : {};
+    const confirmations: number = r.data?.confirmations ?? 0;
+    // A mempool tx (0 confirmations) keeps Next's no-store default.
+    if (confirmations > 0) setPageCache(ctx.res, depthTtl(confirmations));
     return {
       props: {
         initialTx: attrs,
         initialVins: r.data?.vins ?? [],
         initialVouts: r.data?.vouts ?? [],
-        initialConfirmations: r.data?.confirmations ?? 0,
+        initialConfirmations: confirmations,
         initialPending: (r.data?.pending as PendingState | undefined) ?? null,
         initialMrc: mrc,
         initialCpidNames,

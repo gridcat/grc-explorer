@@ -12,6 +12,9 @@ import {
 import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import { api, notFoundOrRethrow } from '../../lib/api';
+import {
+  PAGE_TTL, POLL_SETTLE_GRACE, clientHeaders, setPageCache,
+} from '../../lib/ssr';
 import { formatTime, nowSec } from '../../lib/format';
 import { Crumbs } from '../../components/Crumbs';
 import { HashTrim } from '../../components/HashTrim';
@@ -661,9 +664,14 @@ export const getServerSideProps: GetServerSideProps<PollDetailProps> = async (ct
   const { poll_id: pollId } = ctx.params ?? {};
   if (typeof pollId !== 'string') return { notFound: true };
   try {
-    const r = await api.get(`/polls/${pollId}`);
+    const r = await api.get(`/polls/${pollId}`, { headers: clientHeaders(ctx.req) });
     const attrs = r.data?.data?.attributes as Poll | undefined;
     if (!attrs) return { notFound: true };
+    // A poll that ended more than a day ago is immutable content: no
+    // vote can land and the close-time weight aggregation has run. Open
+    // or just-closed polls still move, so they get the short TTL.
+    const settled = attrs.endTime + POLL_SETTLE_GRACE < Math.floor(Date.now() / 1000);
+    setPageCache(ctx.res, settled ? PAGE_TTL.settled : PAGE_TTL.fresh);
     return {
       props: {
         initialPoll: attrs,

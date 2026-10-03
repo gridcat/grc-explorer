@@ -9,6 +9,7 @@ import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import { Crumbs } from '../../components/Crumbs';
 import { api } from '../../lib/api';
+import { PAGE_TTL, clientHeaders, setPageCache } from '../../lib/ssr';
 import { formatTime, nowSec } from '../../lib/format';
 import {
   PAGE_SIZE_OPTIONS, pushPaginationQuery, readPageFromQuery, readPageSizeFromQuery,
@@ -236,7 +237,11 @@ export const getServerSideProps: GetServerSideProps<PollsListProps> = async (ctx
   try {
     const r = await api.get('/polls', {
       params: { 'page[number]': page + 1, 'page[size]': pageSize },
+      headers: clientHeaders(ctx.req),
     });
+    // Only a successful fetch is cacheable — the catch below renders an
+    // empty list, and that must never be what nginx holds for a minute.
+    setPageCache(ctx.res, PAGE_TTL.list);
     const data = (r.data?.data ?? []) as Array<{ attributes: Poll }>;
     const total = Number(r.data?.meta?.count ?? 0);
     return {

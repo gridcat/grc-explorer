@@ -10,6 +10,7 @@ import { Layout } from '../../layouts/Layout';
 import { AddressBalanceSparkline } from '../../components/AddressBalanceSparkline';
 import { useSSE } from '../../hooks/useSSE';
 import { api, notFoundOrRethrow } from '../../lib/api';
+import { PAGE_TTL, clientHeaders, setPageCache } from '../../lib/ssr';
 import {
   formatCompact, formatGrc, formatNumber, formatTime, formatUnixDate, shortHash, timeAgo,
 } from '../../lib/format';
@@ -448,31 +449,33 @@ export const getServerSideProps: GetServerSideProps<AddressDetailProps> = async 
   const { address } = ctx.params ?? {};
   if (typeof address !== 'string') return { notFound: true };
   try {
-    // MSS lookup fetched in parallel — 404 is steady-state for the
-    // vast majority of addresses, so we swallow the error and treat
-    // a missing entry as `initialMssEntry: null`. The SSR'd badge
-    // means search engines see the MSS recipient status without a
-    // CSR round trip.
-    const [addrR, txsR, mssR] = await Promise.all([
-      api.get(`/addresses/${address}`).catch(() => null),
-      api.get(`/addresses/${address}/transactions`, { params: { 'page[size]': 50 } }).catch(() => null),
-      api.get(`/mandatory-sidestakes/${address}`).catch(() => null),
-    ]);
-    const attrs = addrR?.data?.data?.attributes as Address | undefined;
+    // One call: `include` folds the first transaction page and the MSS
+    // badge summary (null for the non-recipient majority) into the
+    // address response, so a render costs one API round trip, one
+    // limiter consume and one JSON parse instead of three. The SSR'd
+    // badge means search engines see the MSS recipient status without a
+    // CSR round trip. A 429 / 5xx here is a transient failure, not a
+    // missing address, and reaches notFoundOrRethrow below.
+    const addrR = await api.get(`/addresses/${address}`, {
+      params: { include: 'transactions,sidestakes', 'page[size]': 50 },
+      headers: clientHeaders(ctx.req),
+    });
+    const attrs = addrR.data?.data?.attributes as Address | undefined;
     if (!attrs) return { notFound: true };
-    const txData = (txsR?.data?.data ?? []) as Array<{ attributes: AddrTx }>;
-    const mssAttrs = mssR?.data?.data?.attributes as MssRegistryEntry | undefined;
+    setPageCache(ctx.res, PAGE_TTL.address);
+    const txData = (addrR.data?.transactions ?? []) as Array<{ attributes: AddrTx }>;
+    const mssAttrs = addrR.data?.mandatorySidestake as MssRegistryEntry | null | undefined;
     return {
       props: {
         initialAddr: attrs,
-        initialPending: addrR?.data?.pendingBalance ?? '0',
+        initialPending: addrR.data?.pendingBalance ?? '0',
         initialTxs: txData.map((d) => d.attributes),
-        initialLinkedCpids: (addrR?.data?.linkedCpids ?? []) as string[],
-        initialLinkedWallets: (addrR?.data?.linkedWallets ?? []) as LinkedWallet[],
-        initialCombinedBalance: (addrR?.data?.combinedBalance ?? '0') as string,
-        initialCombinedSharePct: (addrR?.data?.combinedSharePct ?? 0) as number,
-        initialShareOfSupplyPct: (addrR?.data?.shareOfSupplyPct ?? 0) as number,
-        initialCombinedCount: (addrR?.data?.combinedCount ?? 0) as number,
+        initialLinkedCpids: (addrR.data?.linkedCpids ?? []) as string[],
+        initialLinkedWallets: (addrR.data?.linkedWallets ?? []) as LinkedWallet[],
+        initialCombinedBalance: (addrR.data?.combinedBalance ?? '0') as string,
+        initialCombinedSharePct: (addrR.data?.combinedSharePct ?? 0) as number,
+        initialShareOfSupplyPct: (addrR.data?.shareOfSupplyPct ?? 0) as number,
+        initialCombinedCount: (addrR.data?.combinedCount ?? 0) as number,
         initialMssEntry: mssAttrs ?? null,
       },
     };
