@@ -99,11 +99,14 @@ export function Addresses() {
       <Typography variant="h6" component="h3" id="addresses-linked" sx={{ pt: 2, pb: 1 }}>
         Linked wallets
       </Typography>
-      <Endpoint method="GET" path="/api/addresses/:address/linked" title="CPID links + combined balance" />
+      <Endpoint method="GET" path="/api/addresses/:address/linked" title="CPID and vote links + combined balance" />
       <Typography gutterBottom variant="body1" component="p">
         CPIDs this address has provably acted under (beacon, coinstake or
-        MRC payout), the other addresses tied to those CPIDs, and the
-        combined balance of the address&apos;s co-spend cluster.{' '}
+        MRC payout), the other addresses tied to those CPIDs, addresses
+        whose balance was signed for in the same poll vote (verified vote
+        claims; <code>cpid</code> is <code>null</code> when that is the
+        only link, and <code>voteClaims</code> counts the shared votes), and
+        the combined balance of the address&apos;s co-spend cluster.{' '}
         <code>combinedCount</code> is the number of addresses in the
         cluster.
       </Typography>
@@ -124,6 +127,7 @@ export function Addresses() {
       "beaconCount": 2,
       "stakedBlocks": 140,
       "mrcPayouts": 0,
+      "voteClaims": 1,
       "firstHeight": 2410022,
       "lastHeight": 3300469,
       "balance": "812.40000000"

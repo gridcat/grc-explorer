@@ -75,7 +75,7 @@ function group<T>(rows: T[], key: (r: T) => string): Map<string, T[]> {
 
 // One contract per (carrying) tx — enough to label its OP_RETURN output.
 // Each source table is filtered to the block and keyed by tx_id.
-async function buildContractMap(height: number): Promise<Map<string, FlowContract>> {
+export async function buildContractMap(height: number): Promise<Map<string, FlowContract>> {
   const map = new Map<string, FlowContract>();
   const add = (txId: string, kind: ContractKind, summary: string) => {
     if (txId && !map.has(txId)) map.set(txId, { kind, summary });

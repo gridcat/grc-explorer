@@ -14,10 +14,10 @@ export const SETTLED_DEPTH = 120;
 /** Seconds a shared cache (nginx, CDN) may serve a page without asking. */
 export const PAGE_TTL = {
   /**
-   * Settled block / tx: only a deploy changes it. Kept to an hour on
-   * purpose — the runbook's purge-on-deploy covers markup changes.
+   * Settled block / tx: only a deploy changes it, so 30 days. Markup
+   * changes need the nginx runbook's purge-on-deploy to show up.
    */
-  settled: { maxAge: 3600, swr: 600 },
+  settled: { maxAge: 30 * 86_400, swr: 86_400 },
   /** Shallow block / tx: the confirmation count is still moving. */
   fresh: { maxAge: 30, swr: 30 },
   /** Address: balance moves; the client refetches after hydration anyway. */

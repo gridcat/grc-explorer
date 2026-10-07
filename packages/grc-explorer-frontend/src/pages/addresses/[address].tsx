@@ -36,11 +36,12 @@ interface AddrTx {
   ts: number;
 }
 interface LinkedWallet {
-  cpid: string;
+  cpid: string | null; // null when linked only by poll votes
   address: string;
   beaconCount: number;
   stakedBlocks: number;
   mrcPayouts: number;
+  voteClaims?: number;
   firstHeight: number;
   lastHeight: number;
   balance?: string;
@@ -316,8 +317,9 @@ export default function AddressDetail({
               </Typography>
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 2, pb: 1 }}>
                 Other addresses that have provably acted as the same CPID(s)
-                as this wallet — registered as a beacon, staked a block, or
-                received an MRC payout.
+                as this wallet (registered as a beacon, staked a block, or
+                received an MRC payout), or whose balance was signed for in
+                the same poll vote.
               </Typography>
               <Table size="small">
                 <TableHead>
@@ -341,9 +343,11 @@ export default function AddressDetail({
                         {formatGrc(w.balance ?? '0')} GRC
                       </TableCell>
                       <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>
-                        <Link href={`/cpids/${w.cpid}`} style={{ color: 'inherit' }}>
-                          <HashTrim text={w.cpid} head={6} tail={4} />
-                        </Link>
+                        {w.cpid ? (
+                          <Link href={`/cpids/${w.cpid}`} style={{ color: 'inherit' }}>
+                            <HashTrim text={w.cpid} head={6} tail={4} />
+                          </Link>
+                        ) : '—'}
                       </TableCell>
                       <TableCell sx={{ fontSize: 12, whiteSpace: 'nowrap' }} title={activityTooltip(w)}>
                         {activitySummary(w)}
@@ -379,19 +383,21 @@ export default function AddressDetail({
 
 // Compact "Activity" summary for a linked wallet — drops zero-count
 // signals so a beacon-only wallet doesn't render "0 stakes · 0 mrc".
-function activitySummary(w: { beaconCount: number; stakedBlocks: number; mrcPayouts: number }): string {
+function activitySummary(w: LinkedWallet): string {
   const parts: string[] = [];
   if (w.beaconCount > 0) parts.push(`${formatCompact(w.beaconCount, 0)} bcn`);
   if (w.stakedBlocks > 0) parts.push(`${formatCompact(w.stakedBlocks, 0)} stk`);
   if (w.mrcPayouts > 0) parts.push(`${formatCompact(w.mrcPayouts, 0)} mrc`);
+  if ((w.voteClaims ?? 0) > 0) parts.push(`${formatCompact(w.voteClaims ?? 0, 0)} vote`);
   return parts.length > 0 ? parts.join(' · ') : '—';
 }
 
-function activityTooltip(w: { beaconCount: number; stakedBlocks: number; mrcPayouts: number }): string {
+function activityTooltip(w: LinkedWallet): string {
   const parts: string[] = [];
   if (w.beaconCount > 0) parts.push(`${formatNumber(w.beaconCount)} beacons`);
   if (w.stakedBlocks > 0) parts.push(`${formatNumber(w.stakedBlocks)} staked blocks`);
   if (w.mrcPayouts > 0) parts.push(`${formatNumber(w.mrcPayouts)} MRC payouts`);
+  if ((w.voteClaims ?? 0) > 0) parts.push(`signed for together in ${formatNumber(w.voteClaims ?? 0)} poll vote(s)`);
   return parts.join(', ');
 }
 

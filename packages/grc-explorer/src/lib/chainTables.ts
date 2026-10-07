@@ -24,6 +24,7 @@ export const CHAIN_HEIGHT_TABLES: ReadonlyArray<{ table: string; column: string 
   { table: 'beacons', column: 'block_height' },
   { table: 'polls', column: 'block_height' },
   { table: 'votes', column: 'block_height' },
+  { table: 'vote_claim_addresses', column: 'block_height' },
   { table: 'project_contracts', column: 'block_height' },
   { table: 'protocol_entries', column: 'block_height' },
   { table: 'mandatory_sidestakes', column: 'block_height' },

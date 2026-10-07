@@ -17,6 +17,8 @@ import { TipFollower } from './services/indexer/TipFollower';
 import { AddressClusterJob } from './services/jobs/AddressClusterJob';
 import { BoincStatsImportJob } from './services/jobs/BoincStatsImportJob';
 import { PollWeightAggregator } from './services/jobs/PollWeightAggregator';
+import { SuperblockPrecomputeJob } from './services/jobs/SuperblockPrecomputeJob';
+import { VoteClaimJob } from './services/jobs/VoteClaimJob';
 import { WealthSnapshotJob } from './services/jobs/WealthSnapshotJob';
 import { NetworkStatsPoller } from './services/network/NetworkStatsPoller';
 import { MeiliIndexer } from './services/search/MeiliIndexer';
@@ -98,6 +100,18 @@ async function bootIndexer(): Promise<void> {
   // an empty table or via `npm run admin -- rebuild-clusters`.
   const cluster = new AddressClusterJob();
   schedule(60 * 60_000, () => cluster.tick(), 'AddressCluster');
+
+  // Poll-vote balance claims → vote_claim_addresses (linked wallets).
+  // One getvotingclaim RPC per vote tx; backfills from height 0 in
+  // time-boxed batches, then keeps up with the tip.
+  const voteClaims = new VoteClaimJob();
+  schedule(5 * 60_000, () => voteClaims.tick(), 'VoteClaims');
+
+  // Superblock-derived researcher payloads → precomputed_payloads, so
+  // /researchers/history never builds them on a request. The 1 min tick
+  // is a PK read until a new superblock lands.
+  const superblockPrecompute = new SuperblockPrecomputeJob();
+  schedule(60_000, () => superblockPrecompute.tick(), 'SuperblockPrecompute');
 
   // In-process admin-task executor. DuckDB is single-writer, so wipe /
   // boinc-fetch / rebuild-wallets can't run as separate processes while

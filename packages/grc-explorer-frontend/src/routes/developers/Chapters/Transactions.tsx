@@ -57,6 +57,7 @@ export function Transactions() {
         "scriptType": "pubkey", "isSpent": false, "spentInTx": null }
       ],
       "mrc": null,
+      "contract": null,
       "confirmations": 5
     }
   }
@@ -72,6 +73,16 @@ export function Transactions() {
         <code> firstSeen</code>, <code>blockHeight</code> /{' '}
         <code>blockTime</code> when confirmed. <code>null</code> for
         non-MRC txs.
+      </Typography>
+      <Typography gutterBottom variant="body1" component="p">
+        Confirmed transactions that carry a contract also get a
+        <code> contract</code> object: <code>kind</code> (
+        <code>vote</code>, <code>poll</code>, <code>beacon</code>,
+        <code> message</code>, <code>project</code>, <code>mrc</code>,
+        <code> protocol</code>) and a human-readable <code>summary</code>.
+        Votes add <code>pollId</code> and <code>choices</code> (the
+        answer labels); polls add <code>pollId</code>.{' '}
+        <code>null</code> for plain transfers.
       </Typography>
 
       <Typography gutterBottom variant="body1" component="p" sx={{ pt: 1 }}>

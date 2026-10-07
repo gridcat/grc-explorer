@@ -67,6 +67,22 @@ interface MrcInfo {
   blockHeight: number | null;
   blockTime: number | null;
 }
+// Contract carried by the tx. MRC requests have their own card (from
+// `mrc`), so the contract card skips kind 'mrc'.
+interface TxContract {
+  kind: string;
+  summary: string;
+  pollId?: string;
+  choices?: string[];
+}
+const CONTRACT_CHIP: Record<string, string> = {
+  vote: 'poll vote',
+  poll: 'poll',
+  beacon: 'beacon',
+  message: 'message',
+  project: 'project contract',
+  protocol: 'protocol entry',
+};
 
 // `pending` is set when the cascade in /transactions/:tx_id falls
 // through to the mempool_txs row or RPC fallback (i.e. the tx isn't in
@@ -82,12 +98,13 @@ interface TxDetailProps {
   initialConfirmations: number;
   initialPending: PendingState;
   initialMrc: MrcInfo | null;
+  initialContract: TxContract | null;
   initialCpidNames: Record<string, string>;
 }
 
 export default function TxDetail({
   initialTx, initialVins, initialVouts, initialConfirmations, initialPending, initialMrc,
-  initialCpidNames,
+  initialContract, initialCpidNames,
 }: TxDetailProps) {
   const router = useRouter();
   const { tx_id: txId } = router.query;
@@ -97,6 +114,8 @@ export default function TxDetail({
   const [confirmations, setConfirmations] = useState(initialConfirmations);
   const [pending, setPending] = useState<PendingState>(initialPending);
   const [mrc, setMrc] = useState<MrcInfo | null>(initialMrc);
+  const [contract, setContract] = useState<TxContract | null>(initialContract);
+  const contractChip = contract ? CONTRACT_CHIP[contract.kind] : undefined;
 
   // Raw tx body — single fetch shared between the stamp-prefix
   // detector (📮 chip in the header) and the collapsible "Raw
@@ -121,6 +140,7 @@ export default function TxDetail({
       setConfirmations(r.data?.confirmations ?? 0);
       setPending((r.data?.pending as PendingState | undefined) ?? null);
       setMrc((r.data?.mrc as MrcInfo | undefined) ?? null);
+      setContract((r.data?.contract as TxContract | undefined) ?? null);
     }).catch(() => { /* ignore */ });
   }, [txId]);
 
@@ -191,6 +211,7 @@ export default function TxDetail({
           {tx.isCoinbase && <Chip label="coinbase" size="small" />}
           {tx.isCoinstake && <Chip label="coinstake" size="small" />}
           {mrc && <Chip label="MRC request" size="small" color="secondary" variant="outlined" />}
+          {contractChip && <Chip label={contractChip} size="small" color="secondary" variant="outlined" />}
           {isStamp && (
             <Tooltip title="OP_RETURN 5ea1ed — protocol marker for stamp.gridcoin.club">
               <Chip label="📮 stamp" size="small" variant="outlined" />
@@ -238,6 +259,31 @@ export default function TxDetail({
             <DetailRow label="Fee" value={`${formatGrc(tx.fee)} GRC`} />
           </CardContent>
         </Card>
+
+        {contract && contractChip && (
+          <Card variant="outlined">
+            <CardContent>
+              <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
+                Contract
+              </Typography>
+              <DetailRow label="Type" value={contract.summary} />
+              {contract.pollId && (
+                <DetailRow
+                  label="Poll"
+                  value={(
+                    <Link href={`/polls/${contract.pollId}`} style={{ color: 'inherit' }}>
+                      {shortHash(contract.pollId)}
+                    </Link>
+                  )}
+                  mono
+                />
+              )}
+              {contract.choices && contract.choices.length > 0 && (
+                <DetailRow label={contract.choices.length > 1 ? 'Answers' : 'Answer'} value={contract.choices.join(', ')} />
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {mrc && (
           <Card variant="outlined">
@@ -537,6 +583,7 @@ export const getServerSideProps: GetServerSideProps<TxDetailProps> = async (ctx)
         initialConfirmations: confirmations,
         initialPending: (r.data?.pending as PendingState | undefined) ?? null,
         initialMrc: mrc,
+        initialContract: (r.data?.contract as TxContract | undefined) ?? null,
         initialCpidNames,
       },
     };

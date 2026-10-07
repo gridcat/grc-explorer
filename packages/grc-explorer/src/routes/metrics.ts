@@ -14,7 +14,22 @@ import { halford2grc } from '../lib/halford';
 import { getTipAnchor } from '../lib/indexerTip';
 import { clampedQueryInt, parseYearRange } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
-import { swrCachedLive, swrCachedLiveKeyed } from '../lib/swrCache';
+import {
+  buildResearchersHistory,
+  buildSeries,
+  CHAIN_SERIES_KEY,
+  downsampleSeriesPoints,
+  HISTORY_KEY,
+  PRECOMPUTED_SERIES_LIMIT,
+  readPrecomputed,
+  ResearchersHistoryPoint,
+  SeriesEntry,
+  yearRanges,
+  yearSeriesKey,
+} from '../lib/researchersHistory';
+import {
+  swrCachedKeyed, swrCachedLive, swrCachedLiveKeyed,
+} from '../lib/swrCache';
 import { parseAt, resolveAtSuperblockHeight } from '../lib/timeMachine';
 
 export const metricsRouter = Router();
@@ -258,226 +273,54 @@ metricsRouter.get('/leaderboard/magnitude', async (req: Request, res: Response) 
 // in the superblocks table includes zero-magnitude entries so we
 // recompute from superblock_magnitudes for consistency.
 //
-// Cached 1h: the underlying data only changes on superblock landings
-// (~daily). The cache is also invalidated implicitly by process
-// restart, so a deploy resets it. Live variant: bypassed while the
-// indexer is backfilling or mid-reorg, so a moving rollup is never
-// memoised for an hour.
+// The underlying data only changes on superblock landings (~daily), so
+// the payloads are stored by SuperblockPrecomputeJob (lib/
+// researchersHistory.ts). The memo only saves re-reading and re-parsing
+// the row (the chain series is ~3 MB) on every request; a new superblock
+// shows up within a minute of the job writing it. A key the job hasn't
+// written yet (fresh deploy before the first tick) is built on demand.
+const PRECOMPUTED_TTL_MS = 60_000;
+const getPrecomputed = swrCachedKeyed<unknown>(PRECOMPUTED_TTL_MS);
 
-interface ResearchersHistoryPoint {
-  height: number;
-  ts: number;
-  date: string;
-  active: number;
-  totalMagnitude: number;
-  top10Magnitude: number;
-  top10Share: number;
-}
+const getResearchersHistory = (): Promise<ResearchersHistoryPoint[]> => getPrecomputed(
+  HISTORY_KEY,
+  async () => (await readPrecomputed<ResearchersHistoryPoint[]>(HISTORY_KEY)) ?? buildResearchersHistory(),
+) as Promise<ResearchersHistoryPoint[]>;
 
-const RESEARCHERS_HISTORY_TTL_MS = 60 * 60 * 1000;
-
-interface ResearchersHistoryRow {
-  height: number;
-  // epoch(...)::BIGINT and count(*) come off the DuckDB wire as decimal
-  // *strings* (64-bit ints aren't JS-safe), so the types stay honest and
-  // the row mapper coerces with Number().
-  time: number | string;
-  active: number | string;
-  total_magnitude: number;
-  top10_magnitude: number;
-}
-
-async function buildResearchersHistory(): Promise<ResearchersHistoryPoint[]> {
-  // Reads the superblock_researcher_stats rollup (maintained by
-  // RollupMaintainer, seeded in migration 0008) — ~3k rows joined to
-  // blocks by PK. The previous inline aggregation windowed over ALL of
-  // superblock_magnitudes (3.6M rows) per cold rebuild, which evicted
-  // most of a small buffer pool every TTL.
-  //
-  // INNER JOIN on the blocks PK: a superblock only appears once its
-  // block row is committed. During backfill the stats row for the
-  // newest superblock can land just before the block row (blocks are
-  // written last), so a LEFT JOIN would emit a NULL time — which
-  // became epoch 0 / 1970-01-01 and dragged the chart's x-axis origin
-  // back to 1970. INNER JOIN drops that transient row instead.
-  const rows = await query<ResearchersHistoryRow>(
-    `
-      SELECT
-        m.superblock_height AS height,
-        UNIX_TIMESTAMP(b.time) AS time,
-        m.active AS active,
-        m.total_magnitude AS total_magnitude,
-        m.top10_magnitude AS top10_magnitude
-      FROM superblock_researcher_stats AS m
-      JOIN blocks AS b ON b.height = m.superblock_height
-      ORDER BY m.superblock_height ASC
-    `,
-  );
-  return rows.map((r) => {
-    // epoch(...)::BIGINT comes off the wire as a decimal string; coerce so
-    // ts is a real number (the chart x-axis and Date math depend on it).
-    const ts = Number(r.time);
-    return {
-      height: r.height,
-      ts,
-      date: new Date(ts * 1000).toISOString().slice(0, 10),
-      active: Number(r.active),
-      totalMagnitude: r.total_magnitude,
-      top10Magnitude: r.top10_magnitude,
-      top10Share: r.total_magnitude > 0 ? r.top10_magnitude / r.total_magnitude : 0,
-    };
-  });
-}
-
-const getResearchersHistory = swrCachedLive(buildResearchersHistory, RESEARCHERS_HISTORY_TTL_MS);
-
-// Top-N series within a height range: for each of the top-N CPIDs
-// (ranked by total magnitude across all superblocks in the range),
-// return their per-superblock magnitude. Powers the multi-line
-// charts on /researchers/history — one line per CPID, hover
-// identifies who. Used for both the year drill-down (bounded by
-// year start/end) and the whole-chain view (bounded by genesis/tip).
-//
-// "Top by total magnitude in the range" weights both height (peak
-// magnitude) and persistence (number of superblocks present), which
-// surfaces the researchers who *mattered* in that window — not just
-// whoever flashed briefly into #1 on a single superblock.
-
-interface SeriesRow {
-  cpid: string;
-  height: number;
-  magnitude: number;
-}
-
-interface SeriesEntry {
-  cpid: string;
-  displayName: string | null;
-  points: Array<{ height: number; magnitude: number }>;
-}
-
+// Series beyond PRECOMPUTED_SERIES_LIMIT are built on demand, memoised
+// per shape like before.
 const SERIES_TTL_MS = 60 * 60 * 1000;
 const getCachedSeries = swrCachedLiveKeyed<SeriesEntry[]>(SERIES_TTL_MS);
 
-function downsampleSeriesPoints(
-  points: Array<{ height: number; magnitude: number }>,
-  maxPoints: number | null,
-): Array<{ height: number; magnitude: number }> {
-  if (maxPoints === null || points.length <= maxPoints) return points;
-  if (maxPoints <= 1) return [points[points.length - 1]];
-  const sampled: Array<{ height: number; magnitude: number }> = [];
-  const last = points.length - 1;
-  for (let i = 0; i < maxPoints; i += 1) {
-    sampled.push(points[Math.round((i * last) / (maxPoints - 1))]);
-  }
-  return sampled;
-}
-
-// Top-N CPIDs by total magnitude for a bucket of the cpid_magnitude_totals
-// rollup (migration 0020, kept current by RollupMaintainer): a covered
-// backward index scan returning N rows. `bucketYear` 0 is all-time; a
-// year bucket spans exactly the height range getYearSeries derives, so
-// the two rankings agree by construction. An empty bucket — mid-recompute
-// gap, or a deployment whose rollup isn't seeded yet — falls back to
-// ranking over the base table: the old whole-range GROUP BY, correct but
-// the 3.6M-row scan this rollup exists to avoid.
-async function topCpids(bucketYear: number, minH: number, maxH: number, limit: number): Promise<string[]> {
-  const ranked = await query<{ cpid: string }>(
-    `
-      SELECT cpid
-      FROM cpid_magnitude_totals
-      WHERE bucket_year = $y
-      ORDER BY total_magnitude DESC
-      LIMIT ${Number(limit)}
-    `,
-    { y: bucketYear },
-  );
-  if (ranked.length > 0) return ranked.map((r) => r.cpid);
-  const fallback = await query<{ cpid: string }>(
-    `
-      SELECT cpid
-      FROM superblock_magnitudes
-      WHERE superblock_height >= $minH
-        AND superblock_height <= $maxH
-        AND magnitude > 0
-      GROUP BY cpid
-      ORDER BY sum(magnitude) DESC
-      LIMIT ${Number(limit)}
-    `,
-    { minH, maxH },
-  );
-  return fallback.map((r) => r.cpid);
-}
-
-async function buildSeries(
+async function getSeries(
+  key: string,
   bucketYear: number,
-  minH: number,
-  maxH: number,
+  range: { minH: number; maxH: number } | undefined,
   limit: number,
   maxPoints: number | null,
 ): Promise<SeriesEntry[]> {
-  // Two steps — rank the top-N CPIDs, then fetch their per-superblock
-  // magnitudes by PK (cpid, superblock_height). `superblock_magnitudes`
-  // only has rows for actual superblock heights, so the height range
-  // filter is implicit-superblock without a separate join.
-  const cpids = await topCpids(bucketYear, minH, maxH, limit);
-  if (cpids.length === 0) return [];
-  const rows = await query<SeriesRow>(
-    `
-      SELECT cpid, superblock_height AS height, magnitude
-      FROM superblock_magnitudes
-      WHERE cpid IN ($cpids)
-        AND superblock_height >= $minH
-        AND superblock_height <= $maxH
-        AND magnitude > 0
-      ORDER BY cpid, superblock_height
-    `,
-    { cpids, minH, maxH },
-  );
-
-  const byCpid = new Map<string, Array<{ height: number; magnitude: number }>>();
-  for (const r of rows) {
-    const arr = byCpid.get(r.cpid) ?? [];
-    arr.push({ height: r.height, magnitude: r.magnitude });
-    byCpid.set(r.cpid, arr);
-  }
-  // Sort series by total magnitude-days descending so the frontend
-  // can render rank-aware visual cues (palette assignment, label
-  // priority on hover collisions).
-  const series: Array<{ cpid: string; points: Array<{ height: number; magnitude: number }>; total: number }> = [];
-  for (const [cpid, points] of byCpid.entries()) {
-    let total = 0;
-    for (const p of points) total += p.magnitude;
-    series.push({ cpid, points, total });
-  }
-  series.sort((a, b) => b.total - a.total);
-  // Server-side names so /researchers/history renders its per-CPID
-  // lines from the SSR seed without a second /cpids/names round trip.
-  const names = await resolveCpidNames(series.map((s) => s.cpid));
-  return series.map(({ cpid, points }) => ({
-    cpid,
-    displayName: cpidDisplayName(names, cpid),
-    points: downsampleSeriesPoints(points, maxPoints),
-  }));
+  if (!range) return [];
+  const full = limit <= PRECOMPUTED_SERIES_LIMIT
+    ? await getPrecomputed(key, async () => (await readPrecomputed<SeriesEntry[]>(key))
+      ?? buildSeries(bucketYear, range.minH, range.maxH, PRECOMPUTED_SERIES_LIMIT)) as SeriesEntry[]
+    : await getCachedSeries(
+      `${key}:${limit}`,
+      () => buildSeries(bucketYear, range.minH, range.maxH, limit),
+    );
+  return full.slice(0, limit).map((s) => ({ ...s, points: downsampleSeriesPoints(s.points, maxPoints) }));
 }
 
 async function getYearSeries(year: number, limit: number, maxPoints: number | null): Promise<SeriesEntry[]> {
-  return getCachedSeries(`year:${year}:${limit}:${maxPoints ?? 'all'}`, async () => {
-    // Bound height range to the year using the cached chain-wide
-    // history. Avoids a separate blocks-table round trip and keeps
-    // the filter aligned with whatever the chain-wide chart shows.
-    const chain = await getResearchersHistory();
-    const inYear = chain.filter((p) => p.date.startsWith(`${year}-`));
-    if (inYear.length === 0) return [];
-    return buildSeries(year, inYear[0].height, inYear[inYear.length - 1].height, limit, maxPoints);
-  });
+  const range = yearRanges(await getResearchersHistory()).get(year);
+  return getSeries(yearSeriesKey(year), year, range, limit, maxPoints);
 }
 
 async function getChainSeries(limit: number, maxPoints: number | null): Promise<SeriesEntry[]> {
-  return getCachedSeries(`chain:${limit}:${maxPoints ?? 'all'}`, async () => {
-    const chain = await getResearchersHistory();
-    if (chain.length === 0) return [];
-    return buildSeries(0, chain[0].height, chain[chain.length - 1].height, limit, maxPoints);
-  });
+  const chain = await getResearchersHistory();
+  const range = chain.length > 0
+    ? { minH: chain[0].height, maxH: chain[chain.length - 1].height }
+    : undefined;
+  return getSeries(CHAIN_SERIES_KEY, 0, range, limit, maxPoints);
 }
 
 metricsRouter.get('/researchers/history/year/:year/series', async (req: Request, res: Response) => {

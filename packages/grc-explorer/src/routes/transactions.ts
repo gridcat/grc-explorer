@@ -12,7 +12,9 @@ import { withMeta } from '../lib/responseMeta';
 import { disassembleScript } from '../lib/scriptAsm';
 import { tsToUnix } from '../lib/time';
 import { TransactionPresenter } from '../presenters';
+import { buildContractMap } from '../services/blockFlow/buildBlockFlow';
 import { forkHeight } from '../services/network/ChainForks';
+import type { FlowContract } from '../lib/blockFlow';
 import { registerParamValidators } from '../lib/validators';
 
 export const transactionsRouter = Router();
@@ -165,7 +167,7 @@ async function loadIndexedTx(txId: string): Promise<unknown | null> {
   );
   if (txRows.length === 0) return null;
   const row = presentTx(txRows[0]);
-  const [vinResult, voutResult, mrcRow, cursor] = await Promise.all([
+  const [vinResult, voutResult, mrcRow, contract, cursor] = await Promise.all([
     // Inputs for this tx, keyed by (tx_id, vin_n) PK — a unique point
     // lookup, ordered for display.
     query<{
@@ -208,6 +210,7 @@ async function loadIndexedTx(txId: string): Promise<unknown | null> {
       { tx: txId },
     ),
     loadMrcRow(txId),
+    loadContract(txId, row.block_height),
     getCursor(),
   ]);
   const tipHeight = cursor?.height ?? row.block_height;
@@ -253,8 +256,48 @@ async function loadIndexedTx(txId: string): Promise<unknown | null> {
       spentInTx: trimNullBytes(o.spent_in_tx),
     })),
     mrc: mrcRow,
+    contract,
     confirmations,
   });
+}
+
+interface TxContract {
+  kind: FlowContract['kind'];
+  summary: string;
+  pollId?: string;
+  choices?: string[];
+}
+
+// The contract this tx carries (vote, beacon, poll, …), from the same
+// per-block lookup the block flow diagram uses. Votes also resolve the
+// poll and the chosen answers: a vote moves the voter's whole balance
+// back to itself, so without this label the tx reads as a large send.
+async function loadContract(txId: string, height: number): Promise<TxContract | null> {
+  const c = (await buildContractMap(height)).get(txId);
+  if (!c) return null;
+  if (c.kind === 'poll') return { kind: c.kind, summary: c.summary, pollId: txId };
+  if (c.kind !== 'vote') return { kind: c.kind, summary: c.summary };
+  const rows = await query<{
+    poll_id: string; title: string | null; choice_idx: number; label: string | null;
+  }>(
+    `
+      SELECT v.poll_id, p.title, v.choice_idx, o.label
+      FROM votes AS v
+      LEFT JOIN polls AS p ON p.poll_id = v.poll_id
+      LEFT JOIN poll_options AS o ON o.poll_id = v.poll_id AND o.idx = v.choice_idx
+      WHERE v.tx_id = $tx
+      ORDER BY v.choice_idx ASC
+    `,
+    { tx: txId },
+  );
+  if (rows.length === 0) return { kind: c.kind, summary: c.summary };
+  const { poll_id: pollId, title } = rows[0];
+  return {
+    kind: c.kind,
+    summary: title ? `Poll vote: ${title}` : c.summary,
+    pollId,
+    choices: rows.map((r) => r.label ?? `Option ${r.choice_idx + 1}`),
+  };
 }
 
 interface MrcRowOut {

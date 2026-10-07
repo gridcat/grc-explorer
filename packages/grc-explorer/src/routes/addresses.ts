@@ -22,11 +22,12 @@ export const addressesRouter = Router();
 registerParamValidators(addressesRouter);
 
 interface LinkedWalletRow {
-  cpid: string;
+  cpid: string | null; // null when linked only by poll votes
   address: string;
   beaconCount: number;
   stakedBlocks: number;
   mrcPayouts: number;
+  voteClaims: number; // votes that signed for both addresses
   firstHeight: number;
   lastHeight: number;
   // Set only by enrichCombined() (the address page's combined-balance
@@ -168,6 +169,58 @@ function logIfSlow(address: string, t0: number, timings: Timings): void {
   log.warn(`slow address detail ${address} total=${total}ms ${steps}`);
 }
 
+// Linked wallets: the CPID-signal set plus addresses signed for in the
+// same poll vote. A vote-linked address already in the CPID set gets
+// its vote count; the others join with cpid null.
+async function fetchLinkedWallets(address: string): Promise<LinkedCpidContext> {
+  const [ctx, voteRows] = await Promise.all([
+    fetchCpidLinkedWallets(address),
+    fetchVoteLinkedWallets(address),
+  ]);
+  const votesByAddress = new Map(voteRows.map((r) => [r.address, r]));
+  const wallets = ctx.wallets.map((w) => ({
+    ...w, voteClaims: Number(votesByAddress.get(w.address)?.votes ?? 0),
+  }));
+  const cpidLinked = new Set(wallets.map((w) => w.address));
+  for (const r of voteRows) {
+    if (cpidLinked.has(r.address)) continue;
+    wallets.push({
+      cpid: null,
+      address: r.address,
+      beaconCount: 0,
+      stakedBlocks: 0,
+      mrcPayouts: 0,
+      voteClaims: Number(r.votes),
+      firstHeight: Number(r.first_height),
+      lastHeight: Number(r.last_height),
+    });
+  }
+  return { cpids: ctx.cpids, wallets };
+}
+
+// Addresses whose verified balance claims sit in the same vote tx as
+// this address's (vote_claim_addresses, filled by VoteClaimJob): the
+// voter held both keys when signing, CPID or not. One hop.
+async function fetchVoteLinkedWallets(address: string): Promise<Array<{
+  address: string; votes: number | string; first_height: number; last_height: number;
+}>> {
+  return query(
+    `
+      SELECT o.address,
+             COUNT(*) AS votes,
+             MIN(o.block_height) AS first_height,
+             MAX(o.block_height) AS last_height
+      FROM vote_claim_addresses AS s
+      JOIN vote_claim_addresses AS o ON o.tx_id = s.tx_id AND o.address != s.address
+      WHERE s.address = $addr
+      GROUP BY o.address
+      ORDER BY votes DESC, last_height DESC
+      LIMIT 100
+    `,
+    { addr: address },
+  );
+}
+
 // Cross-reference an address against the three on-chain CPID-linkage
 // signals (beacons, staked blocks, MRC payouts). Returns:
 //   • `cpids`  — every CPID this address has provably acted under.
@@ -178,7 +231,7 @@ function logIfSlow(address: string, t0: number, timings: Timings): void {
 // Two round-trips because the second query's IN-list depends on
 // the first; the alternative single-query CTE has poorer planner
 // behaviour here.
-async function fetchLinkedWallets(address: string): Promise<LinkedCpidContext> {
+async function fetchCpidLinkedWallets(address: string): Promise<LinkedCpidContext> {
   const cpidsResult = await query<{ cpid: string }>(
     `
       SELECT DISTINCT cpid FROM (
@@ -252,6 +305,7 @@ async function fetchLinkedWallets(address: string): Promise<LinkedCpidContext> {
       beaconCount: r.beacon_count,
       stakedBlocks: r.staked_blocks,
       mrcPayouts: r.mrc_payouts,
+      voteClaims: 0,
       firstHeight: r.first_height,
       lastHeight: r.last_height,
     })),
