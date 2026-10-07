@@ -1,3 +1,15 @@
+# [grc-explorer-v2.4.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.3.2...grc-explorer-v2.4.0) (2026-10-07)
+
+
+### Bug Fixes
+
+* bump compression, proxy-addr and source-map-js for security advisories ([98f5841](https://github.com/gridcat/grc-explorer/commit/98f584167717a9c2da0afe36cc9ce9d3d1a88f82))
+
+
+### Features
+
+* link wallets through signed poll-vote claims and label vote transactions ([1396b58](https://github.com/gridcat/grc-explorer/commit/1396b58c9ed99f5858e5bbfe371b88a4f791980d))
+
 # [grc-explorer-v2.3.2](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.3.1...grc-explorer-v2.3.2) (2026-10-03)
 
 
