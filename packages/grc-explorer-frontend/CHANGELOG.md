@@ -1,3 +1,10 @@
+# [grc-explorer-frontend-v2.6.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.6.0...grc-explorer-frontend-v2.6.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* style sidestake page intro links as MUI links ([bba0633](https://github.com/gridcat/grc-explorer/commit/bba06337d92932f4a6f5f251836dc40824f7fc84))
+
 # [grc-explorer-frontend-v2.6.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.5.0...grc-explorer-frontend-v2.6.0) (2026-10-24)
 
 
