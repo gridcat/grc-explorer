@@ -19,6 +19,8 @@ const PAGES: Array<{ path: string; priority: number; changefreq: 'daily' | 'week
   { path: '/beacons',      priority: 0.6, changefreq: 'weekly' },
   { path: '/polls',        priority: 0.6, changefreq: 'weekly' },
   { path: '/mempool',      priority: 0.5, changefreq: 'daily' },
+  { path: '/sidestakes',   priority: 0.5, changefreq: 'daily' },
+  { path: '/mandatory-sidestakes', priority: 0.5, changefreq: 'weekly' },
   { path: '/developers',   priority: 0.5, changefreq: 'monthly' },
 ];
 

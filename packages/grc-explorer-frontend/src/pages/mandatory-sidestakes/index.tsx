@@ -66,13 +66,13 @@ export default function MandatorySidestakesPage({
   }, []);
 
   const totalAllocation = registry.reduce((acc, r) => acc + r.allocationPct, 0);
-  const preActivation = registry.length === 0 && (metrics?.countAllTime ?? 0) === 0;
+  const noneRegistered = registry.length === 0 && (metrics?.countAllTime ?? 0) === 0;
 
   return (
     <Layout>
       <Seo
         title="Mandatory sidestakes — Gridcoin Explorer"
-        description="Protocol-driven mandatory sidestakes on the Gridcoin chain — recipients, allocations, lifetime payouts. Activated at block v13."
+        description="Protocol-driven mandatory sidestakes on the Gridcoin chain — recipients, allocations, lifetime payouts."
         path="/mandatory-sidestakes"
       />
 
@@ -86,8 +86,11 @@ export default function MandatorySidestakesPage({
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             Mandatory sidestakes route a fixed fraction of every PoS
             block reward to protocol-designated addresses (e.g. the
-            Gridcoin Foundation). They activate at block v13 — until
-            then, no recipients are registered and no payouts land.
+            Gridcoin Foundation). They are possible from block v13 on,
+            and only pay out to addresses registered on chain. They are
+            separate from{' '}
+            <Link href="/sidestakes">voluntary sidestakes</Link>, which
+            stakers set up in their own wallets.
             The set is governed by signed contracts in the chain, not
             hardcoded source: the daemon&apos;s{' '}
             <code>listmandatorysidestakes</code> RPC, the
@@ -96,13 +99,13 @@ export default function MandatorySidestakesPage({
           </Typography>
         </Box>
 
-        {preActivation ? (
+        {noneRegistered ? (
           <Card variant="outlined">
             <CardContent>
               <Stack direction="row" spacing={2} sx={{ alignItems: 'center' }}>
-                <Chip label="pre-V13" />
+                <Chip label="none registered" />
                 <Typography variant="body1">
-                  Mandatory sidestaking has not activated yet — block v13 hasn&apos;t landed on this network.
+                  No mandatory sidestake recipients are registered on chain. Every sidestake paid on this network so far is voluntary.
                 </Typography>
               </Stack>
             </CardContent>

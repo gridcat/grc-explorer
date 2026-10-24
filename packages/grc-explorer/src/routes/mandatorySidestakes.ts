@@ -5,6 +5,7 @@ import { ErrorModel } from '../lib/errors';
 import { halford2grc } from '../lib/halford';
 import { param } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
+import { MSS_INTERVAL_JOIN } from '../lib/sidestakeKind';
 import { registerParamValidators } from '../lib/validators';
 
 export const mandatorySidestakesRouter = Router();
@@ -39,7 +40,9 @@ interface ActiveRegistryRow {
  * Current registry: every address that is currently in MANDATORY state.
  *
  * Joins payout aggregates from `coinstake_sidestakes` so the home UI
- * doesn't need a second round trip. `total_paid` is in halford as a
+ * doesn't need a second round trip. Payout aggregates here and below
+ * count only payouts made while the address was registered MANDATORY;
+ * anything else it received is a voluntary sidestake. `total_paid` is in halford as a
  * string; the presenter on the frontend converts to GRC for display.
  */
 mandatorySidestakesRouter.get('/', async (_req: Request, res: Response) => {
@@ -75,11 +78,13 @@ mandatorySidestakesRouter.get('/', async (_req: Request, res: Response) => {
         coalesce(p.payout_count, 0)                AS payout_count
       FROM latest l
       LEFT JOIN (
-        SELECT address,
-               sum(amount) AS total_paid,
-               count(*)    AS payout_count
-        FROM coinstake_sidestakes
-        GROUP BY address
+        SELECT cs.address     AS address,
+               sum(cs.amount) AS total_paid,
+               count(*)       AS payout_count
+        FROM coinstake_sidestakes cs
+        ${MSS_INTERVAL_JOIN}
+        WHERE mss.address IS NOT NULL
+        GROUP BY cs.address
       ) p ON p.address = l.address
       WHERE l.status = 'MANDATORY'
       ORDER BY l.allocation_pct DESC, l.address
@@ -129,10 +134,12 @@ async function fetchRegistry(address: string): Promise<RegistryRow[]> {
 async function fetchPayoutTotals(address: string): Promise<PayoutTotals> {
   const rows = await query<PayoutTotals>(
     `
-      SELECT CAST(coalesce(sum(amount), 0) AS CHAR) AS total,
-             count(*)                               AS payout_count
-      FROM coinstake_sidestakes
-      WHERE address = $addr
+      SELECT
+        CAST(coalesce(sum(cs.amount), 0) AS CHAR) AS total,
+        count(*) AS payout_count
+      FROM coinstake_sidestakes cs
+      ${MSS_INTERVAL_JOIN}
+      WHERE cs.address = $addr AND mss.address IS NOT NULL
     `,
     { addr: address },
   );
@@ -195,12 +202,13 @@ mandatorySidestakesRouter.get('/:address', async (req: Request, res: Response) =
       amount: string; time: number;
     }>(
       `
-        SELECT block_height, vout_idx, tx_id,
-               CAST(amount AS CHAR)      AS amount,
-               UNIX_TIMESTAMP(time)      AS time
-        FROM coinstake_sidestakes
-        WHERE address = $addr
-        ORDER BY block_height DESC, vout_idx
+        SELECT cs.block_height, cs.vout_idx, cs.tx_id,
+               CAST(cs.amount AS CHAR)   AS amount,
+               UNIX_TIMESTAMP(cs.time)   AS time
+        FROM coinstake_sidestakes cs
+        ${MSS_INTERVAL_JOIN}
+        WHERE cs.address = $addr AND mss.address IS NOT NULL
+        ORDER BY cs.block_height DESC, cs.vout_idx
         LIMIT 200
       `,
       { addr: address },

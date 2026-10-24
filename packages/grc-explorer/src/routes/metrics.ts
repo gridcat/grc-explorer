@@ -14,6 +14,7 @@ import { halford2grc } from '../lib/halford';
 import { getTipAnchor } from '../lib/indexerTip';
 import { clampedQueryInt, parseYearRange } from '../lib/req';
 import { withMeta } from '../lib/responseMeta';
+import { MSS_INTERVAL_JOIN } from '../lib/sidestakeKind';
 import {
   buildResearchersHistory,
   buildSeries,
@@ -379,71 +380,107 @@ metricsRouter.get('/researchers/history', async (req: Request, res: Response) =>
   }));
 });
 
-// Aggregate stats for the home-page MSS tile. Three slices in one
-// payload so the tile is one round trip:
-//   - 24h count + amount (since tip-time minus 24h)
+// Aggregate stats for the home-page sidestake tiles, split into
+// mandatory (recipient in the on-chain registry at that height) and
+// voluntary (everything else; see lib/sidestakeKind). One grouped scan
+// feeds both endpoints:
+//   - 24h count + amount + distinct recipients (since tip-time minus 24h)
 //   - all-time count + amount
-//   - active recipient count
-// Reads are cheap; coinstake_sidestakes is small even at V13 cadence
-// (≤4 outputs per coinstake × ~570 blocks/day = ~2280 rows/day).
-// Home-tile aggregate over `coinstake_sidestakes` — small table but
-// scanned in full for the all-time totals. Cache 60s so the home-page
-// SSR fan-out coalesces. Underlying data only changes on V13+ PoS
-// blocks landing (~570/day).
-let mssMetricsCache: { body: unknown; expiresAt: number } | null = null;
-const MSS_METRICS_TTL_MS = 60_000;
-metricsRouter.get('/mandatory-sidestakes', async (_req: Request, res: Response) => {
+//   - active registry recipient count (mandatory only)
+// coinstake_sidestakes is small (~500 rows/day) but scanned in full for
+// the all-time totals. Cache 60s so the home-page fan-out coalesces.
+interface SidestakeKindTotals {
+  amount24h: string;
+  count24h: number;
+  recipients24h: number;
+  amountAllTime: string;
+  countAllTime: number;
+}
+interface SidestakeTotals {
+  mandatory: SidestakeKindTotals;
+  voluntary: SidestakeKindTotals;
+  activeRecipients: number;
+}
+let sidestakeTotalsCache: { totals: SidestakeTotals; expiresAt: number } | null = null;
+const SIDESTAKE_TOTALS_TTL_MS = 60_000;
+
+async function getSidestakeTotals(): Promise<SidestakeTotals> {
   const now = Date.now();
-  if (mssMetricsCache && now < mssMetricsCache.expiresAt) {
-    res.status(StatusCodes.OK).send(mssMetricsCache.body);
-    return;
-  }
-  const at = await getTipAnchor();
-  const since24h = at - 24 * 3600;
-  const row = (await query<{
-    amount_24h: string; count_24h: number;
-    amount_all: string; count_all: number;
-    active_recipients: number;
-  }>(
-    `
-      WITH active AS (
+  if (sidestakeTotalsCache && now < sidestakeTotalsCache.expiresAt) return sidestakeTotalsCache.totals;
+  const since = (await getTipAnchor()) - 24 * 3600;
+  const [kindRows, activeRows] = await Promise.all([
+    query<{
+      kind: 'mandatory' | 'voluntary';
+      amount_24h: string; count_24h: number; recipients_24h: number;
+      amount_all: string; count_all: number;
+    }>(
+      `
+        SELECT
+          CASE WHEN mss.address IS NULL THEN 'voluntary' ELSE 'mandatory' END                                AS kind,
+          CAST(coalesce(SUM(CASE WHEN cs.time >= FROM_UNIXTIME($since) THEN cs.amount ELSE 0 END), 0) AS CHAR) AS amount_24h,
+          CAST(SUM(CASE WHEN cs.time >= FROM_UNIXTIME($since) THEN 1 ELSE 0 END) AS UNSIGNED)                  AS count_24h,
+          CAST(COUNT(DISTINCT CASE WHEN cs.time >= FROM_UNIXTIME($since) THEN cs.address END) AS UNSIGNED)     AS recipients_24h,
+          CAST(coalesce(sum(cs.amount), 0) AS CHAR)                                                            AS amount_all,
+          CAST(count(*) AS UNSIGNED)                                                                           AS count_all
+        FROM coinstake_sidestakes cs
+        ${MSS_INTERVAL_JOIN}
+        GROUP BY kind
+      `,
+      { since },
+    ),
+    query<{ active_recipients: number }>(
+      `
         -- arg_max(status, block_height) per address → status of the row with
         -- the highest block_height, via ROW_NUMBER()=1.
-        SELECT address
+        SELECT CAST(count(*) AS UNSIGNED) AS active_recipients
         FROM (
-          SELECT address, status,
+          SELECT status,
             ROW_NUMBER() OVER (PARTITION BY address ORDER BY block_height DESC) AS rn
           FROM mandatory_sidestakes
         ) latest
         WHERE rn = 1 AND status = 'MANDATORY'
-      )
-      SELECT
-        CAST(coalesce(SUM(CASE WHEN time >= FROM_UNIXTIME($since) THEN amount ELSE 0 END), 0) AS CHAR) AS amount_24h,
-        CAST(SUM(CASE WHEN time >= FROM_UNIXTIME($since) THEN 1 ELSE 0 END) AS UNSIGNED)               AS count_24h,
-        CAST(coalesce(sum(amount), 0) AS CHAR)                                                         AS amount_all,
-        CAST(count(*) AS UNSIGNED)                                                                     AS count_all,
-        CAST((SELECT count(*) FROM active) AS UNSIGNED)                                                AS active_recipients
-      FROM coinstake_sidestakes
-    `,
-    { since: since24h },
-  ))[0] ?? {
-    amount_24h: '0', count_24h: 0, amount_all: '0', count_all: 0, active_recipients: 0,
+      `,
+    ),
+  ]);
+  const kindTotals = (kind: 'mandatory' | 'voluntary'): SidestakeKindTotals => {
+    const r = kindRows.find((row) => row.kind === kind);
+    return {
+      amount24h: halford2grc(BigInt(r?.amount_24h ?? '0')),
+      count24h: Number(r?.count_24h ?? 0),
+      recipients24h: Number(r?.recipients_24h ?? 0),
+      amountAllTime: halford2grc(BigInt(r?.amount_all ?? '0')),
+      countAllTime: Number(r?.count_all ?? 0),
+    };
   };
-  const body = withMeta({
+  const totals = {
+    mandatory: kindTotals('mandatory'),
+    voluntary: kindTotals('voluntary'),
+    activeRecipients: Number(activeRows[0]?.active_recipients ?? 0),
+  };
+  sidestakeTotalsCache = { totals, expiresAt: now + SIDESTAKE_TOTALS_TTL_MS };
+  return totals;
+}
+
+metricsRouter.get('/mandatory-sidestakes', async (_req: Request, res: Response) => {
+  const { mandatory, activeRecipients } = await getSidestakeTotals();
+  res.status(StatusCodes.OK).send(withMeta({
     data: {
       type: 'mandatory_sidestakes_metrics',
       id: 'now',
-      attributes: {
-        amount24h: halford2grc(BigInt(row.amount_24h)),
-        count24h: Number(row.count_24h),
-        amountAllTime: halford2grc(BigInt(row.amount_all)),
-        countAllTime: Number(row.count_all),
-        activeRecipients: Number(row.active_recipients),
-      },
+      attributes: { ...mandatory, activeRecipients },
     },
-  });
-  mssMetricsCache = { body, expiresAt: now + MSS_METRICS_TTL_MS };
-  res.status(StatusCodes.OK).send(body);
+  }));
+});
+
+metricsRouter.get('/voluntary-sidestakes', async (_req: Request, res: Response) => {
+  const { voluntary } = await getSidestakeTotals();
+  res.status(StatusCodes.OK).send(withMeta({
+    data: {
+      type: 'voluntary_sidestakes_metrics',
+      id: 'now',
+      attributes: voluntary,
+    },
+  }));
 });
 
 // Slow-changing: the window is hours/days and the component already

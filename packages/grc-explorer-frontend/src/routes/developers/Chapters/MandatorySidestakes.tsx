@@ -119,12 +119,12 @@ export function MandatorySidestakes() {
       </Typography>
       <Endpoint method="GET" path="/api/metrics/mandatory-sidestakes" title="24h + all-time totals" />
       <Typography gutterBottom variant="body1" component="p">
-        Single-round-trip payload for the home-page tile: 24h count
-        and amount, all-time count and amount, and the current count
-        of active recipients. Pre-activation, every field reports{' '}
-        zero with <code>activeRecipients = 0</code> — the tile uses
-        that to render a friendly &quot;not yet activated&quot; state instead
-        of a row of zeros.
+        Single-round-trip payload for the home-page tile: 24h count,
+        amount and distinct recipients, all-time count and amount, and
+        the current count of active recipients. Counts only payouts to
+        an address that was in the registry in <code>MANDATORY</code>{' '}
+        state at that block&apos;s height. While nothing is registered,
+        every field reports zero with <code>activeRecipients = 0</code>.
       </Typography>
       <CodeBlock
         caption="Request"
@@ -141,6 +141,7 @@ export function MandatorySidestakes() {
     "attributes": {
       "amount24h": "12.34000000",
       "count24h": 567,
+      "recipients24h": 3,
       "amountAllTime": "1234.56789012",
       "countAllTime": 12345,
       "activeRecipients": 3
@@ -193,6 +194,76 @@ export function MandatorySidestakes() {
         "allocationPct": 5.0,
         "description": "Gridcoin Foundation",
         "registryStatus": "MANDATORY"
+      }
+    }
+  ]
+}`}
+      />
+
+      <Typography variant="h6" component="h3" id="vss" sx={{ pt: 2, pb: 1 }}>
+        Voluntary sidestakes
+      </Typography>
+      <Typography gutterBottom variant="body1" component="p">
+        Every CoinStake vout-2+ output that is not a mandatory payout
+        (above) and not an MRC payout or stake split: sidestakes a
+        staker set in their own wallet config. Captured from V13
+        blocks on.
+      </Typography>
+      <Endpoint method="GET" path="/api/metrics/voluntary-sidestakes" title="24h + all-time totals" />
+      <Typography gutterBottom variant="body1" component="p">
+        Same shape as the mandatory metrics, without{' '}
+        <code>activeRecipients</code>.
+      </Typography>
+      <CodeBlock
+        caption="Request"
+        language="bash"
+        code={`curl '${API_BASE}/metrics/voluntary-sidestakes'`}
+      />
+      <CodeBlock
+        caption="Response — 200 OK (excerpt)"
+        language="json"
+        code={`{
+  "data": {
+    "type": "voluntary_sidestakes_metrics",
+    "id": "now",
+    "attributes": {
+      "amount24h": "7507.65060402",
+      "count24h": 518,
+      "recipients24h": 9,
+      "amountAllTime": "1124100.24247088",
+      "countAllTime": 125274
+    }
+  }
+}`}
+      />
+      <Endpoint method="GET" path="/api/voluntary-sidestakes" title="Top recipients" />
+      <Typography gutterBottom variant="body1" component="p">
+        The 100 recipients with the most voluntary sidestakes received
+        all-time, largest first, with their 24h slice and the most
+        recent payout.
+      </Typography>
+      <CodeBlock
+        caption="Request"
+        language="bash"
+        code={`curl '${API_BASE}/voluntary-sidestakes'`}
+      />
+      <CodeBlock
+        caption="Response — 200 OK (excerpt)"
+        language="json"
+        code={`{
+  "data": [
+    {
+      "type": "voluntary_sidestake_recipients",
+      "id": "SRecipientXXXXXXXXXXXXXXXXXXXXXXXX",
+      "attributes": {
+        "address": "SRecipientXXXXXXXXXXXXXXXXXXXXXXXX",
+        "totalPaid": "152340.12000000",
+        "payoutCount": 4210,
+        "amount24h": "762.95000000",
+        "count24h": 10,
+        "firstBlockHeight": 3990012,
+        "lastBlockHeight": 4116770,
+        "lastTime": 1792750000
       }
     }
   ]

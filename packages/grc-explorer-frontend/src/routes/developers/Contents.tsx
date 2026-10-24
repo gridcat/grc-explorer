@@ -66,6 +66,7 @@ const entries: PageContentsEntry[] = [
   { id: 'mss-detail', label: 'Per-recipient detail', indent: true },
   { id: 'mss-metrics', label: 'Aggregate metrics', indent: true },
   { id: 'mss-block', label: 'Per-block payouts', indent: true },
+  { id: 'vss', label: 'Voluntary sidestakes', indent: true },
   { id: 'mss-sse', label: 'Live updates', indent: true },
   { id: 'search', label: 'Search' },
 ];

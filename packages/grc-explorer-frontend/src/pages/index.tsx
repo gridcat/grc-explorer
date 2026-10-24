@@ -9,7 +9,7 @@ import {
 } from '../components/LiveBlockTicker';
 import { LiveTxFeed, Entry as LiveTxEntry } from '../components/LiveTxFeed';
 import { MagnitudeLeaderboard, Entry as LeaderboardEntryRow, LeaderboardEntry } from '../components/MagnitudeLeaderboard';
-import { MandatorySidestakesTile, MssMetrics } from '../components/MandatorySidestakesTile';
+import { MssMetrics, SidestakesTiles } from '../components/SidestakesTiles';
 import { MempoolFeeMarket, Bucket as MempoolFeeBucket } from '../components/MempoolFeeMarket';
 import {
   MempoolFeePercentiles, PercentilePoint, PercentileMeta,
@@ -148,22 +148,16 @@ export default function Home({
         <LazyOnVisible minHeight={400}>
           <ProjectsBoard initialSnap={initialProjectsSnap} />
         </LazyOnVisible>
-        {/* Mandatory sidestaking — protocol-driven cut of every PoS
-            block reward to designated addresses, activated at V13.
-            Sits below ProjectsBoard since it's another "protocol-
-            governance signal" panel, and gets a tile-shaped row of
-            its own because the four headline numbers (24h count,
-            24h paid, recipient count, all-time paid) don't pair
-            naturally with anything else on the page.
-            Page-level gate on the SSR'd `forks.v13` so the lazy
-            wrapper doesn't even reserve space pre-V13. The tile
-            itself also self-gates via /network — the two together
-            keep the gap clean both on first paint and across SSE
-            refreshes. */}
+        {/* Sidestakes: voluntary (set by stakers in their own wallets)
+            and mandatory (on-chain registry) as two separate cards so
+            one is never read as the other. Captured from V13 blocks
+            only, so the page gates on the SSR'd `forks.v13` and the
+            lazy wrapper doesn't reserve space pre-V13; the cards also
+            self-gate via /network across SSE refreshes. */}
         {initialNetworkStats?.forks?.v13 && (
           <LazyOnVisible minHeight={180}>
-            <MandatorySidestakesTile
-              initialMetrics={initialMssMetrics}
+            <SidestakesTiles
+              initialMandatory={initialMssMetrics}
               initialV13Active={Boolean(initialNetworkStats.forks.v13)}
             />
           </LazyOnVisible>

@@ -27,6 +27,8 @@ function buildContent(origin: string): string {
   lines.push(`- [Block detail](${origin}/block/<height-or-hash>): per-block transactions, claim, magnitude, beacon ack`);
   lines.push(`- [Mempool](${origin}/mempool): unconfirmed transactions currently waiting to be mined`);
   lines.push(`- [Network](${origin}/network): node version distribution, difficulty, supply, indexer cursor`);
+  lines.push(`- [Voluntary sidestakes](${origin}/sidestakes): block rewards stakers share with other addresses from their own wallet config, top recipients`);
+  lines.push(`- [Mandatory sidestakes](${origin}/mandatory-sidestakes): protocol-registered sidestake recipients, allocations, and lifetime payouts`);
   lines.push('');
 
   lines.push('## Research network');
