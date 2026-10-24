@@ -1,3 +1,15 @@
+# [grc-explorer-frontend-v2.6.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.5.0...grc-explorer-frontend-v2.6.0) (2026-10-24)
+
+
+### Bug Fixes
+
+* bump next, body-parser and follow-redirects for security advisories ([9b724cf](https://github.com/gridcat/grc-explorer/commit/9b724cf1df419f74ef05cb696860e737f2befd5f))
+
+
+### Features
+
+* split sidestakes into mandatory and voluntary ([0b28559](https://github.com/gridcat/grc-explorer/commit/0b28559d0f05148468a0c8cd842b66fdaf04838a))
+
 # [grc-explorer-frontend-v2.5.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.4.1...grc-explorer-frontend-v2.5.0) (2026-10-07)
 
 
