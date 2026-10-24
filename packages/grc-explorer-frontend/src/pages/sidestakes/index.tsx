@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import { Crumbs } from '../../components/Crumbs';
+import { NextMuiLink } from '../../components/NextMuiLink';
 import { HashTrim } from '../../components/HashTrim';
 import type { SidestakeMetrics } from '../../components/SidestakesTiles';
 import { useSSE } from '../../hooks/useSSE';
@@ -78,7 +79,7 @@ export default function SidestakesPage({ initialRecipients, initialMetrics }: Si
             their own. These are voluntary sidestakes. The protocol does
             not require them, and each staker picks the addresses and
             percentages. They are separate from{' '}
-            <Link href="/mandatory-sidestakes">mandatory sidestakes</Link>,
+            <NextMuiLink href="/mandatory-sidestakes" prose>mandatory sidestakes</NextMuiLink>,
             which only pay addresses registered on chain. The explorer
             counts sidestakes from block v13 on.
           </Typography>

@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import { Crumbs } from '../../components/Crumbs';
+import { NextMuiLink } from '../../components/NextMuiLink';
 import { HashTrim } from '../../components/HashTrim';
 import { useSSE } from '../../hooks/useSSE';
 import { api } from '../../lib/api';
@@ -89,7 +90,7 @@ export default function MandatorySidestakesPage({
             Gridcoin Foundation). They are possible from block v13 on,
             and only pay out to addresses registered on chain. They are
             separate from{' '}
-            <Link href="/sidestakes">voluntary sidestakes</Link>, which
+            <NextMuiLink href="/sidestakes" prose>voluntary sidestakes</NextMuiLink>, which
             stakers set up in their own wallets.
             The set is governed by signed contracts in the chain, not
             hardcoded source: the daemon&apos;s{' '}
