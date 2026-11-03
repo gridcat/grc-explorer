@@ -1,3 +1,10 @@
+# [grc-explorer-v2.5.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.5.0...grc-explorer-v2.5.1) (2026-11-03)
+
+
+### Bug Fixes
+
+* bump next to 16.4.4 and patch follow-redirects, joi ([e815aa5](https://github.com/gridcat/grc-explorer/commit/e815aa57c9922dde44c344bc99f1bb5fb21b6762))
+
 # [grc-explorer-v2.5.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-v2.4.0...grc-explorer-v2.5.0) (2026-10-24)
 
 
