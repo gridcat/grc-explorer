@@ -1,6 +1,7 @@
 import type { GetServerSideProps } from 'next';
 import { api } from '../../lib/api';
 import { IS_TESTNET } from '../../lib/network';
+import { clientHeaders } from '../../lib/ssr';
 import { originOf, urlsetXml, writeXml } from '../../lib/sitemap';
 
 /**
@@ -33,39 +34,41 @@ export const getServerSideProps: GetServerSideProps = async (ctx) => {
     priority?: number;
   }> = [];
 
-  let days: string[] = [];
-  try {
-    // archive_blocks_daily is the SummingMergeTree MV from migration
-    // 0005 — one row per UTC date that has at least one indexed block.
-    // We hit the explorer's /blocks/archive/years route to get years,
-    // then walk a pseudo-daily set by listing days within each populated
-    // month (cheaper than a dedicated /days endpoint and fast enough at
-    // this scale).
-    const r = await api.get('/blocks/archive/years');
-    const years = (r.data?.data ?? []) as Array<{ attributes: { year: number } }>;
-    // For each year, walk months and within each month, walk days.
-    // Sequential to keep memory + connection count in check; total is
-    // at most ~13 years × 12 months ≈ 150 round trips.
-    for (const y of years) {
-      const yearNum = y.attributes.year;
+  // Forward the crawler's IP: without it every sitemap build shares the
+  // frontend container's per-IP API bucket with all other SSR traffic,
+  // and one 429 used to empty the whole sitemap.
+  const headers = clientHeaders(ctx.req);
+  const days: string[] = [];
+  // The year list is the spine. If it fails, throw: Next answers 500 and
+  // crawlers retry, instead of caching a valid-but-empty sitemap.
+  // archive_blocks_daily is the SummingMergeTree MV from migration
+  // 0005 — one row per UTC date that has at least one indexed block.
+  // We hit the explorer's /blocks/archive/years route to get years,
+  // then walk a pseudo-daily set by listing days within each populated
+  // month (cheaper than a dedicated /days endpoint and fast enough at
+  // this scale).
+  const r = await api.get('/blocks/archive/years', { headers });
+  const years = (r.data?.data ?? []) as Array<{ attributes: { year: number } }>;
+  // For each year, walk months and within each month, walk days.
+  // Sequential to keep memory + connection count in check; total is
+  // at most ~13 years × 12 months ≈ 150 round trips.
+  for (const y of years) {
+    const yearNum = y.attributes.year;
 
-      const yr = await api.get(`/blocks/archive/${yearNum}`);
-      const months = (yr.data?.data?.attributes?.months ?? []) as Array<{ month: number }>;
-      for (const m of months) {
-        const fmtMonth = String(m.month).padStart(2, '0');
+    // One failed year drops that year only, not the whole sitemap.
+    const yr = await api.get(`/blocks/archive/${yearNum}`, { headers }).catch(() => null);
+    if (!yr) continue;
+    const months = (yr.data?.data?.attributes?.months ?? []) as Array<{ month: number }>;
+    for (const m of months) {
+      const fmtMonth = String(m.month).padStart(2, '0');
 
-        const mr = await api.get(`/blocks/archive/${yearNum}/${fmtMonth}`).catch(() => null);
-        const monthDays = (mr?.data?.data?.attributes?.days ?? []) as Array<{ day: number }>;
-        for (const d of monthDays) {
-          const fmtDay = String(d.day).padStart(2, '0');
-          days.push(`${yearNum}-${fmtMonth}-${fmtDay}`);
-        }
+      const mr = await api.get(`/blocks/archive/${yearNum}/${fmtMonth}`, { headers }).catch(() => null);
+      const monthDays = (mr?.data?.data?.attributes?.days ?? []) as Array<{ day: number }>;
+      for (const d of monthDays) {
+        const fmtDay = String(d.day).padStart(2, '0');
+        days.push(`${yearNum}-${fmtMonth}-${fmtDay}`);
       }
     }
-  } catch {
-    // Empty result is fine — sitemap is just empty until backfill
-    // populates the archive aggregates.
-    days = [];
   }
 
   // Group days into a year + month + day URL set, deduplicated.
