@@ -23,8 +23,6 @@ export default class MyDocument extends Document<ExplorerDocumentProps> {
     return (
       <Html lang="en" data-scroll-behavior="smooth" data-theme={themeMode}>
         <Head>
-          <link rel="dns-prefetch" href="https://daj.pw" />
-          <link rel="preconnect" href="https://daj.pw" crossOrigin="anonymous" />
           <meta name="theme-color" content={initialBg} />
           {/*
             FOUC-prevention: a <style> block (NOT inline `style=` on

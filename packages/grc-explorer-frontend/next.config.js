@@ -14,9 +14,8 @@
 // refactor (Document.getInitialProps + Emotion + Plausible all need
 // the nonce threaded through); we pick that fight later.
 //
-// Plausible: `daj.pw` hosts the analytics script and ingests events.
-// Reference memory: `reference_plausible_script` documents the
-// shared family-wide loader at `daj.pw/js/plausible.js`.
+// Plausible is first-party (/stats/*, see components/Analytics), so
+// 'self' covers it.
 //
 // Dev needs `unsafe-eval` for HMR; production drops it.
 const PROD = process.env.NODE_ENV === 'production';
@@ -42,7 +41,6 @@ const cspDirectives = {
   'script-src': [
     "'self'",
     "'unsafe-inline'",
-    'https://daj.pw',
     ...(PROD ? [] : ["'unsafe-eval'"]),
   ],
   'style-src': ["'self'", "'unsafe-inline'"],
@@ -50,7 +48,6 @@ const cspDirectives = {
   'font-src': ["'self'", 'data:'],
   'connect-src': [
     "'self'",
-    'https://daj.pw',
     ...(apiConnect ? [apiConnect] : []),
   ],
   'frame-ancestors': ["'self'"],

@@ -3,7 +3,6 @@ import CssBaseline from '@mui/material/CssBaseline';
 import { ThemeProvider } from '@mui/material/styles';
 import { AppProps } from 'next/app';
 import Head from 'next/head';
-import Script from 'next/script';
 import * as React from 'react';
 import createEmotionCache from '../createEmotionCache';
 import { SSEProvider } from '../hooks/useSSE';
@@ -13,6 +12,7 @@ import { ThemeMode } from '../lib/mode';
 import { IS_TESTNET, NETWORK } from '../lib/network';
 import { themeCreator } from '../theme';
 import '../styles/style.css';
+import { Analytics } from '../components/Analytics/Analytics';
 
 const clientSideEmotionCache = createEmotionCache();
 
@@ -68,12 +68,10 @@ export default function MyApp(props: MyAppProps) {
         {IS_TESTNET && <meta name="robots" content="noindex,nofollow" />}
         <title>{`${titlePrefix}Gridcoin Block Explorer`}</title>
       </Head>
-      {track && (
-        <Script
-          src="https://daj.pw/js/plausible.js"
-          data-domain={IS_TESTNET ? 'testnet-explorer.gridcoin.club' : 'explorer.gridcoin.club'}
-        />
-      )}
+      <Analytics
+        enabled={track === true}
+        domain={IS_TESTNET ? 'testnet-explorer.gridcoin.club' : 'explorer.gridcoin.club'}
+      />
       <ThemeModeProvider initialMode={mode}>
         <AppShell Component={Component} pageProps={pageProps} />
       </ThemeModeProvider>
