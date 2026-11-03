@@ -1,3 +1,14 @@
+# [grc-explorer-frontend-v2.6.2](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.6.1...grc-explorer-frontend-v2.6.2) (2026-11-03)
+
+
+### Bug Fixes
+
+* bump next to 16.4.4 and patch follow-redirects, joi ([e815aa5](https://github.com/gridcat/grc-explorer/commit/e815aa57c9922dde44c344bc99f1bb5fb21b6762))
+* emit one canonical and an h1 on block archive pages ([2059140](https://github.com/gridcat/grc-explorer/commit/2059140cbad539c9377274f98aaa462aeaeca583))
+* load Plausible first-party ([86d6d31](https://github.com/gridcat/grc-explorer/commit/86d6d312034dcc48dea1e8577405314fbc1a6aea))
+* render page titles as h1 ([ad47118](https://github.com/gridcat/grc-explorer/commit/ad471182aec843f0f09bd140bb6cbf29d743585b))
+* serve block sitemaps and fill the archive sitemap ([2edb18f](https://github.com/gridcat/grc-explorer/commit/2edb18f25be4cfc8cce248ef9bd0f350b06b75d1))
+
 # [grc-explorer-frontend-v2.6.1](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.6.0...grc-explorer-frontend-v2.6.1) (2026-10-24)
 
 
