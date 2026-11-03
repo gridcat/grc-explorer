@@ -92,7 +92,7 @@ export default function MempoolPage({ initialRows }: MempoolPageProps) {
       <Stack spacing={3}>
         <Crumbs items={[{ label: 'Mempool' }]} />
         <Box>
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>Mempool</Typography>
+          <Typography component="h1" variant="h4" sx={{ fontWeight: 700 }}>Mempool</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             Transactions that the network has accepted but no block has
             confirmed yet: validated by every peer that&apos;s seen them,

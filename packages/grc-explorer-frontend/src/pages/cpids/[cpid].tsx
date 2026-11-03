@@ -175,7 +175,7 @@ export default function CpidDetail({
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ alignItems: { sm: 'baseline' } }}>
           {summary.displayName ? (
             <>
-              <Typography variant="h5" sx={{ fontWeight: 700 }}>
+              <Typography component="h1" variant="h5" sx={{ fontWeight: 700 }}>
                 {summary.displayName}
               </Typography>
               <Typography variant="body2" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
@@ -183,7 +183,7 @@ export default function CpidDetail({
               </Typography>
             </>
           ) : (
-            <Typography variant="h5" sx={{ fontWeight: 700, fontFamily: 'monospace' }}>
+            <Typography component="h1" variant="h5" sx={{ fontWeight: 700, fontFamily: 'monospace' }}>
               CPID {summary.cpid}
             </Typography>
           )}

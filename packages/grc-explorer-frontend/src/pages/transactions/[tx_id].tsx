@@ -204,7 +204,7 @@ export default function TxDetail({
       <Layout>
       <Stack spacing={2}>
         <Crumbs items={crumbItems} />
-        <Typography variant="h5" sx={{ fontWeight: 700, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+        <Typography component="h1" variant="h5" sx={{ fontWeight: 700, fontFamily: 'monospace', wordBreak: 'break-all' }}>
           {tx.txId}
         </Typography>
         <Stack direction="row" spacing={1}>

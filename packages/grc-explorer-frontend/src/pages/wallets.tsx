@@ -41,7 +41,7 @@ export default function WalletsPage({ initialRows, initialTotal }: WalletsPagePr
       <Stack spacing={2}>
         <Crumbs items={[{ label: 'Wallets' }]} />
         <Box>
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>Top 100 wallets</Typography>
+          <Typography component="h1" variant="h4" sx={{ fontWeight: 700 }}>Top 100 wallets</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             The 100 addresses currently holding the largest balances.
             Useful for tracking supply concentration, identifying known

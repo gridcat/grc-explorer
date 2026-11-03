@@ -182,7 +182,7 @@ export default function AddressDetail({
           { label: shortHash(addr.address, 8, 6) },
         ]}
         />
-        <Typography variant="h5" sx={{ fontWeight: 700, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+        <Typography component="h1" variant="h5" sx={{ fontWeight: 700, fontFamily: 'monospace', wordBreak: 'break-all' }}>
           {addr.address}
         </Typography>
 

@@ -115,7 +115,7 @@ export default function ProjectPage({ attrs }: ProjectPageProps) {
           ]}
         />
         <Stack direction="row" sx={{ alignItems: 'baseline', gap: 2, flexWrap: 'wrap' }}>
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>
+          <Typography component="h1" variant="h4" sx={{ fontWeight: 700 }}>
             {attrs.displayName}
           </Typography>
           {attrs.status && (

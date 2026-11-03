@@ -1,5 +1,4 @@
 import type { GetServerSideProps } from 'next';
-import { Seo } from '@/components/Seo';
 import { MonthArchive } from '../../../../routes/blocks/archive/MonthArchive';
 import { fetchMonthArchive } from '../../../../routes/blocks/archive/fetch';
 import type { MonthArchiveData } from '../../../../routes/blocks/archive/types';
@@ -12,11 +11,6 @@ export default function MonthPage({ data }: Props) {
   const { year, month } = data;
   return (
     <>
-      <Seo
-        title={`Blocks · ${year}-${month} · Gridcoin Block Explorer`}
-        description={`Gridcoin blocks staked in ${year}-${month}, by day.`}
-        path={`/blocks/${year}/${month}`}
-      />
       <MonthArchive data={data} />
     </>
   );

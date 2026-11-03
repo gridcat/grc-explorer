@@ -1,5 +1,4 @@
 import type { GetServerSideProps } from 'next';
-import { Seo } from '@/components/Seo';
 import { YearArchive } from '../../routes/blocks/archive/YearArchive';
 import { fetchYearArchive, fetchYearList } from '../../routes/blocks/archive/fetch';
 import type { YearArchiveData } from '../../routes/blocks/archive/types';
@@ -23,11 +22,6 @@ export default function YearPage({
   const { year } = data;
   return (
     <>
-      <Seo
-        title={`Blocks in ${year} · Gridcoin Block Explorer`}
-        description={`Gridcoin blocks staked during ${year}, broken down by month and day.`}
-        path={`/blocks/${year}`}
-      />
       <YearArchive
         data={data}
         prevYear={prevYear}

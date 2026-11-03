@@ -3,6 +3,7 @@ import {
 } from '@mui/material';
 import NextLink from 'next/link';
 import Head from 'next/head';
+import { Seo } from '@/components/Seo';
 import { useRouter } from 'next/router';
 import { Layout } from '../../../layouts/Layout';
 import { BlockTable, BlockRowData } from '../../../components/BlockTable';
@@ -66,14 +67,12 @@ export function DayArchive({ data }: { data: DayArchiveData }) {
 
   return (
     <Layout>
-      <Head>
-        <title>{title}</title>
-        <meta name="description" content={description} />
-        <link rel="canonical" href={canonical} />
-        {(pagination.pageNumber > 1 || isEmpty) && (
-          <meta name="robots" content="noindex,follow" />
-        )}
-      </Head>
+      <Seo title={title} description={description} path={canonical} />
+      {(pagination.pageNumber > 1 || isEmpty) && (
+        <Head>
+          <meta key="robots" name="robots" content="noindex,follow" />
+        </Head>
+      )}
       <Stack spacing={3}>
         <Crumbs items={[
           { label: 'History', href: '/history' },
@@ -85,7 +84,7 @@ export function DayArchive({ data }: { data: DayArchiveData }) {
         />
 
         <Box>
-          <Typography variant="h4" sx={{ fontWeight: 700, mb: 0.5 }}>
+          <Typography component="h1" variant="h4" sx={{ fontWeight: 700, mb: 0.5 }}>
             {day} {monthName} {year}
           </Typography>
           <Typography color="text.secondary">{description}</Typography>

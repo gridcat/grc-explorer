@@ -309,7 +309,7 @@ export default function PollDetail({
             DOM (and the title attr) so users can inspect it.
           */}
           <Typography
-            variant="h4"
+            component="h1" variant="h4"
             sx={{
               fontWeight: 700,
               overflowWrap: 'anywhere',

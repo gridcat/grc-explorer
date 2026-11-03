@@ -94,7 +94,7 @@ export default function PollsList({
       <Stack spacing={2}>
         <Crumbs items={[{ label: 'Polls' }]} />
         <Box>
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>Governance polls</Typography>
+          <Typography component="h1" variant="h4" sx={{ fontWeight: 700 }}>Governance polls</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             On-chain governance polls. Anyone with a beacon can put a
             question to the network, and any address with stake or

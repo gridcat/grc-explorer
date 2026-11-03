@@ -95,7 +95,7 @@ export default function SearchPage({ initialQ, initialResults, initialLoaded }: 
     <Layout>
       <Stack spacing={2}>
         <Crumbs items={[{ label: 'Search' }]} />
-        <Typography variant="h4" sx={{ fontWeight: 700 }}>Search</Typography>
+        <Typography component="h1" variant="h4" sx={{ fontWeight: 700 }}>Search</Typography>
         <Typography variant="body1" color="text.secondary">
           Results for <strong>{q || '(none)'}</strong>
         </Typography>

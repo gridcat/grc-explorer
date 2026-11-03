@@ -3,6 +3,7 @@ import {
 } from '@mui/material';
 import NextLink from 'next/link';
 import Head from 'next/head';
+import { Seo } from '@/components/Seo';
 import { Layout } from '../../../layouts/Layout';
 import { YearMonthGrid } from '../../../components/CalendarHeatmap';
 import { Crumbs } from '../../../components/Crumbs';
@@ -56,12 +57,12 @@ export function YearArchive({
 
   return (
     <Layout>
-      <Head>
-        <title>{title}</title>
-        <meta name="description" content={description} />
-        <link rel="canonical" href={`/blocks/${year}`} />
-        {isEmpty && <meta name="robots" content="noindex,follow" />}
-      </Head>
+      <Seo title={title} description={description} path={`/blocks/${year}`} />
+      {(isEmpty) && (
+        <Head>
+          <meta key="robots" name="robots" content="noindex,follow" />
+        </Head>
+      )}
       <Stack spacing={3}>
         <Crumbs items={[
           { label: 'History', href: '/history' },
@@ -71,7 +72,7 @@ export function YearArchive({
         />
 
         <Box>
-          <Typography variant="h4" sx={{ fontWeight: 700, mb: 0.5 }}>
+          <Typography component="h1" variant="h4" sx={{ fontWeight: 700, mb: 0.5 }}>
             Gridcoin in {year}
           </Typography>
           <Typography color="text.secondary">

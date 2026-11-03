@@ -1,8 +1,9 @@
 import type { GetServerSideProps } from 'next';
 import { api } from '../lib/api';
 import { IS_TESTNET } from '../lib/network';
+import { clientHeaders } from '../lib/ssr';
 import {
-  originOf, sitemapIndexXml, writeXml, URLS_PER_BLOCKS_CHUNK,
+  originOf, sitemapIndexXml, writeXml, URLS_PER_BLOCKS_CHUNK, type SitemapIndexEntry,
 } from '../lib/sitemap';
 
 /**
@@ -24,25 +25,24 @@ export const getServerSideProps: GetServerSideProps = async (ctx) => {
   const origin = originOf(ctx);
 
   // Probe tip height from the explorer API so we know how many block-
-  // sitemap chunks to enumerate. Falls back to a 0-block tip on error
-  // — the static + archive children still work, only the block chunks
-  // are skipped until the API recovers.
-  let tip = 0;
-  try {
-    const r = await api.get('/network');
-    const indexed = r.data?.data?.attributes?.indexed_height;
-    if (typeof indexed === 'number') tip = indexed;
-  } catch { /* leave at 0 */ }
+  // sitemap chunks to enumerate. No catch: an index silently missing all
+  // block chunks is worse than a 500 the crawler retries.
+  const r = await api.get('/network', { headers: clientHeaders(ctx.req) });
+  const indexed = r.data?.data?.attributes?.indexed_height;
+  const tip = typeof indexed === 'number' ? indexed : 0;
 
   const blockChunkCount = tip > 0 ? Math.ceil((tip + 1) / URLS_PER_BLOCKS_CHUNK) : 0;
   const today = new Date().toISOString().slice(0, 10);
 
-  const entries = [
+  const entries: SitemapIndexEntry[] = [
     { loc: `${origin}/sitemaps/static.xml`,  lastmod: today },
     { loc: `${origin}/sitemaps/archive.xml`, lastmod: today },
   ];
+  // Only the last chunk still grows; full chunks never change, so they
+  // carry no lastmod rather than a fake "today".
   for (let i = 0; i < blockChunkCount; i += 1) {
-    entries.push({ loc: `${origin}/sitemaps/blocks-${i}.xml`, lastmod: today });
+    const loc = `${origin}/sitemaps/blocks-${i}.xml`;
+    entries.push(i === blockChunkCount - 1 ? { loc, lastmod: today } : { loc });
   }
 
   writeXml(ctx, sitemapIndexXml(entries));
