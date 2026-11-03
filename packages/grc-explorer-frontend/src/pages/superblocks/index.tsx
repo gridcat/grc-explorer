@@ -135,7 +135,7 @@ export default function SuperblocksList({
           ]}
           trailing={<CopyLinkButton />}
         />
-        <Typography variant="h4" sx={{ fontWeight: 700 }}>Superblocks</Typography>
+        <Typography component="h1" variant="h4" sx={{ fontWeight: 700 }}>Superblocks</Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
           Superblocks are periodic snapshots of every researcher&apos;s
           magnitude and every active project&apos;s beacon, pinned into

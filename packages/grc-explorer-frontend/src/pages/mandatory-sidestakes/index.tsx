@@ -81,7 +81,7 @@ export default function MandatorySidestakesPage({
         <Crumbs items={[{ label: 'Mandatory sidestakes' }]} />
 
         <Box>
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>
+          <Typography component="h1" variant="h4" sx={{ fontWeight: 700 }}>
             Mandatory sidestakes
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>

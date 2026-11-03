@@ -133,7 +133,7 @@ export default function BlocksList({ initialRows, years }: BlocksListProps) {
       <Stack spacing={2}>
         <Crumbs items={[{ label: 'Blocks' }]} />
         {years.length > 0 && <ArchiveRail years={years} />}
-        <Typography variant="h4" sx={{ fontWeight: 700 }}>Recent blocks</Typography>
+        <Typography component="h1" variant="h4" sx={{ fontWeight: 700 }}>Recent blocks</Typography>
         <Paper variant="outlined" sx={{ overflowX: 'auto' }}>
           <BlockTable
             blocks={tableRows}

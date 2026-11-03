@@ -47,7 +47,7 @@ export default function RecipientDetailPage({ initial }: PageProps) {
   if (!initial) {
     return (
       <Layout>
-        <Typography variant="h5" sx={{ fontWeight: 700, mb: 2 }}>
+        <Typography component="h1" variant="h5" sx={{ fontWeight: 700, mb: 2 }}>
           Sidestake recipient not found
         </Typography>
         <Typography variant="body2" color="text.secondary">
@@ -75,7 +75,7 @@ export default function RecipientDetailPage({ initial }: PageProps) {
         />
 
         <Box>
-          <Typography variant="h5" sx={{ fontWeight: 700, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+          <Typography component="h1" variant="h5" sx={{ fontWeight: 700, fontFamily: 'monospace', wordBreak: 'break-all' }}>
             {initial.address}
           </Typography>
           <Stack direction="row" spacing={1} sx={{ mt: 1.5, alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>

@@ -221,7 +221,7 @@ export function BlockDetail({
           spacing={2}
           sx={{ alignItems: 'center', flexWrap: 'wrap', rowGap: 1 }}
         >
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>
+          <Typography component="h1" variant="h4" sx={{ fontWeight: 700 }}>
             Block #{formatNumber(block.height)}
           </Typography>
           {block.isSuperblock && <Chip label="superblock" color="secondary" />}

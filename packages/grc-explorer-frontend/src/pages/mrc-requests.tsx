@@ -289,7 +289,7 @@ export default function MrcDashboard({
           trailing={<CopyLinkButton />}
         />
         <Box>
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>MRC requests</Typography>
+          <Typography component="h1" variant="h4" sx={{ fontWeight: 700 }}>MRC requests</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             Manual Researcher Compensation: a researcher submits a request
             transaction with a small bid fee, and a future staker bundles

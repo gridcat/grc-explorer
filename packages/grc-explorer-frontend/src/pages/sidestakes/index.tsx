@@ -69,7 +69,7 @@ export default function SidestakesPage({ initialRecipients, initialMetrics }: Si
         <Crumbs items={[{ label: 'Voluntary sidestakes' }]} />
 
         <Box>
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>
+          <Typography component="h1" variant="h4" sx={{ fontWeight: 700 }}>
             Voluntary sidestakes
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>

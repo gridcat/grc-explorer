@@ -136,7 +136,7 @@ export default function BeaconsPage({
         ]}
         />
         <Box>
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>Beacons</Typography>
+          <Typography component="h1" variant="h4" sx={{ fontWeight: 700 }}>Beacons</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             Beacons are on-chain advertisements that link a researcher&apos;s
             CPID to a Gridcoin address. Every researcher who wants their

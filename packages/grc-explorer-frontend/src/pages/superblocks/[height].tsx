@@ -115,7 +115,7 @@ export default function SuperblockDetail({
         ]}
         />
         <Stack direction="row" spacing={2} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
-          <Typography variant="h4" sx={{ fontWeight: 700 }}>
+          <Typography component="h1" variant="h4" sx={{ fontWeight: 700 }}>
             Superblock #{formatNumber(sb.height)}
           </Typography>
           <Chip label="superblock" color="secondary" sx={{ fontWeight: 700 }} />
