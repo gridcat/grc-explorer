@@ -20,6 +20,7 @@ import { Crumbs } from '../../components/Crumbs';
 import { CpidLabel } from '../../components/CpidLabel';
 import { fetchCpidNames, useCpidNames } from '../../hooks/useCpidNames';
 import { formatNumber, shortHash } from '../../lib/format';
+import { track } from '../../lib/track';
 
 interface Tx {
   txId: string;
@@ -461,16 +462,19 @@ function RawTransactionSection({
   const [treeOpenDepth, setTreeOpenDepth] = useState(2);
   const [treeKey, setTreeKey] = useState(0);
   const setMode = (depth: number) => {
+    track('Expand Toggle', { what: 'raw-tx-json-all', to: depth === 0 ? 'close' : 'open' });
     setTreeOpenDepth(depth);
     setTreeKey((k) => k + 1);
   };
 
   const handleChange = (_e: React.SyntheticEvent, isExpanded: boolean) => {
+    track('Expand Toggle', { what: 'raw-tx', to: isExpanded ? 'open' : 'close' });
     setExpanded(isExpanded);
   };
 
-  const copy = (text: string) => {
+  const copy = (text: string, what: string) => {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return;
+    track('Copy', { what });
     navigator.clipboard.writeText(text).catch(() => { /* ignore */ });
   };
 
@@ -490,7 +494,7 @@ function RawTransactionSection({
                   Hex
                 </Typography>
                 <Tooltip title="Copy hex">
-                  <IconButton size="small" onClick={() => copy(raw.hex)}>
+                  <IconButton size="small" onClick={() => copy(raw.hex, 'tx hex')}>
                     <ContentCopyIcon fontSize="inherit" />
                   </IconButton>
                 </Tooltip>
@@ -537,7 +541,7 @@ function RawTransactionSection({
                     Collapse all
                   </Button>
                   <Tooltip title="Copy JSON">
-                    <IconButton size="small" onClick={() => copy(JSON.stringify(raw.decoded, null, 2))}>
+                    <IconButton size="small" onClick={() => copy(JSON.stringify(raw.decoded, null, 2), 'tx json')}>
                       <ContentCopyIcon fontSize="inherit" />
                     </IconButton>
                   </Tooltip>

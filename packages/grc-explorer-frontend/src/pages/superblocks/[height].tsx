@@ -20,6 +20,7 @@ import { useEffect, useState } from 'react';
 import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import { api, notFoundOrRethrow } from '../../lib/api';
+import { track } from '../../lib/track';
 import { formatCompact, formatNumber, formatTime } from '../../lib/format';
 import { HashTrim } from '../../components/HashTrim';
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
@@ -86,6 +87,7 @@ export default function SuperblockDetail({
   const loadMoreMagnitudes = () => {
     if (!height || loadingMore || magnitudes.length >= initialMagnitudeTotal) return;
     const offset = magnitudes.length;
+    track('Load More', { list: 'superblock-magnitudes' });
     setLoadingMore(true);
     api.get(`/superblocks/${height}/magnitudes`, {
       params: { offset, limit: 200 },

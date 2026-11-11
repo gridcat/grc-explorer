@@ -1,21 +1,22 @@
+import React, { useCallback, useMemo, useState } from 'react';
 import {
-  Box, IconButton, Paper, Tooltip, Typography,
+  Box,
+  Paper,
+  Typography,
+  Tooltip,
+  IconButton,
 } from '@mui/material';
-import CheckIcon from '@mui/icons-material/Check';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import CheckIcon from '@mui/icons-material/Check';
 import { styled, useTheme } from '@mui/material/styles';
 import { Highlight, themes } from 'prism-react-renderer';
-import {
-  memo, useCallback, useMemo, useState,
-} from 'react';
 
 interface CodeBlockProps {
   code: string;
-  /** Caption shown in the top bar. Omit to render only the floating copy button. */
-  caption?: string;
-  /** Prism language hint (e.g. "json", "bash", "ts"). Defaults to "text". */
   language?: string;
+  caption?: string;
 }
+
 const Wrapper = styled(Paper)(({ theme }) => ({
   padding: 0,
   overflow: 'hidden',
@@ -31,10 +32,10 @@ const CaptionBar = styled(Box)(({ theme }) => ({
   padding: theme.spacing(0.5, 1, 0.5, 2),
   minHeight: 36,
   borderBottom: `1px solid ${theme.palette.divider}`,
-  backgroundColor: theme.palette.mode === 'dark'
-    ? 'rgba(255, 255, 255, 0.03)'
-    : 'rgba(0, 0, 0, 0.02)',
-  gap: theme.spacing(1),
+  backgroundColor:
+    theme.palette.mode === 'dark'
+      ? 'rgba(255, 255, 255, 0.03)'
+      : 'rgba(0, 0, 0, 0.02)',
 }));
 
 const Pre = styled('pre')(({ theme }) => ({
@@ -45,8 +46,6 @@ const Pre = styled('pre')(({ theme }) => ({
   lineHeight: 1.55,
   overflowX: 'auto',
   whiteSpace: 'pre',
-  backgroundColor: 'transparent',
-  color: theme.palette.text.primary,
 }));
 
 const FloatingCopy = styled(Box)(({ theme }) => ({
@@ -58,6 +57,7 @@ const FloatingCopy = styled(Box)(({ theme }) => ({
 
 function CopyButton({ code }: { code: string }) {
   const [copied, setCopied] = useState(false);
+
   const handleCopy = useCallback(async () => {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return;
     try {
@@ -65,16 +65,23 @@ function CopyButton({ code }: { code: string }) {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
-      /* clipboard unavailable (insecure context, denied permission) */
+      // clipboard may be unavailable (insecure context, denied permission)
     }
   }, [code]);
+
   return (
     <Tooltip title={copied ? 'Copied!' : 'Copy'} placement="left">
       <IconButton
         size="small"
         onClick={handleCopy}
         aria-label="Copy code to clipboard"
-        sx={{ color: copied ? 'success.main' : 'text.secondary' }}
+        // Literal Plausible class, not plausibleClass(), so this file stays
+        // copyable verbatim into frontends without that helper.
+        className="plausible-event-name=Copy plausible-event-what=code"
+        sx={{
+          color: copied ? 'success.main' : 'text.secondary',
+          '&:hover': { color: 'primary.main' },
+        }}
       >
         {copied ? <CheckIcon fontSize="small" /> : <ContentCopyIcon fontSize="small" />}
       </IconButton>
@@ -82,12 +89,15 @@ function CopyButton({ code }: { code: string }) {
   );
 }
 
-function CodeBlockInner({ code, caption, language = 'text' }: CodeBlockProps) {
+function CodeBlockInner({
+  code,
+  language = 'text',
+  caption,
+}: CodeBlockProps) {
   const theme = useTheme();
   const prismTheme = theme.palette.mode === 'dark' ? themes.vsDark : themes.github;
-  // Trim leading/trailing newlines so authors can use template literals
-  // with cosmetic indentation without breaking the visible block.
   const trimmed = useMemo(() => code.replace(/^\n+|\n+$/g, ''), [code]);
+
   return (
     <Wrapper variant="outlined" elevation={0}>
       {caption ? (
@@ -101,7 +111,7 @@ function CodeBlockInner({ code, caption, language = 'text' }: CodeBlockProps) {
               color: 'text.secondary',
             }}
           >
-            {language && language !== 'text' ? `${caption} · ${language}` : caption}
+            {caption}
           </Typography>
           <CopyButton code={trimmed} />
         </CaptionBar>
@@ -112,17 +122,18 @@ function CodeBlockInner({ code, caption, language = 'text' }: CodeBlockProps) {
       )}
       <Highlight theme={prismTheme} code={trimmed} language={language}>
         {({
-          style, tokens, getLineProps, getTokenProps,
+          style,
+          tokens,
+          getLineProps,
+          getTokenProps,
         }) => (
           <Pre style={{ ...style, backgroundColor: 'transparent' }}>
             {tokens.map((line, i) => {
               const lineProps = getLineProps({ line });
               return (
-
                 <div key={i} {...lineProps}>
                   {line.map((token, j) => {
                     const tokenProps = getTokenProps({ token });
-
                     return <span key={j} {...tokenProps} />;
                   })}
                 </div>
@@ -135,4 +146,4 @@ function CodeBlockInner({ code, caption, language = 'text' }: CodeBlockProps) {
   );
 }
 
-export const CodeBlock = memo(CodeBlockInner);
+export const CodeBlock = React.memo(CodeBlockInner);

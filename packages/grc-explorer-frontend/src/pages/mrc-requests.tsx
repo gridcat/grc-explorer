@@ -19,6 +19,7 @@ import { ZoomResetButton } from '../components/charts/useXZoom';
 import { Seo } from '@/components/Seo';
 import { Layout } from '../layouts/Layout';
 import { api } from '../lib/api';
+import { track } from '../lib/track';
 import {
   formatDuration, formatGrc, formatNumber, formatUnixDate, formatUnixDateShort,
 } from '../lib/format';
@@ -176,6 +177,7 @@ export default function MrcDashboard({
   };
 
   const toggleSort = (field: SortField) => {
+    track('Sort', { table: 'mrc-requests', by: field });
     // Same field → flip direction; new field → start with desc, since
     // most numeric columns are most useful largest-first.
     const nextDir: SortDir = sort.field === field
@@ -580,10 +582,16 @@ export default function MrcDashboard({
             component="div"
             count={recentTotal}
             page={page}
-            onPageChange={(_, p) => updatePagination({ page: p })}
+            onPageChange={(_, p) => {
+              track('Paginate', { list: 'mrc-requests', dir: p > page ? 'next' : 'prev' });
+              updatePagination({ page: p });
+            }}
             rowsPerPage={pageSize}
             rowsPerPageOptions={PAGE_SIZE_OPTIONS}
-            onRowsPerPageChange={(e) => updatePagination({ page: 0, pageSize: parseInt(e.target.value, 10) })}
+            onRowsPerPageChange={(e) => {
+              track('Page Size', { list: 'mrc-requests', size: e.target.value });
+              updatePagination({ page: 0, pageSize: parseInt(e.target.value, 10) });
+            }}
           />
         </Paper>
       </Stack>

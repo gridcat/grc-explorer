@@ -20,6 +20,7 @@ import { Crumbs } from '../../components/Crumbs';
 import { HashTrim } from '../../components/HashTrim';
 import { NextMuiLink } from '../../components/NextMuiLink';
 import { safeUrl } from '../../lib/safeUrl';
+import { track } from '../../lib/track';
 
 interface Poll {
   pollId: string;
@@ -147,6 +148,7 @@ export default function PollDetail({
   const [distSortKey, setDistSortKey] = useState<DistSortKey>('weight');
   const [distSortDir, setDistSortDir] = useState<'asc' | 'desc'>('desc');
   const toggleDistSort = (key: DistSortKey) => {
+    track('Sort', { table: 'poll-results', by: key });
     if (key === distSortKey) {
       setDistSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
     } else {
@@ -190,6 +192,7 @@ export default function PollDetail({
   const [voteSortKey, setVoteSortKey] = useState<VoteSortKey>('time');
   const [voteSortDir, setVoteSortDir] = useState<'asc' | 'desc'>('desc');
   const toggleVoteSort = (key: VoteSortKey) => {
+    track('Sort', { table: 'poll-votes', by: key });
     if (key === voteSortKey) {
       setVoteSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
     } else {
@@ -253,6 +256,7 @@ export default function PollDetail({
   const weightsPending = voteTotal > 0 && cast === 0 && !weightsComputed;
 
   const openClaim = (txId: string) => {
+    track('Vote Claim View');
     setClaimOpen(true);
     setClaimText('');
     setClaimLoading(true);

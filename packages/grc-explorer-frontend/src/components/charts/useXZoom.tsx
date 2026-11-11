@@ -4,6 +4,7 @@ import {
 } from 'react';
 import type { ChartFrame } from './SvgChart';
 import { readHashDomain, readHashNumber, writeHashParams } from './hashDomain';
+import { track } from '../../lib/track';
 
 // Reusable drag-to-zoom on the x (time) axis for the inline-SVG charts.
 //
@@ -165,6 +166,7 @@ export function useXZoom(opts: {
       // at that x — distinct from drag-to-zoom.
       const clickX = (x0 + x1) / 2;
       const value = d0 + (clickX / frame.innerWidth) * span;
+      track('Chart Zoom', { action: 'marker' });
       setMarker((m) => {
         if (m !== null && Math.abs(((m - d0) / span) * frame.innerWidth - clickX) < 6) {
           return null; // click on the marker → clear it
@@ -175,10 +177,17 @@ export function useXZoom(opts: {
     }
     const newMin = d0 + (x0 / frame.innerWidth) * span;
     const newMax = d0 + (x1 / frame.innerWidth) * span;
-    if (newMax > newMin) setZoom([newMin, newMax]);
+    if (newMax > newMin) {
+      track('Chart Zoom', { action: 'zoom' });
+      setZoom([newMin, newMax]);
+    }
   }, [minPixels, frame.innerWidth]);
 
-  const reset = useCallback(() => { setZoom(null); setMarker(null); }, []);
+  const reset = useCallback(() => {
+    track('Chart Zoom', { action: 'reset' });
+    setZoom(null);
+    setMarker(null);
+  }, []);
 
   const selection = drag && Math.abs(drag.curX - drag.startX) >= 1
     ? { x: Math.min(drag.startX, drag.curX), width: Math.abs(drag.curX - drag.startX) }

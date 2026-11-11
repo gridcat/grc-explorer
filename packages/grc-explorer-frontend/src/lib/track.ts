@@ -28,3 +28,17 @@ export function track(event: string, props?: Record<string, string | number | bo
     /* swallow — analytics must never break the page */
   }
 }
+
+/**
+ * Class-based ("tagged") click event for links and buttons: the
+ * Plausible script fires `event` with `props` when an element carrying
+ * these classes is clicked, which also works across full-page
+ * navigations. Spaces encode as '+'. Same privacy rule as `track()`.
+ */
+export function plausibleClass(event: string, props: Record<string, string> = {}): string {
+  const enc = (s: string) => s.replace(/\s+/g, '+');
+  return [
+    `plausible-event-name=${enc(event)}`,
+    ...Object.entries(props).map(([k, v]) => `plausible-event-${k}=${enc(v)}`),
+  ].join(' ');
+}

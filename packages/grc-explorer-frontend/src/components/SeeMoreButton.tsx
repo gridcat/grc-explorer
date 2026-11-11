@@ -1,6 +1,7 @@
 import { Button } from '@mui/material';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import Link from 'next/link';
+import { plausibleClass } from '../lib/track';
 
 /**
  * "See all →" / "History →" header-corner button used by every home-
@@ -13,6 +14,7 @@ export function SeeMoreButton({ href, label = 'See all' }: { href: string; label
     <Button
       component={Link}
       href={href}
+      className={plausibleClass('CTA Click', { cta: `See ${href}` })}
       size="small"
       color="primary"
       endIcon={<ChevronRightIcon fontSize="small" />}

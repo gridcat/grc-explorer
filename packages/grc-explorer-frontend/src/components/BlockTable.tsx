@@ -102,6 +102,7 @@ export function BlockTable({
                 if (trackSource) {
                   track(b.isSuperblock ? 'Superblock: open' : 'Block: open', { from: trackSource });
                 }
+                track('Entity Open', { type: 'block', from: router.pathname });
                 router.push(href);
               }}
               onMouseEnter={() => router.prefetch(href)}

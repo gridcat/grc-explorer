@@ -254,7 +254,7 @@ jobs:
           command: |
             mkdir -p /caches
             cd ~/app/packages/grc-explorer && docker save -o /caches/grc-explorer.tar app
-      - deploy:
+      - run:
           name: Push application Docker image
           command: |
             cd ~/app/packages/grc-explorer
@@ -297,7 +297,7 @@ jobs:
           command: |
             mkdir -p /caches
             cd ~/app/packages/grc-explorer-frontend && docker save -o /caches/grc-explorer-frontend.tar app
-      - deploy:
+      - run:
           name: Push application Docker image
           command: |
             cd ~/app/packages/grc-explorer-frontend
@@ -346,7 +346,7 @@ jobs:
           command: |
             mkdir -p /caches
             cd ~/app/packages/grc-explorer-frontend && docker save -o /caches/grc-explorer-frontend-testnet.tar app-testnet
-      - deploy:
+      - run:
           name: Push testnet application Docker image
           command: |
             cd ~/app/packages/grc-explorer-frontend

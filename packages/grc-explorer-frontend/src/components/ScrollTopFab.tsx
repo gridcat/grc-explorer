@@ -1,12 +1,14 @@
 import { Fab, Fade, useScrollTrigger } from '@mui/material';
 import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp';
 import { useTimeMachine } from '../hooks/useTimeMachine';
+import { track } from '../lib/track';
 
 export function ScrollTopFab() {
   const tm = useTimeMachine();
   const trigger = useScrollTrigger({ disableHysteresis: true, threshold: 200 });
   const handleClick = () => {
     if (typeof window === 'undefined') return;
+    track('Scroll Top');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
   // Lift above the bottom-fixed time-machine dock when it's in replay

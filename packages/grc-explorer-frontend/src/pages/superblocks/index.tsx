@@ -14,6 +14,7 @@ import { useRechartsXZoom } from '../../components/charts/useRechartsXZoom';
 import { ZoomResetButton } from '../../components/charts/useXZoom';
 import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
+import { track } from '../../lib/track';
 import { formatCompact, formatNumber } from '../../lib/format';
 import { pushPaginationQuery, readPageFromQuery, readPageSizeFromQuery } from '../../lib/pagination';
 import { Seo } from '@/components/Seo';
@@ -285,10 +286,16 @@ export default function SuperblocksList({
             component="div"
             count={total}
             page={page}
-            onPageChange={(_, p) => updateQuery({ page: p })}
+            onPageChange={(_, p) => {
+              track('Paginate', { list: 'superblocks', dir: p > page ? 'next' : 'prev' });
+              updateQuery({ page: p });
+            }}
             rowsPerPage={pageSize}
             rowsPerPageOptions={PAGE_SIZE_OPTIONS}
-            onRowsPerPageChange={(e) => updateQuery({ page: 0, pageSize: parseInt(e.target.value, 10) })}
+            onRowsPerPageChange={(e) => {
+              track('Page Size', { list: 'superblocks', size: e.target.value });
+              updateQuery({ page: 0, pageSize: parseInt(e.target.value, 10) });
+            }}
           />
         </Paper>
       </Stack>

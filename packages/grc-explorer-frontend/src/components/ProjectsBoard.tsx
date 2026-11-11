@@ -7,6 +7,7 @@ import {
   useCallback, useEffect, useMemo, useRef, useState,
 } from 'react';
 import { api } from '../lib/api';
+import { track } from '../lib/track';
 import { useSSE } from '../hooks/useSSE';
 import { SeeMoreButton } from './SeeMoreButton';
 
@@ -223,7 +224,10 @@ function ProjectColumn({
           <Box
             component="button"
             type="button"
-            onClick={onToggleCollapse}
+            onClick={() => {
+              track('Expand Toggle', { what: `projects-${label.toLowerCase()}`, to: collapsed ? 'open' : 'close' });
+              onToggleCollapse();
+            }}
             sx={{
               border: 'none',
               bgcolor: 'transparent',

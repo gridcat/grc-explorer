@@ -11,6 +11,7 @@ import LinkIcon from '@mui/icons-material/Link';
 import { useState } from 'react';
 import { Speed, SPEEDS, useTimeMachine } from '../hooks/useTimeMachine';
 import { formatDuration, nowSec } from '../lib/format';
+import { track } from '../lib/track';
 
 /**
  * Bottom-fixed time-machine dock — shown on every page since the
@@ -42,6 +43,7 @@ export function TimeMachineDock() {
   const handleCopyLink = () => {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return;
     navigator.clipboard.writeText(window.location.href).catch(() => { /* ignore */ });
+    track('Copy', { what: 'replay link' });
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -63,7 +65,10 @@ export function TimeMachineDock() {
           variant="contained"
           color="secondary"
           startIcon={<HistoryIcon />}
-          onClick={() => tm.enterReplay()}
+          onClick={() => {
+            track('Time Machine', { action: 'open' });
+            tm.enterReplay();
+          }}
           sx={{
             borderRadius: 50,
             px: 2.25,
@@ -99,11 +104,15 @@ export function TimeMachineDock() {
     { label: '1mo', deltaSec: 86_400 * 30 },
     { label: '1y', deltaSec: 86_400 * 365 },
   ];
-  const jumpAgo = (deltaSec: number) => {
+  const jumpAgo = (label: string, deltaSec: number) => {
+    track('Time Machine', { action: 'jump', to: label });
     const target = Math.max(min, max - deltaSec);
     tm.setAt(target);
   };
-  const jumpGenesis = () => tm.setAt(min);
+  const jumpGenesis = () => {
+    track('Time Machine', { action: 'jump', to: 'genesis' });
+    tm.setAt(min);
+  };
 
   // datetime-local <input> uses local time without seconds, format
   // `YYYY-MM-DDTHH:MM`. Convert unix-seconds → that string and back.
@@ -173,6 +182,7 @@ export function TimeMachineDock() {
                 if (typeof v === 'number') setScrubAt(v);
               }}
               onChangeCommitted={(_e, v) => {
+                track('Time Machine', { action: 'scrub' });
                 if (typeof v === 'number') tm.setAt(v);
                 setScrubAt(null);
               }}
@@ -185,7 +195,7 @@ export function TimeMachineDock() {
           <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center', flexShrink: 0 }}>
             <Tooltip title="Step back 5 minutes">
               <span>
-                <IconButton size="small" onClick={() => tm.step(-300)} aria-label="step back 5 minutes">
+                <IconButton size="small" onClick={() => { track('Time Machine', { action: 'step back' }); tm.step(-300); }} aria-label="step back 5 minutes">
                   <SkipPreviousIcon fontSize="small" />
                 </IconButton>
               </span>
@@ -194,7 +204,10 @@ export function TimeMachineDock() {
               <IconButton
                 size="medium"
                 color="secondary"
-                onClick={tm.togglePlay}
+                onClick={() => {
+                  track('Time Machine', { action: tm.playing ? 'pause' : 'play' });
+                  tm.togglePlay();
+                }}
                 aria-label={tm.playing ? 'pause replay' : 'play replay'}
                 sx={{ bgcolor: 'secondary.main', color: 'common.white', ':hover': { bgcolor: 'secondary.dark' } }}
               >
@@ -203,7 +216,7 @@ export function TimeMachineDock() {
             </Tooltip>
             <Tooltip title="Step forward 5 minutes">
               <span>
-                <IconButton size="small" onClick={() => tm.step(300)} aria-label="step forward 5 minutes">
+                <IconButton size="small" onClick={() => { track('Time Machine', { action: 'step forward' }); tm.step(300); }} aria-label="step forward 5 minutes">
                   <SkipNextIcon fontSize="small" />
                 </IconButton>
               </span>
@@ -211,7 +224,10 @@ export function TimeMachineDock() {
             <Select
               size="small"
               value={tm.speed}
-              onChange={(e) => tm.setSpeed(Number(e.target.value) as Speed)}
+              onChange={(e) => {
+                track('Time Machine', { action: 'speed', speed: String(e.target.value) });
+                tm.setSpeed(Number(e.target.value) as Speed);
+              }}
               sx={{ ml: 1, minWidth: 78, fontSize: 13, '& .MuiSelect-select': { py: 0.5 } }}
               aria-label="playback speed"
             >
@@ -231,6 +247,7 @@ export function TimeMachineDock() {
               variant="contained"
               color="success"
               onClick={() => {
+                track('Time Machine', { action: 'live' });
                 setScrubAt(null);
                 tm.goLive();
               }}
@@ -310,7 +327,7 @@ export function TimeMachineDock() {
               size="small"
               variant="outlined"
               color="secondary"
-              onClick={() => jumpAgo(p.deltaSec)}
+              onClick={() => jumpAgo(p.label, p.deltaSec)}
               sx={{ minWidth: 0, px: 1, py: 0.25, fontSize: 12, flexShrink: 0 }}
             >
               {`${p.label} ago`}

@@ -17,6 +17,7 @@ import { useXZoom, ZoomViewport, ZoomResetButton } from '../../components/charts
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { CopyLinkButton } from '../../components/CopyLinkButton';
 import { api } from '../../lib/api';
+import { track } from '../../lib/track';
 import { formatCompact, formatYmdDate, MONTHS_SHORT } from '../../lib/format';
 
 interface Point {
@@ -134,6 +135,7 @@ export default function DifficultyHistory({ points, forks }: DifficultyHistoryPr
   }, [selectedPoints]);
 
   const setYear = useCallback((year: number | null) => {
+    track('Year Select', { page: 'difficulty', year: year === null ? 'all' : String(year) });
     const query = { ...router.query };
     if (year === null) delete query.year;
     else query.year = String(year);
