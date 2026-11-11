@@ -1,3 +1,10 @@
+# [grc-explorer-frontend-v2.7.0](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.6.2...grc-explorer-frontend-v2.7.0) (2026-11-11)
+
+
+### Features
+
+* **grc-explorer-frontend:** track navigation, internal links, copies, time machine and 404s in Plausible ([1c62e92](https://github.com/gridcat/grc-explorer/commit/1c62e92a150ea1274179f2dafec728280086d987))
+
 # [grc-explorer-frontend-v2.6.2](https://github.com/gridcat/grc-explorer/compare/grc-explorer-frontend-v2.6.1...grc-explorer-frontend-v2.6.2) (2026-11-03)
 
 
