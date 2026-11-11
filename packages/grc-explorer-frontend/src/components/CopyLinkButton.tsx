@@ -1,6 +1,7 @@
 import { Button, Snackbar } from '@mui/material';
 import LinkIcon from '@mui/icons-material/Link';
 import { useCallback, useState } from 'react';
+import { track } from '../lib/track';
 
 // Page-level "share this view" affordance. Copies the current full URL —
 // which, on chart pages, carries the zoom window in the fragment
@@ -13,6 +14,7 @@ export function CopyLinkButton() {
   const copy = useCallback(() => {
     if (typeof window === 'undefined') return;
     const url = window.location.href;
+    track('Copy', { what: 'link' });
     const done = () => setOpen(true);
     if (navigator.clipboard?.writeText) {
       navigator.clipboard.writeText(url).then(done).catch(() => {

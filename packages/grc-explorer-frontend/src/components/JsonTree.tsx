@@ -1,5 +1,6 @@
 import { Box } from '@mui/material';
 import { useState } from 'react';
+import { track } from '../lib/track';
 
 /**
  * Inline collapsible JSON tree with light type colouring.
@@ -129,7 +130,10 @@ function Collapsible({
     <Box sx={{ pl: depth * 2 }}>
       <Box
         component="span"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          track('Expand Toggle', { what: 'json-node', to: open ? 'close' : 'open' });
+          setOpen((o) => !o);
+        }}
         sx={{
           cursor: 'pointer',
           userSelect: 'none',

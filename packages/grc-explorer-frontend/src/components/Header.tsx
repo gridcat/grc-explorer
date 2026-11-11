@@ -240,6 +240,7 @@ export function Header() {
               <Link
                 passHref
                 href="/"
+                onClick={() => track('Nav', { item: 'Logo', surface: 'header' })}
                 style={{
                   textDecoration: 'none',
                   display: 'inline-flex',

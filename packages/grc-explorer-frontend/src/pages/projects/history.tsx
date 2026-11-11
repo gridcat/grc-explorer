@@ -17,6 +17,7 @@ import {
 import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { CopyLinkButton } from '../../components/CopyLinkButton';
 import { api } from '../../lib/api';
+import { track } from '../../lib/track';
 import { buildSmoothLinePath } from '../../lib/chartUtils';
 import { useXZoom, ZoomViewport, ZoomResetButton } from '../../components/charts/useXZoom';
 import { formatCount, formatYmdDate, MONTHS_SHORT } from '../../lib/format';
@@ -62,6 +63,7 @@ export default function ProjectHistory({ points }: ProjectHistoryProps) {
   }, [selectedYear, yearGroups]);
 
   const setYear = useCallback((year: number | null) => {
+    track('Year Select', { page: 'projects-history', year: year === null ? 'all' : String(year) });
     const query = { ...router.query };
     if (year === null) delete query.year;
     else query.year = String(year);
@@ -207,7 +209,11 @@ export default function ProjectHistory({ points }: ProjectHistoryProps) {
                   size="small"
                   value={yearViewMode}
                   exclusive
-                  onChange={(_, v) => { if (v !== null) setYearViewMode(v as YearViewMode); }}
+                  onChange={(_, v) => {
+                    if (v === null) return;
+                    track('View Mode', { page: 'projects-history', mode: String(v) });
+                    setYearViewMode(v as YearViewMode);
+                  }}
                   aria-label="year view mode"
                 >
                   <ToggleButton value="composition" aria-label="composition (treemap)" sx={{ textTransform: 'none', fontSize: 12 }}>

@@ -9,6 +9,7 @@ import { Seo } from '@/components/Seo';
 import { Layout } from '../../layouts/Layout';
 import { Crumbs } from '../../components/Crumbs';
 import { api } from '../../lib/api';
+import { track } from '../../lib/track';
 import { PAGE_TTL, clientHeaders, setPageCache } from '../../lib/ssr';
 import { formatTime, nowSec } from '../../lib/format';
 import {
@@ -174,10 +175,16 @@ export default function PollsList({
             component="div"
             count={total}
             page={page}
-            onPageChange={(_, p) => updateQuery({ page: p })}
+            onPageChange={(_, p) => {
+              track('Paginate', { list: 'polls', dir: p > page ? 'next' : 'prev' });
+              updateQuery({ page: p });
+            }}
             rowsPerPage={pageSize}
             rowsPerPageOptions={PAGE_SIZE_OPTIONS}
-            onRowsPerPageChange={(e) => updateQuery({ page: 0, pageSize: parseInt(e.target.value, 10) })}
+            onRowsPerPageChange={(e) => {
+              track('Page Size', { list: 'polls', size: e.target.value });
+              updateQuery({ page: 0, pageSize: parseInt(e.target.value, 10) });
+            }}
           />
         </Paper>
       </Stack>

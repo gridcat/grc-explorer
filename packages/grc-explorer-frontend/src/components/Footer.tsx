@@ -6,6 +6,7 @@ import { NextMuiLink } from './NextMuiLink';
 import {
   IS_TESTNET, NETWORK, SISTER_NETWORK, SISTER_NETWORK_URL,
 } from '../lib/network';
+import { plausibleClass } from '../lib/track';
 
 const SISTER_NETWORK_LABEL = SISTER_NETWORK === 'mainnet' ? 'Mainnet' : 'Testnet';
 
@@ -73,7 +74,7 @@ export function Footer() {
           Part of Gridcoin Club ↗
         </a>
         {' · '}
-        <NextMuiLink href="/disclaimer">Terms</NextMuiLink>
+        <NextMuiLink href="/disclaimer" className={plausibleClass('Footer Click', { item: 'Terms' })}>Terms</NextMuiLink>
         {SISTER_NETWORK_URL && (
           <>
             {' · '}

@@ -5,7 +5,9 @@ import { styled } from '@mui/material/styles';
 import Head from 'next/head';
 import Image from 'next/image';
 import Link from 'next/link';
+import { useEffect } from 'react';
 import { PageWrapper } from '../../components/PageWrapper';
+import { plausibleClass, track } from '../../lib/track';
 
 const PageBody = styled(Box)(() => ({
   backgroundImage: 'url(/il-background-error-page.svg)',
@@ -29,6 +31,9 @@ const ErrorContainer = styled(Container)(() => ({
 }));
 
 export function NotFound() {
+  useEffect(() => {
+    track('404', { path: document.location.pathname });
+  }, []);
   return (
     <PageBody>
       <Head>
@@ -47,7 +52,7 @@ export function NotFound() {
           <NotFoundError variant="h4">
             This page has been eaten by Major Tom!
           </NotFoundError>
-          <Link href="/" passHref>
+          <Link href="/" passHref className={plausibleClass('CTA Click', { cta: '404 Home' })}>
             <Button variant="contained">Ground control, bring me home.</Button>
           </Link>
         </ErrorContainer>

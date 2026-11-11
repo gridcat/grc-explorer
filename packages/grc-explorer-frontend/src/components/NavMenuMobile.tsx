@@ -51,7 +51,10 @@ export function NavMenuMobile({ items }: { items: NavEntry[] }) {
         edge="start"
         color="inherit"
         aria-label="menu"
-        onClick={() => setOpen(true)}
+        onClick={() => {
+          track('Nav', { item: 'Menu', surface: 'mobile' });
+          setOpen(true);
+        }}
       >
         <MenuIcon />
       </IconButton>

@@ -6,6 +6,7 @@ import {
   useCallback, useEffect, useMemo, useRef, useState,
 } from 'react';
 import { api } from '../lib/api';
+import { track } from '../lib/track';
 import {
   ChartAxes,
   ChartFrame,
@@ -125,7 +126,10 @@ export function MempoolFeePercentiles({
           <MuiLink
             component="button"
             type="button"
-            onClick={() => setExplainOpen((o) => !o)}
+            onClick={() => {
+              track('Expand Toggle', { what: 'fee-percentiles-help', to: explainOpen ? 'close' : 'open' });
+              setExplainOpen((o) => !o);
+            }}
             sx={{ verticalAlign: 'baseline' }}
           >
             {explainOpen ? 'Hide details' : 'What does this mean?'}

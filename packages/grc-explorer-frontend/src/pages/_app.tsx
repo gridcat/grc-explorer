@@ -5,6 +5,7 @@ import { AppProps } from 'next/app';
 import Head from 'next/head';
 import * as React from 'react';
 import createEmotionCache from '../createEmotionCache';
+import { useLinkTracking } from '../hooks/useLinkTracking';
 import { SSEProvider } from '../hooks/useSSE';
 import { ThemeModeProvider, useThemeMode } from '../hooks/useThemeMode';
 import { TimeMachineProvider } from '../hooks/useTimeMachine';
@@ -37,6 +38,7 @@ interface MyAppProps extends AppProps {
  */
 function AppShell({ Component, pageProps }: { Component: AppProps['Component']; pageProps: AppProps['pageProps'] }) {
   const { mode } = useThemeMode();
+  useLinkTracking();
   const theme = React.useMemo(() => themeCreator(mode, NETWORK), [mode]);
   return (
     <ThemeProvider theme={theme}>

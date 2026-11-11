@@ -10,6 +10,7 @@ import { Crumbs, RESEARCHERS_CRUMB } from '../../components/Crumbs';
 import { HashTrim } from '../../components/HashTrim';
 import { Layout } from '../../layouts/Layout';
 import { api } from '../../lib/api';
+import { track } from '../../lib/track';
 import { formatNumber, formatTime } from '../../lib/format';
 import { readPageFromQuery, readPageSizeFromQuery } from '../../lib/pagination';
 
@@ -116,6 +117,7 @@ export default function BeaconsPage({
   };
 
   const onTabChange = (_e: React.SyntheticEvent, value: string) => {
+    track('Beacon Filter', { status: value });
     // Reset to page 0 on filter change — page-N on a 200-row /active
     // filter is meaningless on a 5000-row /all view.
     updateQuery({ status: value, page: 0 });
@@ -243,10 +245,16 @@ export default function BeaconsPage({
             component="div"
             count={total}
             page={page}
-            onPageChange={(_, p) => updateQuery({ page: p })}
+            onPageChange={(_, p) => {
+              track('Paginate', { list: 'beacons', dir: p > page ? 'next' : 'prev' });
+              updateQuery({ page: p });
+            }}
             rowsPerPage={pageSize}
             rowsPerPageOptions={PAGE_SIZE_OPTIONS}
-            onRowsPerPageChange={(e) => updateQuery({ page: 0, pageSize: parseInt(e.target.value, 10) })}
+            onRowsPerPageChange={(e) => {
+              track('Page Size', { list: 'beacons', size: e.target.value });
+              updateQuery({ page: 0, pageSize: parseInt(e.target.value, 10) });
+            }}
           />
         </Paper>
       </Stack>

@@ -9,6 +9,7 @@ import { Layout } from '../../../layouts/Layout';
 import { BlockTable, BlockRowData } from '../../../components/BlockTable';
 import { Crumbs } from '../../../components/Crumbs';
 import { formatNumber, MONTHS_FULL } from '../../../lib/format';
+import { track } from '../../../lib/track';
 import { PeriodStatRow } from './PeriodStats';
 import { EmptyPeriodBanner } from './EmptyPeriodBanner';
 import type { DayArchiveData } from './types';
@@ -62,6 +63,7 @@ export function DayArchive({ data }: { data: DayArchiveData }) {
   // page matches the canonical-link logic above.
   const handlePageChange = (_e: unknown, zeroBased: number) => {
     const p = zeroBased + 1;
+    track('Paginate', { list: 'archive-day', dir: p > pagination.pageNumber ? 'next' : 'prev' });
     router.push(p === 1 ? dayPath : `${dayPath}?page=${p}`, undefined, { scroll: true });
   };
 

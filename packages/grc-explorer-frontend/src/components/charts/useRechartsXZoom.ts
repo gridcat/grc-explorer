@@ -2,6 +2,7 @@ import {
   useCallback, useEffect, useRef, useState,
 } from 'react';
 import { readHashDomain, readHashNumber, writeHashParams } from './hashDomain';
+import { track } from '../../lib/track';
 
 // Drag-to-zoom + click-to-annotate for recharts charts, matching the
 // inline-SVG charts' gestures (see useXZoom). Recharts hands us the
@@ -81,13 +82,19 @@ export function useRechartsXZoom(urlKey?: string): RechartsXZoom {
     if (l === null || r === null) return;
     if (l === r) {
       // Click (no drag) → drop / toggle the annotation marker.
+      track('Chart Zoom', { action: 'marker' });
       setMarker((m) => (m === l ? null : l));
       return;
     }
+    track('Chart Zoom', { action: 'zoom' });
     setDomain([Math.min(l, r), Math.max(l, r)]);
   }, []);
 
-  const reset = useCallback(() => { setDomain(undefined); setMarker(null); }, []);
+  const reset = useCallback(() => {
+    track('Chart Zoom', { action: 'reset' });
+    setDomain(undefined);
+    setMarker(null);
+  }, []);
 
   return {
     domain,
